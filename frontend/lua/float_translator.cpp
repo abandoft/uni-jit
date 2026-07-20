@@ -54,7 +54,10 @@ Value append_float_binary(FunctionBuilder* builder, OpCode opcode, Value lhs,
   if (opcode == OP_SUB || opcode == OP_SUBK) {
     return builder->float64_subtract(lhs, rhs);
   }
-  return builder->float64_multiply(lhs, rhs);
+  if (opcode == OP_MUL || opcode == OP_MULK) {
+    return builder->float64_multiply(lhs, rhs);
+  }
+  return builder->float64_divide(lhs, rhs);
 }
 
 }  // namespace
@@ -171,7 +174,8 @@ CompilationResult compile_float64_prototype(const Proto& prototype) {
 
         case OP_ADDK:
         case OP_SUBK:
-        case OP_MULK: {
+        case OP_MULK:
+        case OP_DIVK: {
           const int source = GETARG_B(instruction);
           const int constant_index = GETARG_C(instruction);
           if (!valid_destination(registers, destination) ||
@@ -196,7 +200,8 @@ CompilationResult compile_float64_prototype(const Proto& prototype) {
           }
           const NumericKind source_kind =
               kinds[static_cast<std::size_t>(source)];
-          if (!has_float_operand(source_kind, constant_kind)) {
+          if (opcode != OP_DIVK &&
+              !has_float_operand(source_kind, constant_kind)) {
             return translation_error(
                 static_cast<std::size_t>(pc),
                 "Float64 arithmetic requires at least one Float64 operand");
@@ -218,7 +223,8 @@ CompilationResult compile_float64_prototype(const Proto& prototype) {
 
         case OP_ADD:
         case OP_SUB:
-        case OP_MUL: {
+        case OP_MUL:
+        case OP_DIV: {
           const int lhs_index = GETARG_B(instruction);
           const int rhs_index = GETARG_C(instruction);
           if (!valid_destination(registers, destination) ||
@@ -231,7 +237,7 @@ CompilationResult compile_float64_prototype(const Proto& prototype) {
               kinds[static_cast<std::size_t>(lhs_index)];
           const NumericKind rhs_kind =
               kinds[static_cast<std::size_t>(rhs_index)];
-          if (!has_float_operand(lhs_kind, rhs_kind)) {
+          if (opcode != OP_DIV && !has_float_operand(lhs_kind, rhs_kind)) {
             return translation_error(
                 static_cast<std::size_t>(pc),
                 "Float64 arithmetic requires at least one Float64 operand");
