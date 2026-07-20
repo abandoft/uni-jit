@@ -147,5 +147,10 @@ if(UNIJIT_BUILD_BENCHMARKS)
       COMMAND unijit_lua55_benchmark_runner
         "${PROJECT_SOURCE_DIR}/benchmark/lua/integer_parameter_loop.lua"
         10 100 1 unijit)
+    add_test(
+      NAME unijit.lua55_guarded_loop_benchmark_smoke
+      COMMAND unijit_lua55_benchmark_runner
+        "${PROJECT_SOURCE_DIR}/benchmark/lua/integer_guarded_loop.lua"
+        10 100 1 unijit)
   endif()
 endif()
