@@ -120,12 +120,13 @@ update so the induction variable advances normally. Unconditional or
 multi-statement control transfers, control guards with an `else`, calls, and
 nested loops remain rejected.
 
-Counted loops already enter the CFG native path directly and therefore remain
-a single baseline publication instead of recompiling identical code at the
-invocation threshold. Their `tierable` metric is false. Straight-line checked
-division is tierable, while checked counted-loop division remains in the direct
-CFG tier. Runtime exits reconstruct through the exact code lease attempted by
-the call, including when an optimized generation is active.
+Counted loops enter the low-latency CFG baseline first and report
+`tierable: true`. At the same 64-call threshold, the background worker compiles
+an optimized CFG with constant folding, Word canonicalization, and dead-code
+elimination while retaining every call, guard, safepoint, and frame-state root.
+Checked counted-loop division therefore promotes through the normal generation
+and cache lifecycle; both signed zeroes still reconstruct through the exact
+attempted optimized lease before becoming `ZeroDivisionError`.
 
 ## Reproducible CPython JIT target benchmark
 

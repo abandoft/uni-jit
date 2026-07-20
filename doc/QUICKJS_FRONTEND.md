@@ -30,9 +30,9 @@ Every declared argument must be a JavaScript Number. Missing or non-Number
 arguments throw a `TypeError`; extra arguments follow ordinary JavaScript
 fixed-parameter behavior and are ignored. Results are returned as Numbers.
 
-Accepted straight-line callables publish verified baseline code synchronously
-and remain callable while a single bounded background worker compiles optimized
-code after 64 invocations. The worker retains immutable source and native state
+Accepted straight-line and counted-loop callables publish verified baseline
+code synchronously and remain callable while a single bounded background worker
+compiles optimized code after 64 invocations. The worker retains immutable source and native state
 but never accesses QuickJS runtime objects. Optimized publication uses the
 baseline generation, so late work cannot replace a newer tier, and exact-source
 optimized cache entries converge duplicate source without sharing JavaScript
@@ -96,10 +96,13 @@ At installation, the module captures the original
 `Function.prototype.toString` callable. Per-function `toString` overrides and
 later prototype mutation therefore cannot substitute different source for the
 function being compiled. The compiled closure owns its executable allocation
-through a QuickJS class object and releases it from the class finalizer. The
-complete counted-loop path currently installs one optimized CFG code version
-in the baseline slot and reports `tierable: false`, because repeating the same
-CFG compilation has no distinct lower-latency form.
+through a QuickJS class object and releases it from the class finalizer.
+Counted loops use the same lifecycle and report `tierable: true`: the initial
+CFG skips optimizer latency, while the background tier applies constant
+folding, Word canonicalization, and dead-code elimination without removing
+calls, guards, or safepoints. Publication remains generation checked and uses
+the separate optimized cache, so garbage collection and cancellation retain
+the same safety properties as straight-line compilation.
 
 ## Reproducible V8 target benchmark
 

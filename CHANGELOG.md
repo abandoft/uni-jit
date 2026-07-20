@@ -1,3 +1,7 @@
+## 0.2.0
+
+- Added production baseline and optimized compilation for CFG SSA with constant folding, Word canonicalization, dead-code elimination, effect preservation, deoptimization capture rooting and remapping, public `CompilationOptions` overloads, and installed-package coverage; enabled true asynchronous QuickJS and PocketPy counted-loop promotion after 64 calls with separate tier caches, generation-safe publication, complete lifecycle telemetry, and optimized PocketPy signed-zero division reconstruction.
+
 ## 0.1.9
 
 - Hardened Lua 5.5 delivery on Windows x86-64 by isolating exception-owning C++ compilation state from Lua's `longjmp` error bridge, eliminating optimized-MSVC heap corruption on rejected integer and Float64 sources, splitting the embedded qualification program below MSVC literal limits, retaining phase diagnostics, enabling Lua in every real platform and Linux sanitizer job, and adding a timeout-bounded native MSVC AddressSanitizer lane.

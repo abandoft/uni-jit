@@ -64,9 +64,11 @@ optimized execution can expose external side effects.
 ## Current boundary
 
 The compiler exposes explicit `kBaseline` and `kOptimized` levels for verified
-straight-line SSA. Baseline compilation skips the optimization pipeline while
+straight-line and control-flow SSA. Baseline compilation skips the optimization pipeline while
 preserving verification, guards, deoptimization metadata, allocation, native
-lowering, and W^X publication; optimized compilation remains the default API.
+lowering, and W^X publication; optimized CFG compilation folds constants,
+canonicalizes safe Word identities, removes dead pure nodes, preserves effects,
+and remaps guard-scoped captured values. Optimized compilation remains the default API.
 
 PocketPy retains exact accepted source, publishes a baseline immediately, and
 submits optimization after 64 successful invocations to a one-worker scheduler
@@ -74,12 +76,12 @@ with bounded task and byte queues. The background job never accesses PocketPy
 VM state, reuses an independent optimized cache, checks cancellation, and
 switches with an expected-generation check. PocketPy userdata cancels queued
 work during finalization while shared immutable state remains alive until the
-job terminates. Its complete counted-loop CFG path remains a single native tier
-because repeating the same compilation would add latency without improving
-code; its CFG safepoints and checked-division exits remain active in that tier.
+job terminates. Complete counted-loop CFG callables use this same baseline and
+background optimized lifecycle; CFG safepoints and checked-division exits remain
+active in both tiers, and captured loop state is remapped into optimized stack maps.
 
 QuickJS applies the same baseline and optimized split to accepted straight-line
-callables, but submits optimization to a bounded frontend-owned scheduler after
+and counted-loop callables, but submits optimization to a bounded frontend-owned scheduler after
 64 calls. The worker never accesses `JSRuntime` or `JSContext`: it only
 translates retained immutable source, publishes through the thread-safe cache,
 checks cancellation, and installs against the captured tier generation. The

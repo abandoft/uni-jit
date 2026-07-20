@@ -16,9 +16,9 @@ regions.
 | Native code bytes per function | 16 MiB |
 
 Every configured maximum must be positive. `CompilationOptions::limits`
-controls straight-line compilation, while the CFG compiler accepts a
-`CompilationLimits` value directly or with deoptimization and assumption
-metadata:
+controls both straight-line and CFG compilation. The CFG compiler also retains
+the direct `CompilationLimits` overloads, including variants with
+deoptimization and assumption metadata:
 
 ```cpp
 unijit::jit::CompilationOptions options(
@@ -27,9 +27,10 @@ options.limits.maximum_ir_nodes = 8192;
 options.limits.maximum_code_bytes = 2U * 1024U * 1024U;
 auto result = unijit::jit::Compiler::compile(function, options);
 
-unijit::jit::CompilationLimits cfg_limits;
-cfg_limits.maximum_cfg_blocks = 256;
-auto cfg_result = unijit::jit::Compiler::compile(cfg, cfg_limits);
+unijit::jit::CompilationOptions cfg_options(
+    unijit::jit::OptimizationLevel::kBaseline);
+cfg_options.limits.maximum_cfg_blocks = 256;
+auto cfg_result = unijit::jit::Compiler::compile(cfg, cfg_options);
 ```
 
 ## Enforcement order

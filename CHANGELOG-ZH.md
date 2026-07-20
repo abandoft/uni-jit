@@ -1,3 +1,7 @@
+## 0.2.0
+
+- 为 CFG SSA 新增生产级基线与优化编译，覆盖常量折叠、Word 规范化、死代码消除、副作用保留、反优化捕获值根化与重映射、公开 `CompilationOptions` 重载和已安装包验证；为 QuickJS 与 PocketPy 计数循环启用 64 次调用后的真实异步升级，覆盖分层缓存、代次安全发布、完整生命周期遥测，以及 PocketPy 优化层中的有符号零除法重建。
+
 ## 0.1.9
 
 - 强化 Lua 5.5 在 Windows x86-64 上的商业交付，将持有异常析构状态的 C++ 编译过程与 Lua 的 `longjmp` 错误桥隔离，消除优化 MSVC 构建拒绝整数及 Float64 源码时的堆损坏，将内嵌资格程序拆分到 MSVC 字面量限制以内并保留阶段诊断，在全部真实平台与 Linux sanitizer 任务中启用 Lua，并新增带超时边界的原生 MSVC AddressSanitizer 流水线。

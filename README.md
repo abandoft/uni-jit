@@ -42,11 +42,13 @@ concurrency stress, sanitizers, and commercial performance floors.
 integration contract, invocation/backedge tiering, and lifecycle telemetry;
 [doc/QUICKJS_FRONTEND.md](doc/QUICKJS_FRONTEND.md)
 defines the stock QuickJS specialization boundary, asynchronous live tiering,
-typed Number/Boolean results, callable telemetry, bounded waiting, and
+typed Number/Boolean results, counted-loop baseline-to-optimized promotion,
+callable telemetry, bounded waiting, and
 cancellation.
 [doc/POCKETPY_FRONTEND.md](doc/POCKETPY_FRONTEND.md) documents the PocketPy
 2.1.8 embedding API, ownership rules, strict numeric tier, live baseline-to-
-optimized background promotion, script-visible tier telemetry, bounded waits,
+optimized background promotion for straight-line and counted-loop code,
+script-visible tier telemetry, bounded waits,
 typed numeric/Boolean results, checked straight-line and counted-loop division,
 and cancellation.
 

@@ -73,8 +73,13 @@ call API without access to private headers.
 QuickJS and PocketPy frontend tests compile the same single-level counted loop
 with ordered `break` and `continue` guards, execute it both as a native function
 and through the stock language runtime, and bit-match the result with the source
-semantics. Separate negative fixtures require an explicit rejection when a
-control guard contains an unsupported `else` arm.
+semantics. Each runtime test proves that the callable starts with unoptimized
+CFG node counts, promotes exactly once through the bounded scheduler, and
+publishes a smaller optimized graph. PocketPy additionally replays both
+signed-zero counted-loop division exits after promotion and requires exact
+frame reconstruction before `ZeroDivisionError`. Separate negative fixtures
+require an explicit rejection when a control guard contains an unsupported
+`else` arm.
 
 Strided-loop coverage executes QuickJS prefix/postfix decrement and `+=`/`-=`
 updates plus PocketPy one-, two-, and three-argument `range` forms. Positive

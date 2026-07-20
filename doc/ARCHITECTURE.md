@@ -108,7 +108,7 @@ and deoptimization metadata. Diagnosed exits keep the marshalled arguments for
 generation-correct reconstruction. The contract and frontend integration
 boundary are specified in `doc/ON_STACK_REPLACEMENT.md`.
 
-The optimizing tier adds a separate CFG SSA representation with explicit
+The control-flow path adds a separate CFG SSA representation with explicit
 basic-block parameters. Predecessor edges supply every block argument, making
 phi semantics visible in construction, verification, interpretation, and
 lowering. The verifier rejects unreachable blocks, malformed edges, and any
@@ -185,10 +185,12 @@ publication mutex. Assumption exits withdraw the affected optimized generation;
 only frontends that explicitly declare a computation restartable may request
 automatic baseline retry. The contract is specified in `doc/TIERING.md`.
 
-Straight-line compilation has explicit baseline and optimized modes. The
+Straight-line and CFG compilation have explicit baseline and optimized modes. The
 baseline preserves verification and all exit metadata but skips optimizer
-latency; the optimized mode performs the canonical passes and remains the
-default for compatibility. PocketPy uses these modes in production callables,
+latency; the optimized CFG mode folds constants, canonicalizes safe Word
+identities, removes dead pure nodes, preserves effects, and roots and remaps
+guard-scoped captures. Optimized mode remains the default for compatibility.
+PocketPy uses these modes in production callables,
 retains exact source for recompilation, and publishes an optimized generation
 after a single hotness claimant wins. Runtime exits carry the exact attempted
 code lease so a concurrent switch cannot redirect frame reconstruction to the
