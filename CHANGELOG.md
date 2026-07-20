@@ -1,5 +1,7 @@
 ## 0.1.2
 
+- Added CFG SSA with explicit block parameters, dominance verification, and a
+  budgeted reference interpreter for branches and loops.
 - Added a three-engine Lua integer benchmark and a pinned-ABI invocation fast
   path that outperforms stock Lua on the measured call-boundary workload.
 - Added a guarded stock Lua 5.5 bytecode-to-native frontend for straight-line

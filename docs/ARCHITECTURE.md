@@ -48,6 +48,14 @@ allocation, native encoder, and executable-memory boundary that later tiers
 will use. This makes the bootstrap implementation extensible instead of a
 throwaway assembler demo.
 
+The optimizing tier adds a separate CFG SSA representation with explicit
+basic-block parameters. Predecessor edges supply every block argument, making
+phi semantics visible in construction, verification, interpretation, and
+lowering. The verifier rejects unreachable blocks, malformed edges, and any
+use whose definition does not dominate it. Its reference interpreter applies
+edge arguments in parallel and has a configurable block-execution budget so
+fuzzed infinite loops fail deterministically.
+
 ## Stable subsystem boundaries
 
 - `include/unijit/ir`: target-independent SSA values and construction API.
