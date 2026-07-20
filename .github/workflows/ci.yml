@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux GCC x86-64
+            os: ubuntu-24.04
+            cc: gcc
+            cxx: g++
+          - name: Linux Clang x86-64
+            os: ubuntu-24.04
+            cc: clang
+            cxx: clang++
+          - name: macOS Clang AArch64
+            os: macos-15
+            cc: clang
+            cxx: clang++
+          - name: macOS Clang x86-64
+            os: macos-15-intel
+            cc: clang
+            cxx: clang++
+          - name: Windows MSVC x86-64
+            os: windows-2025
+            cc: cl
+            cxx: cl
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build/ci -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DUNIJIT_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build/ci --parallel
+
+      - name: Test
+        run: ctest --test-dir build/ci --output-on-failure
+
+      - name: Install
+        run: cmake --install build/ci --prefix build/install
+
+      - name: Configure package consumer
+        run: >-
+          cmake -S test/package -B build/consumer -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/build/install
+
+      - name: Test installed package
+        run: cmake --build build/consumer --parallel
+
+      - name: Run installed package consumer
+        run: ./build/consumer/unijit_package_consumer
+        if: runner.os != 'Windows'
+
+      - name: Run installed package consumer on Windows
+        run: .\build\consumer\unijit_package_consumer.exe
+        if: runner.os == 'Windows'
+
+  sanitizers:
+    name: Linux ASan and UBSan
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build/sanitize -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DUNIJIT_WARNINGS_AS_ERRORS=ON
+          -DCMAKE_C_FLAGS=-fsanitize=address,undefined
+          -DCMAKE_CXX_FLAGS=-fsanitize=address,undefined
+          -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined
+
+      - name: Build
+        run: cmake --build build/sanitize --parallel
+
+      - name: Test
+        run: ctest --test-dir build/sanitize --output-on-failure
