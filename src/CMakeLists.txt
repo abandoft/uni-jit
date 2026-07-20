@@ -1,11 +1,22 @@
 add_library(unijit
   ir/function.cpp
   ir/interpreter.cpp
-  ir/verifier.cpp)
+  ir/verifier.cpp
+  jit/compiler.cpp
+  jit/executable_memory.cpp)
+
+string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" UNIJIT_SYSTEM_PROCESSOR)
+if(UNIJIT_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+  target_sources(unijit PRIVATE
+    jit/backend/aarch64/lower.cpp)
+  target_compile_definitions(unijit PRIVATE UNIJIT_TARGET_AARCH64=1)
+endif()
 
 add_library(UniJIT::unijit ALIAS unijit)
 
 target_include_directories(unijit
+  PRIVATE
+    "${PROJECT_SOURCE_DIR}/src"
   PUBLIC
     "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
     "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
