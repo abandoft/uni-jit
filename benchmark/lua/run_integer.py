@@ -154,7 +154,7 @@ def main() -> int:
     luajit_median = float(luajit["median_ns"])
     measurement_boundary = (
         "complete_numeric_loop"
-        if stock.get("workload") == "integer_loop"
+        if stock.get("workload") in {"integer_loop", "integer_parameter_loop"}
         else "language_call"
     )
     record = {

@@ -71,6 +71,24 @@ jobs:
           --minimum-luajit-speedup 1.10
           > build/language/lua-integer-loop-performance-gate.json
 
+      - name: Compare parameterized Lua numeric loops
+        run: >-
+          python3 benchmark/lua/run_integer.py
+          --script benchmark/lua/integer_parameter_loop.lua
+          --lua build/language/bin/lua5.5-reference
+          --unijit build/language/bin/lua5.5-unijit
+          --luajit build/language/references/luajit/src/luajit
+          --warmup 1000 --iterations 300000 --samples 7 --trials 3
+          > build/language/lua-integer-parameter-loop.json
+
+      - name: Enforce parameterized Lua loop performance floor
+        run: >-
+          python3 tool/performance_gate.py lua
+          build/language/lua-integer-parameter-loop.json
+          --minimum-stock-speedup 1.25
+          --minimum-luajit-speedup 1.10
+          > build/language/lua-integer-parameter-loop-performance-gate.json
+
       - name: Compare stock Lua, UniJIT, and LuaJIT Float64 execution
         run: >-
           python3 benchmark/lua/run_integer.py
@@ -91,6 +109,8 @@ jobs:
             build/language/lua-integer.json
             build/language/lua-integer-loop.json
             build/language/lua-integer-loop-performance-gate.json
+            build/language/lua-integer-parameter-loop.json
+            build/language/lua-integer-parameter-loop-performance-gate.json
             build/language/lua-float.json
           if-no-files-found: error
 

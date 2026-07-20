@@ -92,6 +92,13 @@ checksum requirement remains in force. The record includes the direct
 UniJIT-over-LuaJIT ratio; hosted validation retains it and requires at least a
 1.25x speedup over stock Lua plus a 1.10x speedup over LuaJIT.
 
+Passing `--script benchmark/lua/integer_parameter_loop.lua` measures the same
+complete 1,000-iteration boundary with start, limit, and nonzero step supplied
+as guarded runtime parameters. Hosted validation retains a separate balanced
+three-trial record and enforces the same 1.25x stock-Lua and 1.10x LuaJIT
+commercial floors, so support for dynamic loop controls cannot rely on semantic
+tests while regressing to interpreter-class throughput.
+
 Passing `--script benchmark/lua/float_call.lua` measures the guarded Float64
 specialization with identical floating-point inputs in stock Lua, UniJIT, and
 LuaJIT. Checksums are compared without integer truncation before performance
