@@ -5,6 +5,7 @@
 #include <memory>
 #include <vector>
 
+#include "unijit/ir/control_flow.h"
 #include "unijit/ir/function.h"
 #include "unijit/ir/interpreter.h"
 #include "unijit/status.h"
@@ -62,6 +63,7 @@ struct CompilationResult final {
 class Compiler final {
  public:
   static CompilationResult compile(const ir::Function& function);
+  static CompilationResult compile(const ir::ControlFlowFunction& function);
 };
 
 }  // namespace unijit::jit

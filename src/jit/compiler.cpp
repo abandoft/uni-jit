@@ -1,13 +1,12 @@
 #include "unijit/jit/compiler.h"
 
-#include "unijit/ir/optimizer.h"
-
 #include <cstring>
 #include <memory>
 #include <new>
 #include <utility>
 
 #include "jit/executable_memory.h"
+#include "unijit/ir/optimizer.h"
 
 #if defined(UNIJIT_TARGET_AARCH64)
 #include "jit/backend/aarch64/lower.h"
@@ -82,14 +81,11 @@ CompilationResult Compiler::compile(const ir::Function& function) {
   const ir::Function& optimized = optimization.function;
 
 #if defined(UNIJIT_TARGET_AARCH64)
-  detail::aarch64::LoweringResult lowering =
-      detail::aarch64::lower(optimized);
+  detail::aarch64::LoweringResult lowering = detail::aarch64::lower(optimized);
 #elif defined(UNIJIT_TARGET_X86_64)
-  detail::x86_64::LoweringResult lowering =
-      detail::x86_64::lower(optimized);
+  detail::x86_64::LoweringResult lowering = detail::x86_64::lower(optimized);
 #elif defined(UNIJIT_TARGET_RISCV64)
-  detail::riscv64::LoweringResult lowering =
-      detail::riscv64::lower(optimized);
+  detail::riscv64::LoweringResult lowering = detail::riscv64::lower(optimized);
 #endif
 
 #if defined(UNIJIT_TARGET_AARCH64) || defined(UNIJIT_TARGET_X86_64) || \
@@ -114,6 +110,52 @@ CompilationResult Compiler::compile(const ir::Function& function) {
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate compiled-function metadata"},
+            nullptr};
+  }
+#else
+  (void)function;
+  return {{StatusCode::kUnsupportedArchitecture,
+           "UniJIT has no native backend for this architecture yet"},
+          nullptr};
+#endif
+}
+
+CompilationResult Compiler::compile(const ir::ControlFlowFunction& function) {
+  const Status verification = ir::verify(function);
+  if (!verification.ok()) {
+    return {verification, nullptr};
+  }
+
+#if defined(UNIJIT_TARGET_AARCH64)
+  detail::aarch64::LoweringResult lowering = detail::aarch64::lower(function);
+#elif defined(UNIJIT_TARGET_X86_64)
+  detail::x86_64::LoweringResult lowering = detail::x86_64::lower(function);
+#elif defined(UNIJIT_TARGET_RISCV64)
+  detail::riscv64::LoweringResult lowering = detail::riscv64::lower(function);
+#endif
+
+#if defined(UNIJIT_TARGET_AARCH64) || defined(UNIJIT_TARGET_X86_64) || \
+    defined(UNIJIT_TARGET_RISCV64)
+  if (!lowering.status.ok()) {
+    return {lowering.status, nullptr};
+  }
+
+  try {
+    auto implementation = std::make_unique<CompiledFunction::Impl>();
+    const Status publication = detail::ExecutableMemory::publish(
+        lowering.code.data(), lowering.code.size(), &implementation->memory);
+    if (!publication.ok()) {
+      return {publication, nullptr};
+    }
+
+    CompilationStats stats{lowering.code.size(), lowering.spill_slots,
+                           function.nodes().size(), function.nodes().size()};
+    auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
+        std::move(implementation), function.parameter_count(), stats));
+    return {Status::ok_status(), std::move(compiled)};
+  } catch (const std::bad_alloc&) {
+    return {{StatusCode::kResourceExhausted,
+             "unable to allocate compiled CFG function metadata"},
             nullptr};
   }
 #else

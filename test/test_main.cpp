@@ -25,7 +25,7 @@ using unijit::jit::Compiler;
 
 int failures = 0;
 
-void expect(bool condition, const std::string &message) {
+void expect(bool condition, const std::string& message) {
   if (!condition) {
     std::cerr << "FAIL: " << message << '\n';
     ++failures;
@@ -233,6 +233,13 @@ void test_control_flow_counted_loop() {
       function, args.data(), args.size());
   expect(result.ok() && result.value == 5050,
          "CFG interpreter must execute loop-carried block parameters");
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "counted-loop CFG must compile to native code");
+  if (compilation.ok()) {
+    const auto native = compilation.function->invoke(args.data(), args.size());
+    expect(native.ok() && native.value == result.value,
+           "native counted loop must match the CFG interpreter");
+  }
 }
 
 void test_control_flow_merge() {
@@ -269,6 +276,63 @@ void test_control_flow_merge() {
       unijit::ir::ControlFlowInterpreter::evaluate(function, {117, -4}).value ==
           117,
       "false branch must select the left operand");
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "diamond CFG must compile to native code");
+  if (compilation.ok()) {
+    const std::array<Word, 2> true_args = {17, 91};
+    const std::array<Word, 2> false_args = {117, -4};
+    expect(compilation.function->invoke(true_args.data(), true_args.size())
+                   .value == 91,
+           "native true branch must select the right operand");
+    expect(compilation.function->invoke(false_args.data(), false_args.size())
+                   .value == 117,
+           "native false branch must select the left operand");
+  }
+}
+
+void test_control_flow_parallel_edge_copy() {
+  unijit::ir::ControlFlowBuilder builder(2);
+  const unijit::ir::Block loop = builder.create_block(3);
+  const unijit::ir::Block exit = builder.create_block(1);
+  const Value zero = builder.constant(0);
+  const Value one = builder.constant(1);
+  const Value two = builder.constant(2);
+  const Value hundred = builder.constant(100);
+  expect(builder.jump(loop, {builder.parameter(0), builder.parameter(1), two})
+             .ok(),
+         "parallel-copy fixture must enter its loop");
+
+  expect(builder.set_insertion_block(loop).ok(),
+         "parallel-copy loop block must exist");
+  const Value lhs = builder.block_parameter(loop, 0);
+  const Value rhs = builder.block_parameter(loop, 1);
+  const Value remaining = builder.block_parameter(loop, 2);
+  const Value encoded = builder.add(builder.multiply(lhs, hundred), rhs);
+  const Value next_remaining = builder.subtract(remaining, one);
+  const Value continue_loop = builder.less_than(zero, next_remaining);
+  expect(builder
+             .branch(continue_loop, loop, {rhs, lhs, next_remaining}, exit,
+                     {encoded})
+             .ok(),
+         "backedge must support swapped block arguments");
+
+  expect(builder.set_insertion_block(exit).ok(),
+         "parallel-copy exit block must exist");
+  expect(builder.set_return(builder.block_parameter(exit, 0)).ok(),
+         "parallel-copy exit must return its encoded pair");
+  const unijit::ir::ControlFlowFunction function = std::move(builder).build();
+  const std::array<Word, 2> args = {3, 7};
+  const auto interpreted = unijit::ir::ControlFlowInterpreter::evaluate(
+      function, args.data(), args.size());
+  expect(interpreted.ok() && interpreted.value == 703,
+         "interpreter edge copies must be parallel");
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "parallel-copy CFG must compile to native code");
+  if (compilation.ok()) {
+    const auto native = compilation.function->invoke(args.data(), args.size());
+    expect(native.ok() && native.value == interpreted.value,
+           "native edge copies must preserve swapped loop parameters");
+  }
 }
 
 void test_control_flow_rejects_non_dominating_value() {
@@ -324,7 +388,7 @@ void test_control_flow_builder_rejects_edge_arity() {
          "builder must reject an edge with missing block arguments");
 }
 
-} // namespace
+}  // namespace
 
 int main() {
   test_verifier_rejects_forward_reference();
@@ -335,6 +399,7 @@ int main() {
   test_optimization_pipeline();
   test_control_flow_counted_loop();
   test_control_flow_merge();
+  test_control_flow_parallel_edge_copy();
   test_control_flow_rejects_non_dominating_value();
   test_control_flow_execution_budget();
   test_control_flow_builder_rejects_edge_arity();

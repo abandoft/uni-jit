@@ -1,5 +1,6 @@
 #include "jit/backend/riscv64/lower.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -38,9 +39,8 @@ class Assembler final {
   }
 
   void move_immediate(int destination, ir::Word immediate) {
-    literals_.push_back(
-        LiteralUse{buffer_.size(), destination,
-                   static_cast<std::uint64_t>(immediate)});
+    literals_.push_back(LiteralUse{buffer_.size(), destination,
+                                   static_cast<std::uint64_t>(immediate)});
     buffer_.emit_u32(0);
     buffer_.emit_u32(0);
   }
@@ -65,6 +65,54 @@ class Assembler final {
     emit_r(0x01, rhs, lhs, 0, destination, 0x33);
   }
 
+  void compare(int destination, int lhs, int rhs, bool or_equal) {
+    if (or_equal) {
+      emit_r(0x00, lhs, rhs, 2, destination, 0x33);
+      emit_i(1, destination, 4, destination, 0x13);
+    } else {
+      emit_r(0x00, rhs, lhs, 2, destination, 0x33);
+    }
+  }
+
+  std::size_t branch() {
+    const std::size_t offset = buffer_.size();
+    buffer_.emit_u32(0x0000006FU);
+    return offset;
+  }
+
+  std::size_t branch_nonzero(int source) {
+    const std::size_t offset = buffer_.size();
+    emit_b(0, kZero, source, 1, 0x63);
+    return offset;
+  }
+
+  Status patch_branch(std::size_t offset, std::size_t target,
+                      bool conditional) {
+    const std::int64_t delta =
+        static_cast<std::int64_t>(target) - static_cast<std::int64_t>(offset);
+    if ((delta & 1) != 0) {
+      return {StatusCode::kCodeGenerationFailed,
+              "RISC-V branch target is not halfword aligned"};
+    }
+    if (conditional) {
+      if (delta < -4096 || delta > 4094) {
+        return {StatusCode::kResourceExhausted,
+                "RISC-V conditional branch exceeds its encoding range"};
+      }
+      buffer_.patch_u32(offset, encode_b(static_cast<std::int32_t>(delta),
+                                         kZero, kScratch0, 1, 0x63));
+    } else {
+      if (delta < -(std::int64_t{1} << 20) ||
+          delta > (std::int64_t{1} << 20) - 2) {
+        return {StatusCode::kResourceExhausted,
+                "RISC-V jump exceeds its encoding range"};
+      }
+      buffer_.patch_u32(
+          offset, encode_j(static_cast<std::int32_t>(delta), kZero, 0x6F));
+    }
+    return Status::ok_status();
+  }
+
   void reserve_stack(std::size_t byte_count) {
     emit_i(-static_cast<std::int32_t>(byte_count), kStackPointer, 0,
            kStackPointer, 0x13);
@@ -75,9 +123,9 @@ class Assembler final {
            kStackPointer, 0x13);
   }
 
-  void return_to_caller() {
-    emit_i(0, kReturnAddress, 0, kZero, 0x67);
-  }
+  void return_to_caller() { emit_i(0, kReturnAddress, 0, kZero, 0x67); }
+
+  std::size_t size() const noexcept { return buffer_.size(); }
 
   Status finalize_literals() {
     if ((buffer_.size() & 7U) != 0) {
@@ -85,9 +133,9 @@ class Assembler final {
     }
     for (const LiteralUse& literal : literals_) {
       const std::size_t literal_offset = buffer_.size();
-      if (literal_offset >
-          literal.instruction_offset +
-              static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max())) {
+      if (literal_offset > literal.instruction_offset +
+                               static_cast<std::size_t>(
+                                   std::numeric_limits<std::int32_t>::max())) {
         return {StatusCode::kResourceExhausted,
                 "RISC-V literal pool exceeds PC-relative addressing"};
       }
@@ -95,9 +143,9 @@ class Assembler final {
                                                    literal.instruction_offset);
       const std::int64_t high = (delta + 0x800) >> 12;
       const std::int64_t low = delta - (high << 12);
-      buffer_.patch_u32(literal.instruction_offset,
-                        encode_u(static_cast<std::int32_t>(high),
-                                 literal.destination, 0x17));
+      buffer_.patch_u32(
+          literal.instruction_offset,
+          encode_u(static_cast<std::int32_t>(high), literal.destination, 0x17));
       buffer_.patch_u32(
           literal.instruction_offset + 4,
           encode_i(static_cast<std::int32_t>(low), literal.destination, 3,
@@ -125,8 +173,25 @@ class Assembler final {
            (reg(destination) << 7U) | reg(opcode);
   }
 
-  void emit_i(std::int32_t immediate, int source, int function,
-              int destination, int opcode) {
+  static std::uint32_t encode_b(std::int32_t immediate, int rhs, int lhs,
+                                int function, int opcode) {
+    const std::uint32_t bits = static_cast<std::uint32_t>(immediate);
+    return (((bits >> 12U) & 0x1U) << 31U) | (((bits >> 5U) & 0x3FU) << 25U) |
+           (reg(rhs) << 20U) | (reg(lhs) << 15U) | (reg(function) << 12U) |
+           (((bits >> 1U) & 0xFU) << 8U) | (((bits >> 11U) & 0x1U) << 7U) |
+           reg(opcode);
+  }
+
+  static std::uint32_t encode_j(std::int32_t immediate, int destination,
+                                int opcode) {
+    const std::uint32_t bits = static_cast<std::uint32_t>(immediate);
+    return (((bits >> 20U) & 0x1U) << 31U) | (((bits >> 1U) & 0x3FFU) << 21U) |
+           (((bits >> 11U) & 0x1U) << 20U) | (((bits >> 12U) & 0xFFU) << 12U) |
+           (reg(destination) << 7U) | reg(opcode);
+  }
+
+  void emit_i(std::int32_t immediate, int source, int function, int destination,
+              int opcode) {
     buffer_.emit_u32(
         encode_i(immediate, source, function, destination, opcode));
   }
@@ -134,14 +199,18 @@ class Assembler final {
   void emit_s(std::int32_t immediate, int source, int base, int function,
               int opcode) {
     const std::uint32_t bits = static_cast<std::uint32_t>(immediate);
-    buffer_.emit_u32(((bits >> 5U) & 0x7FU) << 25U |
-                     (reg(source) << 20U) | (reg(base) << 15U) |
-                     (reg(function) << 12U) | ((bits & 0x1FU) << 7U) |
-                     reg(opcode));
+    buffer_.emit_u32(((bits >> 5U) & 0x7FU) << 25U | (reg(source) << 20U) |
+                     (reg(base) << 15U) | (reg(function) << 12U) |
+                     ((bits & 0x1FU) << 7U) | reg(opcode));
   }
 
-  void emit_r(int function7, int rhs, int lhs, int function3,
-              int destination, int opcode) {
+  void emit_b(std::int32_t immediate, int rhs, int lhs, int function,
+              int opcode) {
+    buffer_.emit_u32(encode_b(immediate, rhs, lhs, function, opcode));
+  }
+
+  void emit_r(int function7, int rhs, int lhs, int function3, int destination,
+              int opcode) {
     buffer_.emit_u32((reg(function7) << 25U) | (reg(rhs) << 20U) |
                      (reg(lhs) << 15U) | (reg(function3) << 12U) |
                      (reg(destination) << 7U) | reg(opcode));
@@ -176,25 +245,26 @@ LoweringResult lower_impl(const ir::Function& function) {
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
   return {{StatusCode::kUnsupportedArchitecture,
            "the RISC-V 64 encoder currently supports little-endian targets"},
-          {}, 0};
+          {},
+          0};
 #endif
   if (function.parameter_count() > kMaximumAddressableParameters) {
     return {{StatusCode::kResourceExhausted,
              "RISC-V parameter area exceeds signed 12-bit addressing"},
-            {}, 0};
+            {},
+            0};
   }
 
-  RegisterAllocation allocation = allocate_linear_scan(
-      function, kAllocationRegisters.size(),
-      kMaximumStackSize / sizeof(ir::Word));
+  RegisterAllocation allocation =
+      allocate_linear_scan(function, kAllocationRegisters.size(),
+                           kMaximumStackSize / sizeof(ir::Word));
   if (!allocation.status.ok()) {
     return {allocation.status, {}, 0};
   }
 
   Assembler assembler;
   assembler.move_register(kArgumentBase, kArgumentAndReturn);
-  const std::size_t raw_stack_size =
-      allocation.spill_slots * sizeof(ir::Word);
+  const std::size_t raw_stack_size = allocation.spill_slots * sizeof(ir::Word);
   const std::size_t stack_size = (raw_stack_size + 15U) & ~std::size_t{15U};
   if (stack_size != 0) {
     assembler.reserve_stack(stack_size);
@@ -208,9 +278,9 @@ LoweringResult lower_impl(const ir::Function& function) {
         const int target = destination.in_register()
                                ? physical_register(destination)
                                : kScratch0;
-        assembler.load(target, kArgumentBase,
-                       static_cast<std::size_t>(node.immediate) *
-                           sizeof(ir::Word));
+        assembler.load(
+            target, kArgumentBase,
+            static_cast<std::size_t>(node.immediate) * sizeof(ir::Word));
         if (!destination.in_register()) {
           assembler.store(target, kStackPointer, spill_offset(destination));
         }
@@ -229,12 +299,10 @@ LoweringResult lower_impl(const ir::Function& function) {
       case ir::Opcode::kAdd:
       case ir::Opcode::kSubtract:
       case ir::Opcode::kMultiply: {
-        const int lhs = load_operand(&assembler,
-                                     allocation.locations[node.lhs.id()],
-                                     kScratch0);
-        const int rhs = load_operand(&assembler,
-                                     allocation.locations[node.rhs.id()],
-                                     kScratch1);
+        const int lhs = load_operand(
+            &assembler, allocation.locations[node.lhs.id()], kScratch0);
+        const int rhs = load_operand(
+            &assembler, allocation.locations[node.rhs.id()], kScratch1);
         const int target = destination.in_register()
                                ? physical_register(destination)
                                : kScratch0;
@@ -272,6 +340,173 @@ LoweringResult lower_impl(const ir::Function& function) {
   return {Status::ok_status(), assembler.take_code(), allocation.spill_slots};
 }
 
+struct BranchFixup final {
+  std::size_t offset{0};
+  ir::Block target;
+};
+
+std::size_t control_spill_offset(std::size_t slot) noexcept {
+  return slot * sizeof(ir::Word);
+}
+
+void copy_edge_arguments(Assembler* assembler,
+                         const ir::ControlFlowFunction& function,
+                         const ir::ControlEdge& edge,
+                         std::size_t temporary_base) {
+  for (std::size_t index = 0; index < edge.arguments.size(); ++index) {
+    assembler->load(kScratch0, kStackPointer,
+                    control_spill_offset(edge.arguments[index].id()));
+    assembler->store(kScratch0, kStackPointer,
+                     control_spill_offset(temporary_base + index));
+  }
+  const ir::BasicBlock& target = function.blocks()[edge.target.id()];
+  for (std::size_t index = 0; index < edge.arguments.size(); ++index) {
+    assembler->load(kScratch0, kStackPointer,
+                    control_spill_offset(temporary_base + index));
+    assembler->store(kScratch0, kStackPointer,
+                     control_spill_offset(target.parameters[index].id()));
+  }
+}
+
+LoweringResult lower_control_flow_impl(
+    const ir::ControlFlowFunction& function) {
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+  return {{StatusCode::kUnsupportedArchitecture,
+           "the RISC-V 64 encoder currently supports little-endian targets"},
+          {},
+          0};
+#endif
+  if (function.parameter_count() > kMaximumAddressableParameters) {
+    return {{StatusCode::kResourceExhausted,
+             "RISC-V parameter area exceeds signed 12-bit addressing"},
+            {},
+            0};
+  }
+
+  std::size_t maximum_block_parameters = 0;
+  for (const ir::BasicBlock& block : function.blocks()) {
+    maximum_block_parameters =
+        std::max(maximum_block_parameters, block.parameters.size());
+  }
+  const std::size_t spill_slots =
+      function.nodes().size() + maximum_block_parameters;
+  const std::size_t raw_stack_size = spill_slots * sizeof(ir::Word);
+  const std::size_t stack_size = (raw_stack_size + 15U) & ~std::size_t{15U};
+  if (stack_size > kMaximumStackSize) {
+    return {{StatusCode::kResourceExhausted,
+             "RISC-V CFG spill frame exceeds the backend limit"},
+            {},
+            0};
+  }
+
+  Assembler assembler;
+  assembler.move_register(kArgumentBase, kArgumentAndReturn);
+  if (stack_size != 0) {
+    assembler.reserve_stack(stack_size);
+  }
+
+  const std::size_t no_label = std::numeric_limits<std::size_t>::max();
+  std::vector<std::size_t> labels(function.blocks().size(), no_label);
+  std::vector<BranchFixup> fixups;
+  const std::size_t temporary_base = function.nodes().size();
+
+  for (std::size_t block_index = 0; block_index < function.blocks().size();
+       ++block_index) {
+    labels[block_index] = assembler.size();
+    const ir::BasicBlock& block = function.blocks()[block_index];
+    for (const ir::Value value : block.instructions) {
+      const ir::ControlNode& node = function.nodes()[value.id()];
+      const std::size_t destination_offset = control_spill_offset(value.id());
+      switch (node.opcode) {
+        case ir::ControlOpcode::kParameter:
+          assembler.load(
+              kScratch0, kArgumentBase,
+              static_cast<std::size_t>(node.immediate) * sizeof(ir::Word));
+          assembler.store(kScratch0, kStackPointer, destination_offset);
+          break;
+        case ir::ControlOpcode::kBlockParameter:
+          break;
+        case ir::ControlOpcode::kConstant:
+          assembler.move_immediate(kScratch0, node.immediate);
+          assembler.store(kScratch0, kStackPointer, destination_offset);
+          break;
+        case ir::ControlOpcode::kAdd:
+        case ir::ControlOpcode::kSubtract:
+        case ir::ControlOpcode::kMultiply:
+        case ir::ControlOpcode::kLessThan:
+        case ir::ControlOpcode::kLessEqual:
+          assembler.load(kScratch0, kStackPointer,
+                         control_spill_offset(node.lhs.id()));
+          assembler.load(kScratch1, kStackPointer,
+                         control_spill_offset(node.rhs.id()));
+          if (node.opcode == ir::ControlOpcode::kAdd) {
+            assembler.add(kScratch0, kScratch0, kScratch1);
+          } else if (node.opcode == ir::ControlOpcode::kSubtract) {
+            assembler.subtract(kScratch0, kScratch0, kScratch1);
+          } else if (node.opcode == ir::ControlOpcode::kMultiply) {
+            assembler.multiply(kScratch0, kScratch0, kScratch1);
+          } else {
+            assembler.compare(kScratch0, kScratch0, kScratch1,
+                              node.opcode == ir::ControlOpcode::kLessEqual);
+          }
+          assembler.store(kScratch0, kStackPointer, destination_offset);
+          break;
+      }
+    }
+
+    const ir::ControlTerminator& terminator = block.terminator;
+    if (terminator.opcode == ir::TerminatorOpcode::kReturn) {
+      assembler.load(kArgumentAndReturn, kStackPointer,
+                     control_spill_offset(terminator.value.id()));
+      if (stack_size != 0) {
+        assembler.release_stack(stack_size);
+      }
+      assembler.return_to_caller();
+    } else if (terminator.opcode == ir::TerminatorOpcode::kJump) {
+      copy_edge_arguments(&assembler, function, terminator.true_edge,
+                          temporary_base);
+      fixups.push_back({assembler.branch(), terminator.true_edge.target});
+    } else {
+      assembler.load(kScratch0, kStackPointer,
+                     control_spill_offset(terminator.value.id()));
+      const std::size_t true_selector = assembler.branch_nonzero(kScratch0);
+      copy_edge_arguments(&assembler, function, terminator.false_edge,
+                          temporary_base);
+      fixups.push_back({assembler.branch(), terminator.false_edge.target});
+      const std::size_t true_copy = assembler.size();
+      const Status selector_status =
+          assembler.patch_branch(true_selector, true_copy, true);
+      if (!selector_status.ok()) {
+        return {selector_status, {}, 0};
+      }
+      copy_edge_arguments(&assembler, function, terminator.true_edge,
+                          temporary_base);
+      fixups.push_back({assembler.branch(), terminator.true_edge.target});
+    }
+  }
+
+  for (const BranchFixup& fixup : fixups) {
+    if (!fixup.target.valid() || fixup.target.id() >= labels.size() ||
+        labels[fixup.target.id()] == no_label) {
+      return {{StatusCode::kCodeGenerationFailed,
+               "RISC-V CFG branch has no bound target"},
+              {},
+              0};
+    }
+    const Status patch_status =
+        assembler.patch_branch(fixup.offset, labels[fixup.target.id()], false);
+    if (!patch_status.ok()) {
+      return {patch_status, {}, 0};
+    }
+  }
+
+  const Status literals = assembler.finalize_literals();
+  if (!literals.ok()) {
+    return {literals, {}, 0};
+  }
+  return {Status::ok_status(), assembler.take_code(), spill_slots};
+}
+
 }  // namespace
 
 LoweringResult lower(const ir::Function& function) {
@@ -280,7 +515,19 @@ LoweringResult lower(const ir::Function& function) {
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate RISC-V 64 lowering state"},
-            {}, 0};
+            {},
+            0};
+  }
+}
+
+LoweringResult lower(const ir::ControlFlowFunction& function) {
+  try {
+    return lower_control_flow_impl(function);
+  } catch (const std::bad_alloc&) {
+    return {{StatusCode::kResourceExhausted,
+             "unable to allocate RISC-V CFG lowering state"},
+            {},
+            0};
   }
 }
 

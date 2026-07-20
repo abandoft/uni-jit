@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "unijit/ir/control_flow.h"
 #include "unijit/ir/function.h"
 #include "unijit/status.h"
 
@@ -17,6 +18,7 @@ struct LoweringResult final {
 };
 
 LoweringResult lower(const ir::Function& function);
+LoweringResult lower(const ir::ControlFlowFunction& function);
 
 }  // namespace unijit::jit::detail::x86_64
 
