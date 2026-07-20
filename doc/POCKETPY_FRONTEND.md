@@ -97,6 +97,9 @@ trigger, so future runtime exits cannot be silently misclassified as division
 errors. This narrow contract prevents fallback-free native code from silently
 changing unsupported Python behavior.
 
+Source larger than 1 MiB is rejected before it is retained or translated, and
+accepted IR remains subject to the core compilation budgets.
+
 The counted-loop tier accepts four-space-indented numeric functions with
 Float64 local initializers, one `for name in range(count)` loop, arithmetic or
 augmented assignments, and ordered `if`/`else` arms that update loop locals.

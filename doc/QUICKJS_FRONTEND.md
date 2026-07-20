@@ -71,6 +71,8 @@ statements, chained comparisons, and coercive operands are rejected with a
 source byte position.
 This strict boundary prevents silently compiling semantics that the current IR
 cannot represent.
+Function source larger than 1 MiB is rejected before it is retained or
+translated, and accepted IR remains subject to the core compilation budgets.
 
 The counted-loop tier additionally accepts a conventional body with Float64
 `let` initializers, one unit-increment `for` loop, arithmetic assignments, and

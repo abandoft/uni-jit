@@ -56,6 +56,12 @@ publication, code-cache residency, native execution, drain shutdown, and exact
 lifecycle counter reconciliation. Hosted qualification expands the corpus to
 16 producers and 20,000 submissions and repeats it under ThreadSanitizer.
 
+Core unit and installed-package tests also reduce each public compilation
+budget below a valid fixture and require deterministic rejection before
+verification, dominance analysis, or executable publication. Frontend tests
+submit source beyond the 1 MiB retention ceiling and require native runtime
+range/value errors without entering translation.
+
 ## Performance gates
 
 `tool/performance_gate.py` consumes retained benchmark JSON instead of parsing

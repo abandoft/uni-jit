@@ -204,6 +204,16 @@ lookup visibility while active leases keep mappings and reconstruction metadata
 alive. The current shared ownership implementation can later move to epoch-based
 reclamation without changing the public contract in `doc/CODE_CACHE.md`.
 
+## Resource governance
+
+Public compilation applies configurable positive budgets to parameters, IR
+nodes and arguments, CFG blocks and edges, exit and stack-map metadata, and
+final native code. Shape and metadata limits run before verification so
+quadratic control-flow analysis cannot be triggered by an unbounded public
+input; emitted metadata and code bytes are checked again before executable
+memory publication. QuickJS and PocketPy also cap retained source at 1 MiB.
+The complete contract is specified in `doc/COMPILATION_LIMITS.md`.
+
 ## Performance policy
 
 Performance changes require warmup-aware distributions rather than a single

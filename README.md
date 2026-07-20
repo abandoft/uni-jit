@@ -26,6 +26,9 @@ frontend handles.
 [doc/ON_STACK_REPLACEMENT.md](doc/ON_STACK_REPLACEMENT.md) defines bounded
 typed interpreter-frame transfer into generation-stable native regions and
 exact deoptimization from an OSR entry.
+[doc/COMPILATION_LIMITS.md](doc/COMPILATION_LIMITS.md) defines per-compilation
+IR, CFG, metadata, and native-code budgets enforced before expensive analysis
+and W^X publication.
 [doc/ASSUMPTIONS.md](doc/ASSUMPTIONS.md) defines one-shot runtime dependencies,
 quiescent invalidation, and stale cache-generation retirement.
 [doc/TIERING.md](doc/TIERING.md) defines saturating hotness profiles, single
