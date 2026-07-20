@@ -12,6 +12,9 @@ namespace unijit::ir {
 
 using Word = std::int64_t;
 
+Word pack_float64(double value) noexcept;
+double unpack_float64(Word bits) noexcept;
+
 class Value final {
  public:
   static constexpr std::uint32_t kInvalidId =
@@ -41,6 +44,14 @@ enum class Opcode : std::uint8_t {
   kAdd,
   kSubtract,
   kMultiply,
+  kFloatAdd,
+  kFloatSubtract,
+  kFloatMultiply,
+};
+
+enum class ValueType : std::uint8_t {
+  kWord,
+  kFloat64,
 };
 
 struct Node final {
@@ -48,6 +59,7 @@ struct Node final {
   Value lhs;
   Value rhs;
   Word immediate{0};
+  ValueType type{ValueType::kWord};
 };
 
 class Function final {
@@ -55,13 +67,28 @@ class Function final {
   Function() = default;
 
   std::size_t parameter_count() const noexcept { return parameter_count_; }
+  ValueType parameter_type(std::size_t index) const noexcept {
+    return index < parameter_types_.size() ? parameter_types_[index]
+                                           : ValueType::kWord;
+  }
   const std::vector<Node>& nodes() const noexcept { return nodes_; }
   Value return_value() const noexcept { return return_value_; }
+  ValueType return_type() const noexcept {
+    return return_value_.valid() && return_value_.id() < nodes_.size()
+               ? nodes_[return_value_.id()].type
+               : ValueType::kWord;
+  }
+  ValueType value_type(Value value) const noexcept {
+    return value.valid() && value.id() < nodes_.size()
+               ? nodes_[value.id()].type
+               : ValueType::kWord;
+  }
 
  private:
   friend class FunctionBuilder;
 
   std::size_t parameter_count_{0};
+  std::vector<ValueType> parameter_types_;
   std::vector<Node> nodes_;
   Value return_value_;
 };
@@ -69,6 +96,7 @@ class Function final {
 class FunctionBuilder final {
  public:
   explicit FunctionBuilder(std::size_t parameter_count);
+  explicit FunctionBuilder(std::vector<ValueType> parameter_types);
 
   std::size_t parameter_count() const noexcept {
     return function_.parameter_count_;
@@ -76,9 +104,14 @@ class FunctionBuilder final {
 
   Value parameter(std::size_t index) const noexcept;
   Value constant(Word value);
+  Value float64_constant(double value);
+  Value float64_constant_bits(Word bits);
   Value add(Value lhs, Value rhs);
   Value subtract(Value lhs, Value rhs);
   Value multiply(Value lhs, Value rhs);
+  Value float64_add(Value lhs, Value rhs);
+  Value float64_subtract(Value lhs, Value rhs);
+  Value float64_multiply(Value lhs, Value rhs);
   Status set_return(Value value);
 
   Function build() && noexcept;

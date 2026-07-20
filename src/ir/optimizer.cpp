@@ -43,7 +43,9 @@ Word fold_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
 
 bool is_binary(Opcode opcode) noexcept {
   return opcode == Opcode::kAdd || opcode == Opcode::kSubtract ||
-         opcode == Opcode::kMultiply;
+         opcode == Opcode::kMultiply || opcode == Opcode::kFloatAdd ||
+         opcode == Opcode::kFloatSubtract ||
+         opcode == Opcode::kFloatMultiply;
 }
 
 PassResult transform_once(const Function& input) {
@@ -62,7 +64,12 @@ PassResult transform_once(const Function& input) {
     }
   }
 
-  FunctionBuilder builder(input.parameter_count());
+  std::vector<ValueType> parameter_types;
+  parameter_types.reserve(input.parameter_count());
+  for (std::size_t index = 0; index < input.parameter_count(); ++index) {
+    parameter_types.push_back(input.parameter_type(index));
+  }
+  FunctionBuilder builder(std::move(parameter_types));
   std::vector<Value> mapped(node_count);
   std::vector<bool> known_constant(node_count, false);
   std::vector<Word> constant_value(node_count, 0);
@@ -81,14 +88,32 @@ PassResult transform_once(const Function& input) {
     }
     const Node& node = input.nodes()[index];
     if (node.opcode == Opcode::kConstant) {
-      mapped[index] = builder.constant(node.immediate);
-      known_constant[index] = true;
-      constant_value[index] = node.immediate;
+      if (node.type == ValueType::kFloat64) {
+        mapped[index] = builder.float64_constant_bits(node.immediate);
+      } else {
+        mapped[index] = builder.constant(node.immediate);
+        known_constant[index] = true;
+        constant_value[index] = node.immediate;
+      }
       continue;
     }
 
     const std::size_t lhs_id = node.lhs.id();
     const std::size_t rhs_id = node.rhs.id();
+    if (node.opcode == Opcode::kFloatAdd) {
+      mapped[index] = builder.float64_add(mapped[lhs_id], mapped[rhs_id]);
+      continue;
+    }
+    if (node.opcode == Opcode::kFloatSubtract) {
+      mapped[index] =
+          builder.float64_subtract(mapped[lhs_id], mapped[rhs_id]);
+      continue;
+    }
+    if (node.opcode == Opcode::kFloatMultiply) {
+      mapped[index] =
+          builder.float64_multiply(mapped[lhs_id], mapped[rhs_id]);
+      continue;
+    }
     if (known_constant[lhs_id] && known_constant[rhs_id]) {
       constant_value[index] = fold_binary(
           node.opcode, constant_value[lhs_id], constant_value[rhs_id]);

@@ -21,8 +21,12 @@ constexpr int kArgumentAndReturn = 10;
 constexpr int kArgumentBase = 5;
 constexpr int kScratch0 = 6;
 constexpr int kScratch1 = 7;
+constexpr int kFloatScratch0 = 0;
+constexpr int kFloatScratch1 = 1;
 constexpr std::array<int, 8> kAllocationRegisters = {11, 12, 13, 14,
                                                      15, 16, 17, 28};
+constexpr std::array<int, 8> kFloatAllocationRegisters = {11, 12, 13, 14,
+                                                          15, 16, 17, 18};
 constexpr std::size_t kMaximumStackSize = 2032;
 constexpr std::size_t kMaximumAddressableParameters = 256;
 
@@ -51,6 +55,34 @@ class Assembler final {
 
   void store(int source, int base, std::size_t byte_offset) {
     emit_s(static_cast<std::int32_t>(byte_offset), source, base, 3, 0x23);
+  }
+
+  void move_word_to_float(int destination, int source) {
+    emit_r(0x79, 0, source, 0, destination, 0x53);
+  }
+
+  void move_float_to_word(int destination, int source) {
+    emit_r(0x71, 0, source, 0, destination, 0x53);
+  }
+
+  void load_float(int destination, int base, std::size_t byte_offset) {
+    emit_i(static_cast<std::int32_t>(byte_offset), base, 3, destination, 0x07);
+  }
+
+  void store_float(int source, int base, std::size_t byte_offset) {
+    emit_s(static_cast<std::int32_t>(byte_offset), source, base, 3, 0x27);
+  }
+
+  void add_float(int destination, int lhs, int rhs) {
+    emit_r(0x01, rhs, lhs, 0, destination, 0x53);
+  }
+
+  void subtract_float(int destination, int lhs, int rhs) {
+    emit_r(0x05, rhs, lhs, 0, destination, 0x53);
+  }
+
+  void multiply_float(int destination, int lhs, int rhs) {
+    emit_r(0x09, rhs, lhs, 0, destination, 0x53);
   }
 
   void add(int destination, int lhs, int rhs) {
@@ -228,6 +260,10 @@ int physical_register(const ValueLocation& location) noexcept {
   return kAllocationRegisters[location.register_index];
 }
 
+int physical_float_register(const ValueLocation& location) noexcept {
+  return kFloatAllocationRegisters[location.register_index];
+}
+
 std::size_t spill_offset(const ValueLocation& location) noexcept {
   return location.spill_slot * sizeof(ir::Word);
 }
@@ -238,6 +274,15 @@ int load_operand(Assembler* assembler, const ValueLocation& location,
     return physical_register(location);
   }
   assembler->load(scratch, kStackPointer, spill_offset(location));
+  return scratch;
+}
+
+int load_float_operand(Assembler* assembler, const ValueLocation& location,
+                       int scratch) {
+  if (location.in_register()) {
+    return physical_float_register(location);
+  }
+  assembler->load_float(scratch, kStackPointer, spill_offset(location));
   return scratch;
 }
 
@@ -275,6 +320,19 @@ LoweringResult lower_impl(const ir::Function& function) {
     const ValueLocation& destination = allocation.locations[index];
     switch (node.opcode) {
       case ir::Opcode::kParameter: {
+        if (node.type == ir::ValueType::kFloat64) {
+          const int target = destination.in_register()
+                                 ? physical_float_register(destination)
+                                 : kFloatScratch0;
+          assembler.load_float(
+              target, kArgumentBase,
+              static_cast<std::size_t>(node.immediate) * sizeof(ir::Word));
+          if (!destination.in_register()) {
+            assembler.store_float(target, kStackPointer,
+                                  spill_offset(destination));
+          }
+          break;
+        }
         const int target = destination.in_register()
                                ? physical_register(destination)
                                : kScratch0;
@@ -287,6 +345,18 @@ LoweringResult lower_impl(const ir::Function& function) {
         break;
       }
       case ir::Opcode::kConstant: {
+        if (node.type == ir::ValueType::kFloat64) {
+          const int target = destination.in_register()
+                                 ? physical_float_register(destination)
+                                 : kFloatScratch0;
+          assembler.move_immediate(kScratch0, node.immediate);
+          assembler.move_word_to_float(target, kScratch0);
+          if (!destination.in_register()) {
+            assembler.store_float(target, kStackPointer,
+                                  spill_offset(destination));
+          }
+          break;
+        }
         const int target = destination.in_register()
                                ? physical_register(destination)
                                : kScratch0;
@@ -318,12 +388,43 @@ LoweringResult lower_impl(const ir::Function& function) {
         }
         break;
       }
+      case ir::Opcode::kFloatAdd:
+      case ir::Opcode::kFloatSubtract:
+      case ir::Opcode::kFloatMultiply: {
+        const int lhs = load_float_operand(
+            &assembler, allocation.locations[node.lhs.id()], kFloatScratch0);
+        const int rhs = load_float_operand(
+            &assembler, allocation.locations[node.rhs.id()], kFloatScratch1);
+        const int target = destination.in_register()
+                               ? physical_float_register(destination)
+                               : kFloatScratch0;
+        if (node.opcode == ir::Opcode::kFloatAdd) {
+          assembler.add_float(target, lhs, rhs);
+        } else if (node.opcode == ir::Opcode::kFloatSubtract) {
+          assembler.subtract_float(target, lhs, rhs);
+        } else {
+          assembler.multiply_float(target, lhs, rhs);
+        }
+        if (!destination.in_register()) {
+          assembler.store_float(target, kStackPointer,
+                                spill_offset(destination));
+        }
+        break;
+      }
     }
   }
 
   const ValueLocation& returned =
       allocation.locations[function.return_value().id()];
-  if (returned.in_register()) {
+  if (function.return_type() == ir::ValueType::kFloat64) {
+    if (returned.in_register()) {
+      assembler.move_float_to_word(kArgumentAndReturn,
+                                   physical_float_register(returned));
+    } else {
+      assembler.load(kArgumentAndReturn, kStackPointer,
+                     spill_offset(returned));
+    }
+  } else if (returned.in_register()) {
     assembler.move_register(kArgumentAndReturn, physical_register(returned));
   } else {
     assembler.load(kArgumentAndReturn, kStackPointer, spill_offset(returned));

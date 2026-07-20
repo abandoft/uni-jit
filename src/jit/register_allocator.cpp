@@ -31,7 +31,10 @@ RegisterAllocation allocate_impl(const ir::Function& function,
     const ir::Node& node = function.nodes()[index];
     if (node.opcode == ir::Opcode::kAdd ||
         node.opcode == ir::Opcode::kSubtract ||
-        node.opcode == ir::Opcode::kMultiply) {
+        node.opcode == ir::Opcode::kMultiply ||
+        node.opcode == ir::Opcode::kFloatAdd ||
+        node.opcode == ir::Opcode::kFloatSubtract ||
+        node.opcode == ir::Opcode::kFloatMultiply) {
       note_use(&last_use, node.lhs, index);
       note_use(&last_use, node.rhs, index);
     }

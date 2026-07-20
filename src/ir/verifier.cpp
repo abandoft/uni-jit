@@ -12,7 +12,15 @@ Status invalid_node(std::size_t index, const char* message) {
 
 bool is_binary(Opcode opcode) {
   return opcode == Opcode::kAdd || opcode == Opcode::kSubtract ||
-         opcode == Opcode::kMultiply;
+         opcode == Opcode::kMultiply || opcode == Opcode::kFloatAdd ||
+         opcode == Opcode::kFloatSubtract ||
+         opcode == Opcode::kFloatMultiply;
+}
+
+bool is_float_binary(Opcode opcode) {
+  return opcode == Opcode::kFloatAdd ||
+         opcode == Opcode::kFloatSubtract ||
+         opcode == Opcode::kFloatMultiply;
 }
 
 }  // namespace
@@ -28,7 +36,8 @@ Status verify(const Function& function) {
     const Node& node = nodes[index];
     if (index < function.parameter_count()) {
       if (node.opcode != Opcode::kParameter ||
-          node.immediate != static_cast<Word>(index)) {
+          node.immediate != static_cast<Word>(index) ||
+          node.type != function.parameter_type(index)) {
         return invalid_node(index, "parameter nodes must lead the function");
       }
       continue;
@@ -47,6 +56,15 @@ Status verify(const Function& function) {
         node.rhs.id() >= index) {
       return invalid_node(index,
                           "binary operands must be earlier SSA definitions");
+    }
+    const ValueType expected_type = is_float_binary(node.opcode)
+                                        ? ValueType::kFloat64
+                                        : ValueType::kWord;
+    if (node.type != expected_type ||
+        nodes[node.lhs.id()].type != expected_type ||
+        nodes[node.rhs.id()].type != expected_type) {
+      return invalid_node(index,
+                          "binary operands and result must have one type");
     }
   }
 
