@@ -36,9 +36,9 @@ Float64 tag. This explicit entry point keeps numeric dispatch deterministic.
 
 Both entry points publish a verified baseline immediately. Straight-line
 callables claim background optimization after 64 invocations. Accepted numeric
-loops also derive loop-latch executions from their constant start and nonzero
-constant step plus guarded integer limit, and can claim optimization after
-10,000 iterations in one call.
+loops also derive loop-latch executions from their constant or guarded
+parameter start, nonzero constant step, and guarded integer limit, and can
+claim optimization after 10,000 iterations in one call.
 The bounded worker compiles an immutable copy of numeric bytecode and constants;
 it never reads a Lua stack, closure, `Proto`, or other garbage-collected object.
 Publication checks the captured baseline generation so late work cannot replace
@@ -81,11 +81,12 @@ semantic fallback. Later frontend tiers will add guarded exits and
 deoptimization for the broader Lua language.
 
 The first CFG path also accepts one structured numeric `for` loop when its
-start and nonzero step are integer constants. The limit is a guarded runtime
-integer. Positive and negative steps preserve Lua 5.5's direction-sensitive
-zero-iteration and wrapping-integer semantics, including strides equal to
-`math.mininteger`. Loop-carried Lua registers become explicit CFG block
-parameters, and a bytecode liveness scan avoids carrying dead setup registers.
+start is an integer constant or guarded function parameter and its nonzero step
+is an integer constant. The limit is a guarded runtime integer. Positive and
+negative steps preserve Lua 5.5's direction-sensitive zero-iteration and
+wrapping-integer semantics, including strides equal to `math.mininteger`.
+Loop-carried Lua registers become explicit CFG block parameters, and a bytecode
+liveness scan avoids carrying dead setup registers.
 The baseline path emits one scalar body copy. The optimized path uses
 overflow-safe eight-way body unrolling whenever the seven-step group offset is
 representable, otherwise it safely retains a scalar group; both forms use a
