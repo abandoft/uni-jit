@@ -75,6 +75,14 @@ Status verify(const Function& function) {
       expected_call_argument += node.argument_count;
       continue;
     }
+    if (node.opcode == Opcode::kSafepoint) {
+      if (node.immediate < 0 || node.type != ValueType::kWord ||
+          node.lhs.valid() || node.rhs.valid() || node.argument_begin != 0 ||
+          node.argument_count != 0) {
+        return invalid_node(index, "safepoint node is malformed");
+      }
+      continue;
+    }
     if (!is_binary(node.opcode)) {
       return invalid_node(index, "unknown SSA opcode");
     }

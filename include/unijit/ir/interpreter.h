@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "unijit/ir/function.h"
+#include "unijit/runtime/execution_context.h"
 #include "unijit/status.h"
 
 namespace unijit::ir {
@@ -19,11 +20,13 @@ struct EvaluationResult final {
 class Interpreter final {
  public:
   static EvaluationResult evaluate(const Function& function, const Word* args,
-                                   std::size_t arg_count);
+                                   std::size_t arg_count,
+                                   runtime::ExecutionContext* context = nullptr);
 
   static EvaluationResult evaluate(const Function& function,
-                                   const std::vector<Word>& args) {
-    return evaluate(function, args.data(), args.size());
+                                   const std::vector<Word>& args,
+                                   runtime::ExecutionContext* context = nullptr) {
+    return evaluate(function, args.data(), args.size(), context);
   }
 };
 

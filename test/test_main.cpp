@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -118,6 +119,45 @@ void test_execution_context_lifecycle() {
     expect(context.exit_reason() == unijit::runtime::ExitReason::kNone,
            "successful invocation must leave no exit reason");
   }
+}
+
+void test_safepoint_ir_and_interpreter() {
+  FunctionBuilder builder(0);
+  const Value result = builder.constant(73);
+  expect(builder.safepoint(42).valid(), "safepoint must produce an effect value");
+  expect(builder.set_return(result).ok(),
+         "safepoint fixture must have a return value");
+  const Function function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(), "safepoint IR must verify");
+
+  const auto optimization = unijit::ir::Optimizer::run(function);
+  expect(optimization.ok(), "safepoint IR must optimize");
+  if (optimization.ok()) {
+    const bool preserved = std::any_of(
+        optimization.function.nodes().begin(),
+        optimization.function.nodes().end(), [](const unijit::ir::Node& node) {
+          return node.opcode == unijit::ir::Opcode::kSafepoint;
+        });
+    expect(preserved, "optimizer must preserve a dead-result safepoint");
+  }
+
+  unijit::runtime::ExecutionContext context;
+  context.request_interrupt();
+  const auto interrupted = Interpreter::evaluate(function, nullptr, 0, &context);
+  expect(!interrupted.ok() &&
+             interrupted.status.code() ==
+                 unijit::StatusCode::kExecutionInterrupted &&
+             interrupted.status.location() == 42 &&
+             context.exit_reason() ==
+                 unijit::runtime::ExitReason::kSafepoint &&
+             context.exit_site() == 42,
+         "interpreter safepoints must report interruption and site identity");
+
+  context.clear_interrupt();
+  const auto completed = Interpreter::evaluate(function, nullptr, 0, &context);
+  expect(completed.ok() && completed.value == 73 &&
+             context.exit_reason() == unijit::runtime::ExitReason::kNone,
+         "clear safepoints must continue without changing the result");
 }
 
 void test_differential_arithmetic() {
@@ -645,6 +685,7 @@ int main() {
   test_verifier_rejects_forward_reference();
   test_constant_native_function();
   test_execution_context_lifecycle();
+  test_safepoint_ir_and_interpreter();
   test_differential_arithmetic();
   test_float64_ir_and_interpreter();
   test_verifier_rejects_mixed_arithmetic();

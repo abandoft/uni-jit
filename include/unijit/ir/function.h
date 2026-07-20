@@ -51,6 +51,7 @@ enum class Opcode : std::uint8_t {
   kFloatSubtract,
   kFloatMultiply,
   kCall,
+  kSafepoint,
 };
 
 enum class ValueType : std::uint8_t {
@@ -124,6 +125,7 @@ class FunctionBuilder final {
   Value float64_multiply(Value lhs, Value rhs);
   Value call(RuntimeHelper helper, std::vector<Value> arguments,
              ValueType result_type = ValueType::kWord);
+  Value safepoint(std::size_t site);
   Status set_return(Value value);
 
   Function build() && noexcept;

@@ -475,6 +475,10 @@ LoweringResult lower_impl(const ir::Function& function) {
         restore_live_across_call(&assembler, function, allocation, index);
         break;
       }
+      case ir::Opcode::kSafepoint:
+        return {{StatusCode::kCodeGenerationFailed,
+                 "AArch64 safepoint lowering is unavailable"},
+                {}, 0};
     }
   }
 

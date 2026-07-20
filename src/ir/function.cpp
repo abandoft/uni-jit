@@ -148,6 +148,17 @@ Value FunctionBuilder::call(RuntimeHelper helper,
   return Value{id};
 }
 
+Value FunctionBuilder::safepoint(std::size_t site) {
+  if (function_.nodes_.size() >= Value::kInvalidId ||
+      site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {
+    return {};
+  }
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  function_.nodes_.push_back(
+      Node{Opcode::kSafepoint, {}, {}, static_cast<Word>(site)});
+  return Value{id};
+}
+
 Status FunctionBuilder::set_return(Value value) {
   if (!value.valid() || value.id() >= function_.nodes_.size()) {
     return {StatusCode::kInvalidArgument, "return value is not in the function"};

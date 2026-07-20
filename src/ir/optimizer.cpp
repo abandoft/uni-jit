@@ -53,7 +53,8 @@ PassResult transform_once(const Function& input) {
   std::vector<bool> live(node_count, false);
   live[input.return_value().id()] = true;
   for (std::size_t index = 0; index < node_count; ++index) {
-    if (input.nodes()[index].opcode == Opcode::kCall) {
+    if (input.nodes()[index].opcode == Opcode::kCall ||
+        input.nodes()[index].opcode == Opcode::kSafepoint) {
       live[index] = true;
     }
   }
@@ -121,6 +122,12 @@ PassResult transform_once(const Function& input) {
       }
       mapped[index] = builder.call(unpack_runtime_helper(node.immediate),
                                    std::move(arguments), node.type);
+      continue;
+    }
+
+    if (node.opcode == Opcode::kSafepoint) {
+      mapped[index] = builder.safepoint(
+          static_cast<std::size_t>(node.immediate));
       continue;
     }
 

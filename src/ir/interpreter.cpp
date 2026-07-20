@@ -40,6 +40,7 @@ Word evaluate_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
     case Opcode::kParameter:
     case Opcode::kConstant:
     case Opcode::kCall:
+    case Opcode::kSafepoint:
       return 0;
   }
   return 0;
@@ -49,7 +50,8 @@ Word evaluate_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
 
 EvaluationResult Interpreter::evaluate(const Function& function,
                                        const Word* args,
-                                       std::size_t arg_count) {
+                                       std::size_t arg_count,
+                                       runtime::ExecutionContext* context) {
   const Status verification = verify(function);
   if (!verification.ok()) {
     return {verification, 0};
@@ -63,6 +65,9 @@ EvaluationResult Interpreter::evaluate(const Function& function,
     return {{StatusCode::kInvalidArgument,
              "argument storage is null for a non-empty signature"},
             0};
+  }
+  if (context != nullptr) {
+    context->clear_exit();
   }
 
   try {
@@ -90,6 +95,16 @@ EvaluationResult Interpreter::evaluate(const Function& function,
               helper_arguments.data(), helper_arguments.size());
           break;
         }
+        case Opcode::kSafepoint:
+          values[index] = 0;
+          if (context != nullptr && context->interrupt_requested()) {
+            const auto site = static_cast<std::size_t>(node.immediate);
+            context->record_exit(runtime::ExitReason::kSafepoint, site);
+            return {{StatusCode::kExecutionInterrupted,
+                     "execution interrupted at a safepoint", site},
+                    0};
+          }
+          break;
         case Opcode::kAdd:
         case Opcode::kSubtract:
         case Opcode::kMultiply:
