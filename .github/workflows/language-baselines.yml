@@ -112,11 +112,21 @@ jobs:
           --warmup 10000 --iterations 100000 --samples 3
           > build/quickjs/quickjs-targets.json
 
+      - name: Enforce QuickJS commercial performance floor
+        run: >-
+          python3 tool/performance_gate.py quickjs
+          build/quickjs/quickjs-targets.json
+          --minimum-stock-speedup 1.25
+          --minimum-v8-jitless-speedup 1.10
+          > build/quickjs/quickjs-performance-gate.json
+
       - name: Retain QuickJS target baseline
         uses: actions/upload-artifact@v7
         with:
           name: quickjs-target-baseline
-          path: build/quickjs/quickjs-targets.json
+          path: |
+            build/quickjs/quickjs-targets.json
+            build/quickjs/quickjs-performance-gate.json
           if-no-files-found: error
 
   pocketpy-reference-baseline:
@@ -175,9 +185,20 @@ jobs:
           --warmup 10000 --iterations 100000 --samples 3
           > build/pocketpy/pocketpy-targets.json
 
+      - name: Enforce PocketPy commercial performance floor
+        run: >-
+          python3 tool/performance_gate.py pocketpy
+          build/pocketpy/pocketpy-targets.json
+          --minimum-stock-speedup 1.25
+          --minimum-cpython-speedup 1.10
+          --minimum-cpython-jit-speedup 1.10
+          > build/pocketpy/pocketpy-performance-gate.json
+
       - name: Retain PocketPy target baseline
         uses: actions/upload-artifact@v7
         with:
           name: pocketpy-target-baseline
-          path: build/pocketpy/pocketpy-targets.json
+          path: |
+            build/pocketpy/pocketpy-targets.json
+            build/pocketpy/pocketpy-performance-gate.json
           if-no-files-found: error
