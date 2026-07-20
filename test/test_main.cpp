@@ -1055,6 +1055,8 @@ void test_control_flow_safepoint() {
   auto compilation = Compiler::compile(function);
   expect(compilation.ok(), "CFG safepoint loop must compile");
   if (compilation.ok()) {
+    expect(compilation.function->requires_context(),
+           "compiled CFG safepoints must require an execution context");
     context.request_interrupt();
     const auto interrupted =
         compilation.function->invoke(args.data(), args.size(), &context);
@@ -1070,6 +1072,11 @@ void test_control_flow_safepoint() {
         compilation.function->invoke(args.data(), args.size(), &context);
     expect(completed.ok() && completed.value == 10,
            "native CFG loop must continue when interruption is clear");
+    const auto completed_with_local_context =
+        compilation.function->invoke(args.data(), args.size());
+    expect(completed_with_local_context.ok() &&
+               completed_with_local_context.value == 10,
+           "CFG invocation must provision a local safepoint context");
     expect(compilation.function->native_entry()(args.data(), nullptr) == 10,
            "null execution contexts must bypass CFG safepoints");
   }

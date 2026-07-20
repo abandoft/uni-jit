@@ -186,8 +186,14 @@ CompilationResult Compiler::compile(const ir::ControlFlowFunction& function) {
 
     CompilationStats stats{lowering.code.size(), lowering.spill_slots,
                            function.nodes().size(), function.nodes().size()};
+    const bool requires_context = std::any_of(
+        function.nodes().begin(), function.nodes().end(),
+        [](const ir::ControlNode& node) {
+          return node.opcode == ir::ControlOpcode::kSafepoint;
+        });
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
-        std::move(implementation), function.parameter_count(), stats, false));
+        std::move(implementation), function.parameter_count(), stats,
+        requires_context));
     return {Status::ok_status(), std::move(compiled)};
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
