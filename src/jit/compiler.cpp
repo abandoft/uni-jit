@@ -20,14 +20,12 @@
 namespace unijit::jit {
 
 struct CompiledFunction::Impl final {
-  using Entry = ir::Word (*)(const ir::Word*);
-
   detail::ExecutableMemory memory;
 
-  Entry entry() const noexcept {
-    static_assert(sizeof(Entry) == sizeof(void*),
+  NativeEntry entry() const noexcept {
+    static_assert(sizeof(NativeEntry) == sizeof(void*),
                   "native entry and data pointers must have equal size");
-    Entry result = nullptr;
+    NativeEntry result = nullptr;
     void* address = memory.address();
     std::memcpy(&result, &address, sizeof(result));
     return result;
@@ -46,6 +44,10 @@ CompiledFunction::CompiledFunction(CompiledFunction&&) noexcept = default;
 CompiledFunction& CompiledFunction::operator=(CompiledFunction&&) noexcept =
     default;
 
+NativeEntry CompiledFunction::native_entry() const noexcept {
+  return impl_ == nullptr ? nullptr : impl_->entry();
+}
+
 ir::EvaluationResult CompiledFunction::invoke(const ir::Word* args,
                                               std::size_t arg_count) const {
   if (arg_count != parameter_count_) {
@@ -58,12 +60,13 @@ ir::EvaluationResult CompiledFunction::invoke(const ir::Word* args,
              "argument storage is null for a non-empty signature"},
             0};
   }
-  if (impl_ == nullptr || impl_->entry() == nullptr) {
+  const NativeEntry entry = native_entry();
+  if (entry == nullptr) {
     return {{StatusCode::kCodeGenerationFailed,
              "compiled function has no published entry point"},
             0};
   }
-  return {Status::ok_status(), impl_->entry()(args)};
+  return {Status::ok_status(), entry(args)};
 }
 
 CompilationResult Compiler::compile(const ir::Function& function) {

@@ -11,6 +11,8 @@
 
 namespace unijit::jit {
 
+using NativeEntry = ir::Word (*)(const ir::Word*);
+
 struct CompilationStats final {
   std::size_t code_size{0};
   std::size_t spill_slots{0};
@@ -33,6 +35,8 @@ class CompiledFunction final {
   ir::EvaluationResult invoke(const std::vector<ir::Word>& args) const {
     return invoke(args.data(), args.size());
   }
+
+  NativeEntry native_entry() const noexcept;
 
   const CompilationStats& stats() const noexcept { return stats_; }
 
