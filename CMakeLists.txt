@@ -17,6 +17,7 @@ option(UNIJIT_BUILD_TESTS "Build UniJIT tests" ON)
 option(UNIJIT_BUILD_BENCHMARKS "Build UniJIT benchmarks" OFF)
 option(UNIJIT_BUILD_LUA_REFERENCE "Build the pinned stock Lua runtime" OFF)
 option(UNIJIT_BUILD_LUAJIT_REFERENCE "Build the pinned LuaJIT runtime" OFF)
+option(UNIJIT_BUILD_QUICKJS_REFERENCE "Build the pinned stock QuickJS runtime" OFF)
 option(UNIJIT_WARNINGS_AS_ERRORS "Treat UniJIT warnings as errors" OFF)
 
 include(GNUInstallDirs)
@@ -45,6 +46,13 @@ if(UNIJIT_BUILD_LUAJIT_REFERENCE)
     message(FATAL_ERROR "LuaJIT submodule is missing; run git submodule update --init")
   endif()
   add_subdirectory(benchmark/references)
+endif()
+
+if(UNIJIT_BUILD_QUICKJS_REFERENCE)
+  if(NOT EXISTS "${PROJECT_SOURCE_DIR}/third/quickjs/quickjs.h")
+    message(FATAL_ERROR "QuickJS submodule is missing; run git submodule update --init")
+  endif()
+  add_subdirectory(frontend/quickjs)
 endif()
 
 install(
