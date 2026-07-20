@@ -849,6 +849,45 @@ void test_control_flow_rejects_mixed_edge_types() {
          "CFG builder must reject a Word edge argument for Float64 parameter");
 }
 
+void test_control_flow_float64_comparisons() {
+  using unijit::ir::ValueType;
+  unijit::ir::ControlFlowBuilder builder(
+      std::vector<ValueType>{ValueType::kFloat64, ValueType::kFloat64});
+  const Value less =
+      builder.float64_less_than(builder.parameter(0), builder.parameter(1));
+  const Value less_equal =
+      builder.float64_less_equal(builder.parameter(0), builder.parameter(1));
+  const Value encoded =
+      builder.add(builder.multiply(less, builder.constant(10)), less_equal);
+  expect(builder.set_return(encoded).ok(),
+         "Float64 CFG comparison fixture must return its encoded flags");
+  const unijit::ir::ControlFlowFunction function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "Float64 CFG comparisons must satisfy type verification");
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "Float64 CFG comparisons must compile");
+
+  const auto check = [&](double lhs, double rhs, Word expected,
+                         const char *message) {
+    const std::array<Word, 2> arguments = {
+        unijit::ir::pack_float64(lhs), unijit::ir::pack_float64(rhs)};
+    const auto interpreted = unijit::ir::ControlFlowInterpreter::evaluate(
+        function, arguments.data(), arguments.size());
+    expect(interpreted.ok() && interpreted.value == expected, message);
+    if (compilation.ok()) {
+      const auto native =
+          compilation.function->invoke(arguments.data(), arguments.size());
+      expect(native.ok() && native.value == interpreted.value,
+             "native Float64 CFG comparison must match the interpreter");
+    }
+  };
+  check(1.0, 2.0, 11, "less operands must set both comparison flags");
+  check(2.0, 2.0, 1, "equal operands must only set the inclusive flag");
+  check(3.0, 2.0, 0, "greater operands must clear both comparison flags");
+  check(std::numeric_limits<double>::quiet_NaN(), 2.0, 0,
+        "unordered operands must clear both comparison flags");
+}
+
 void test_control_flow_merge() {
   unijit::ir::ControlFlowBuilder builder(2);
   const unijit::ir::Block take_lhs = builder.create_block(0);
@@ -1086,6 +1125,7 @@ int main() {
   test_control_flow_counted_loop();
   test_control_flow_float64_loop();
   test_control_flow_rejects_mixed_edge_types();
+  test_control_flow_float64_comparisons();
   test_control_flow_merge();
   test_control_flow_parallel_edge_copy();
   test_control_flow_rejects_non_dominating_value();
