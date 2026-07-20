@@ -75,3 +75,12 @@ native tier because repeating the same compilation would add latency without
 improving code. QuickJS and Lua still need frontend-owned profiling and real
 baseline/optimized installation, and broader language regions still need
 background scheduling away from latency-sensitive runtime threads.
+
+The shared background execution primitive is now
+`CompilationScheduler`. Frontends can deduplicate an expected generation,
+bound queued work by task and byte budgets, select urgency, and retain a ticket
+for cancellation and completion. The scheduler never owns tier semantics:
+every job must recheck its cancellation token and call
+`publish_optimized(expected_generation)` so a late result cannot overwrite a
+newer baseline or optimized version. The complete contract is specified in
+`doc/COMPILATION_SCHEDULER.md`.

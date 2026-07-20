@@ -48,6 +48,14 @@ compilation retry delay, and exercises explicit restartable fallback after an
 assumption exit. The installed-package consumer compiles against the public
 tiering API as an external project.
 
+The compilation-scheduler stress gate holds all workers behind a deterministic
+start barrier while many producer threads submit repeated identity/generation
+pairs. It verifies global deduplication, weighted admission, queued and active
+cancellation, bounded telemetry, concurrent production compilation, W^X
+publication, code-cache residency, native execution, drain shutdown, and exact
+lifecycle counter reconciliation. Hosted qualification expands the corpus to
+16 producers and 20,000 submissions and repeats it under ThreadSanitizer.
+
 ## Performance gates
 
 `tool/performance_gate.py` consumes retained benchmark JSON instead of parsing

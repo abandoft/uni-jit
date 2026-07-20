@@ -22,6 +22,9 @@ immutable recovery metadata, and ABI-boundary frame reconstruction.
 quiescent invalidation, and stale cache-generation retirement.
 [doc/TIERING.md](doc/TIERING.md) defines saturating hotness profiles, single
 compiler claims, immutable version switching, and explicit baseline retry.
+[doc/COMPILATION_SCHEDULER.md](doc/COMPILATION_SCHEDULER.md) defines bounded
+background admission, global version deduplication, cooperative cancellation,
+weighted priorities, deterministic shutdown, and scheduler telemetry.
 [doc/QUALIFICATION.md](doc/QUALIFICATION.md) defines deterministic fuzzing,
 concurrency stress, sanitizers, and commercial performance floors.
 [doc/LUA_FRONTEND.md](doc/LUA_FRONTEND.md) describes the first stock Lua 5.5
