@@ -227,6 +227,55 @@ OptimizationExitStatePreparation prepare_optimization_exit_states(
   }
 }
 
+OptimizationExitStatePreparation prepare_optimization_exit_states(
+    const ir::ControlFlowFunction& function,
+    const runtime::DeoptimizationTable& requested) {
+  try {
+    std::vector<ir::OptimizationExitState> exit_states;
+    for (const runtime::DeoptimizationRecord& record : requested.records()) {
+      ir::OptimizationExitState exit_state;
+      exit_state.exit = guard_value(function, record.site);
+      for (const runtime::RecoveryOperation& operation : record.recovery) {
+        if (operation.source != runtime::RecoverySource::kCapturedValue) {
+          continue;
+        }
+        if (!exit_state.exit.valid()) {
+          return {{StatusCode::kInvalidArgument,
+                   "CFG captured recovery values require a native guard site",
+                   record.site},
+                  {}};
+        }
+        if (!control_value_available(function, operation.source_value,
+                                     exit_state.exit)) {
+          return {{StatusCode::kInvalidArgument,
+                   "CFG captured recovery value does not dominate its guard",
+                   record.site},
+                  {}};
+        }
+        if (function.value_type(operation.source_value) != operation.type) {
+          return {{StatusCode::kInvalidArgument,
+                   "CFG captured recovery value type does not match SSA",
+                   record.site},
+                  {}};
+        }
+        if (std::find(exit_state.live_values.begin(),
+                      exit_state.live_values.end(), operation.source_value) ==
+            exit_state.live_values.end()) {
+          exit_state.live_values.push_back(operation.source_value);
+        }
+      }
+      if (!exit_state.live_values.empty()) {
+        exit_states.push_back(std::move(exit_state));
+      }
+    }
+    return {Status::ok_status(), std::move(exit_states)};
+  } catch (const std::bad_alloc&) {
+    return {{StatusCode::kResourceExhausted,
+             "unable to prepare CFG optimizer exit state"},
+            {}};
+  }
+}
+
 template <typename FunctionType>
 Status append_assumption_deoptimization(
     const FunctionType& function,
@@ -345,15 +394,16 @@ DeoptimizationPreparation prepare_deoptimization(
 }
 
 DeoptimizationPreparation prepare_deoptimization(
-    const ir::ControlFlowFunction& function,
+    const ir::ControlFlowFunction& input,
+    const ir::ControlFlowFunction& lowered,
     const runtime::DeoptimizationTable& requested,
     const runtime::AssumptionSet& assumptions) {
-  const Status validation = requested.validate(function.parameter_count());
+  const Status validation = requested.validate(input.parameter_count());
   if (!validation.ok()) {
     return {validation, {}};
   }
   for (const runtime::DeoptimizationRecord& record : requested.records()) {
-    if (!has_guard_site(function, record.site) &&
+    if (!has_guard_site(input, record.site) &&
         assumptions.find(record.site) == nullptr) {
       return {{StatusCode::kInvalidArgument,
                "CFG deoptimization metadata does not identify an exit site",
@@ -363,7 +413,7 @@ DeoptimizationPreparation prepare_deoptimization(
   }
   for (const runtime::AssumptionDependency& dependency :
        assumptions.dependencies()) {
-    if (has_runtime_exit_site(function, dependency.site)) {
+    if (has_runtime_exit_site(input, dependency.site)) {
       return {{StatusCode::kInvalidArgument,
                "assumption and CFG runtime exit sites must be distinct",
                dependency.site},
@@ -373,7 +423,7 @@ DeoptimizationPreparation prepare_deoptimization(
 
   runtime::DeoptimizationTable result;
   try {
-    for (const ir::ControlNode& node : function.nodes()) {
+    for (const ir::ControlNode& node : lowered.nodes()) {
       if (node.opcode != ir::ControlOpcode::kGuardFloatNonzero) {
         continue;
       }
@@ -395,14 +445,14 @@ DeoptimizationPreparation prepare_deoptimization(
       fallback.resume_offset = site;
       fallback.reason = runtime::DeoptimizationReason::kGuardFailed;
       fallback.recovery.push_back(runtime::RecoveryOperation::exit_value(
-          function.parameter_count(), ir::ValueType::kFloat64));
+          input.parameter_count(), ir::ValueType::kFloat64));
       const Status addition = result.add(fallback);
       if (!addition.ok()) {
         return {addition, {}};
       }
     }
     const Status assumptions_status = append_assumption_deoptimization(
-        function, assumptions, requested, &result);
+        input, assumptions, requested, &result);
     if (!assumptions_status.ok()) {
       return {assumptions_status, {}};
     }
@@ -473,39 +523,60 @@ StackMapRequirementPreparation prepare_stack_map_requirements(
 }
 
 StackMapRequirementPreparation prepare_stack_map_requirements(
-    const ir::ControlFlowFunction& function,
-    const runtime::DeoptimizationTable& deoptimization) {
+    const ir::ControlFlowFunction& input,
+    const ir::ControlFlowFunction& lowered,
+    const runtime::DeoptimizationTable& deoptimization,
+    const ir::ControlFlowOptimizationResult* optimization) {
   try {
     StackMapRequirementPreparation result;
     result.status = Status::ok_status();
     for (const runtime::DeoptimizationRecord& record :
          deoptimization.records()) {
-      const ir::Value exit = guard_value(function, record.site);
+      const ir::Value input_exit = guard_value(input, record.site);
+      const ir::Value lowered_exit = guard_value(lowered, record.site);
       detail::StackMapRequirement requirement;
       requirement.site = record.site;
       for (const runtime::RecoveryOperation& operation : record.recovery) {
         if (operation.source != runtime::RecoverySource::kCapturedValue) {
           continue;
         }
-        if (!exit.valid() ||
-            !control_value_available(function, operation.source_value, exit)) {
+        if (!input_exit.valid() || !control_value_available(
+                                       input, operation.source_value,
+                                       input_exit)) {
           return {{StatusCode::kInvalidArgument,
                    "CFG captured recovery value does not dominate its guard",
                    record.site},
                   {}, {}};
         }
-        if (function.value_type(operation.source_value) != operation.type) {
+        if (input.value_type(operation.source_value) != operation.type) {
           return {{StatusCode::kInvalidArgument,
                    "CFG captured recovery value type does not match SSA",
                    record.site},
                   {}, {}};
         }
+        const ir::Value lowered_value =
+            optimization == nullptr
+                ? operation.source_value
+                : optimization->map(operation.source_value);
+        if (!lowered_exit.valid() ||
+            !control_value_available(lowered, lowered_value, lowered_exit)) {
+          return {{StatusCode::kCodeGenerationFailed,
+                   "CFG optimizer did not retain a captured recovery value",
+                   record.site},
+                  {}, {}};
+        }
+        if (lowered.value_type(lowered_value) != operation.type) {
+          return {{StatusCode::kCodeGenerationFailed,
+                   "CFG captured recovery value changed type during optimization",
+                   record.site},
+                  {}, {}};
+        }
         if (std::find(requirement.values.begin(), requirement.values.end(),
-                      operation.source_value) == requirement.values.end()) {
-          requirement.values.push_back(operation.source_value);
+                      lowered_value) == requirement.values.end()) {
+          requirement.values.push_back(lowered_value);
         }
         result.bindings.push_back(
-            {record.site, operation.source_value, operation.source_value});
+            {record.site, operation.source_value, lowered_value});
       }
       if (!requirement.values.empty()) {
         result.requirements.push_back(std::move(requirement));
@@ -1163,27 +1234,49 @@ CompilationResult Compiler::compile(
 
 CompilationResult Compiler::compile(const ir::ControlFlowFunction& function) {
   return compile(function, runtime::DeoptimizationTable{},
-                 runtime::AssumptionSet{}, CompilationLimits{});
+                 runtime::AssumptionSet{}, CompilationOptions{});
+}
+
+CompilationResult Compiler::compile(const ir::ControlFlowFunction& function,
+                                    CompilationOptions options) {
+  return compile(function, runtime::DeoptimizationTable{},
+                 runtime::AssumptionSet{}, options);
 }
 
 CompilationResult Compiler::compile(const ir::ControlFlowFunction& function,
                                     CompilationLimits limits) {
   return compile(function, runtime::DeoptimizationTable{},
-                 runtime::AssumptionSet{}, limits);
+                 runtime::AssumptionSet{},
+                 CompilationOptions{OptimizationLevel::kOptimized, limits});
 }
 
 CompilationResult Compiler::compile(
     const ir::ControlFlowFunction& function,
     const runtime::DeoptimizationTable& deoptimization_table) {
   return compile(function, deoptimization_table, runtime::AssumptionSet{},
-                 CompilationLimits{});
+                 CompilationOptions{});
+}
+
+CompilationResult Compiler::compile(
+    const ir::ControlFlowFunction& function,
+    const runtime::DeoptimizationTable& deoptimization_table,
+    CompilationOptions options) {
+  return compile(function, deoptimization_table, runtime::AssumptionSet{},
+                 options);
 }
 
 CompilationResult Compiler::compile(
     const ir::ControlFlowFunction& function,
     const runtime::AssumptionSet& assumptions) {
   return compile(function, runtime::DeoptimizationTable{}, assumptions,
-                 CompilationLimits{});
+                 CompilationOptions{});
+}
+
+CompilationResult Compiler::compile(
+    const ir::ControlFlowFunction& function,
+    const runtime::AssumptionSet& assumptions, CompilationOptions options) {
+  return compile(function, runtime::DeoptimizationTable{}, assumptions,
+                 options);
 }
 
 CompilationResult Compiler::compile(
@@ -1191,15 +1284,24 @@ CompilationResult Compiler::compile(
     const runtime::DeoptimizationTable& deoptimization_table,
     const runtime::AssumptionSet& assumptions) {
   return compile(function, deoptimization_table, assumptions,
-                 CompilationLimits{});
+                 CompilationOptions{});
 }
 
 CompilationResult Compiler::compile(
     const ir::ControlFlowFunction& function,
     const runtime::DeoptimizationTable& deoptimization_table,
     const runtime::AssumptionSet& assumptions, CompilationLimits limits) {
+  return compile(
+      function, deoptimization_table, assumptions,
+      CompilationOptions{OptimizationLevel::kOptimized, limits});
+}
+
+CompilationResult Compiler::compile(
+    const ir::ControlFlowFunction& function,
+    const runtime::DeoptimizationTable& deoptimization_table,
+    const runtime::AssumptionSet& assumptions, CompilationOptions options) {
   const Status limit_status = validate_function_limits(
-      function, deoptimization_table, assumptions, limits);
+      function, deoptimization_table, assumptions, options.limits);
   if (!limit_status.ok()) {
     return {limit_status, nullptr};
   }
@@ -1208,31 +1310,59 @@ CompilationResult Compiler::compile(
     return {verification, nullptr};
   }
 
+  const OptimizationExitStatePreparation exit_state =
+      prepare_optimization_exit_states(function, deoptimization_table);
+  if (!exit_state.status.ok()) {
+    return {exit_state.status, nullptr};
+  }
+
+  std::optional<ir::ControlFlowOptimizationResult> optimization;
+  const ir::ControlFlowFunction* lowered = &function;
+  switch (options.optimization_level) {
+    case OptimizationLevel::kBaseline:
+      break;
+    case OptimizationLevel::kOptimized:
+      optimization.emplace(
+          ir::Optimizer::run(function, exit_state.exit_states));
+      if (!optimization->ok()) {
+        return {optimization->status, nullptr};
+      }
+      lowered = &optimization->function;
+      break;
+    default:
+      return {{StatusCode::kInvalidArgument,
+               "unknown compiler optimization level"},
+              nullptr};
+  }
+
   DeoptimizationPreparation deoptimization =
-      prepare_deoptimization(function, deoptimization_table, assumptions);
+      prepare_deoptimization(function, *lowered, deoptimization_table,
+                             assumptions);
   if (!deoptimization.status.ok()) {
     return {deoptimization.status, nullptr};
   }
   StackMapRequirementPreparation stack_map_requirements =
-      prepare_stack_map_requirements(function, deoptimization.table);
+      prepare_stack_map_requirements(
+          function, *lowered, deoptimization.table,
+          optimization.has_value() ? &*optimization : nullptr);
   if (!stack_map_requirements.status.ok()) {
     return {stack_map_requirements.status, nullptr};
   }
   const Status stack_map_limit = validate_stack_map_limits(
-      stack_map_requirements.requirements, limits);
+      stack_map_requirements.requirements, options.limits);
   if (!stack_map_limit.ok()) {
     return {stack_map_limit, nullptr};
   }
 
 #if defined(UNIJIT_TARGET_AARCH64)
   detail::aarch64::LoweringResult lowering = detail::aarch64::lower(
-      function, stack_map_requirements.requirements);
+      *lowered, stack_map_requirements.requirements);
 #elif defined(UNIJIT_TARGET_X86_64)
   detail::x86_64::LoweringResult lowering = detail::x86_64::lower(
-      function, stack_map_requirements.requirements);
+      *lowered, stack_map_requirements.requirements);
 #elif defined(UNIJIT_TARGET_RISCV64)
   detail::riscv64::LoweringResult lowering = detail::riscv64::lower(
-      function, stack_map_requirements.requirements);
+      *lowered, stack_map_requirements.requirements);
 #endif
 
 #if defined(UNIJIT_TARGET_AARCH64) || defined(UNIJIT_TARGET_X86_64) || \
@@ -1240,7 +1370,8 @@ CompilationResult Compiler::compile(
   if (!lowering.status.ok()) {
     return {lowering.status, nullptr};
   }
-  const Status lowering_limit = validate_lowering_limits(lowering, limits);
+  const Status lowering_limit =
+      validate_lowering_limits(lowering, options.limits);
   if (!lowering_limit.ok()) {
     return {lowering_limit, nullptr};
   }
@@ -1262,10 +1393,10 @@ CompilationResult Compiler::compile(
     CompilationStats stats{lowering.code.size(),
                            implementation->memory.mapping_size(),
                            lowering.spill_slots, function.nodes().size(),
-                           function.nodes().size(), lowering.stack_maps.size(),
+                           lowered->nodes().size(), lowering.stack_maps.size(),
                            stack_map_value_count(lowering.stack_maps)};
-    const bool requires_context = !assumptions.empty() || std::any_of(
-        function.nodes().begin(), function.nodes().end(),
+  const bool requires_context = !assumptions.empty() || std::any_of(
+        lowered->nodes().begin(), lowered->nodes().end(),
         [](const ir::ControlNode& node) {
           return node.opcode == ir::ControlOpcode::kSafepoint ||
                  node.opcode == ir::ControlOpcode::kGuardFloatNonzero;

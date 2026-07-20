@@ -87,6 +87,173 @@ bool is_float_comparison(Opcode opcode) noexcept {
          opcode == Opcode::kFloatLessEqual;
 }
 
+bool is_control_binary(ControlOpcode opcode) noexcept {
+  switch (opcode) {
+    case ControlOpcode::kAdd:
+    case ControlOpcode::kSubtract:
+    case ControlOpcode::kMultiply:
+    case ControlOpcode::kFloatAdd:
+    case ControlOpcode::kFloatSubtract:
+    case ControlOpcode::kFloatMultiply:
+    case ControlOpcode::kFloatDivide:
+    case ControlOpcode::kFloatLessThan:
+    case ControlOpcode::kFloatLessEqual:
+    case ControlOpcode::kLessThan:
+    case ControlOpcode::kLessEqual:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool is_control_float_binary(ControlOpcode opcode) noexcept {
+  return opcode == ControlOpcode::kFloatAdd ||
+         opcode == ControlOpcode::kFloatSubtract ||
+         opcode == ControlOpcode::kFloatMultiply ||
+         opcode == ControlOpcode::kFloatDivide ||
+         opcode == ControlOpcode::kFloatLessThan ||
+         opcode == ControlOpcode::kFloatLessEqual;
+}
+
+bool is_control_comparison(ControlOpcode opcode) noexcept {
+  return opcode == ControlOpcode::kFloatLessThan ||
+         opcode == ControlOpcode::kFloatLessEqual ||
+         opcode == ControlOpcode::kLessThan ||
+         opcode == ControlOpcode::kLessEqual;
+}
+
+Word fold_control_binary(ControlOpcode opcode, Word lhs, Word rhs) noexcept {
+  if (is_control_float_binary(opcode)) {
+    const double lhs_value = unpack_float64(lhs);
+    const double rhs_value = unpack_float64(rhs);
+    if (opcode == ControlOpcode::kFloatAdd) {
+      return pack_float64(lhs_value + rhs_value);
+    }
+    if (opcode == ControlOpcode::kFloatSubtract) {
+      return pack_float64(lhs_value - rhs_value);
+    }
+    if (opcode == ControlOpcode::kFloatMultiply) {
+      return pack_float64(lhs_value * rhs_value);
+    }
+    if (opcode == ControlOpcode::kFloatDivide) {
+      return pack_float64(lhs_value / rhs_value);
+    }
+    if (opcode == ControlOpcode::kFloatLessThan) {
+      return lhs_value < rhs_value ? 1 : 0;
+    }
+    return lhs_value <= rhs_value ? 1 : 0;
+  }
+  if (opcode == ControlOpcode::kAdd) {
+    return from_bits(to_bits(lhs) + to_bits(rhs));
+  }
+  if (opcode == ControlOpcode::kSubtract) {
+    return from_bits(to_bits(lhs) - to_bits(rhs));
+  }
+  if (opcode == ControlOpcode::kMultiply) {
+    return from_bits(to_bits(lhs) * to_bits(rhs));
+  }
+  if (opcode == ControlOpcode::kLessThan) {
+    return lhs < rhs ? 1 : 0;
+  }
+  return lhs <= rhs ? 1 : 0;
+}
+
+Value emit_control_binary(ControlFlowBuilder* builder,
+                          ControlOpcode opcode, Value lhs, Value rhs) {
+  switch (opcode) {
+    case ControlOpcode::kAdd:
+      return builder->add(lhs, rhs);
+    case ControlOpcode::kSubtract:
+      return builder->subtract(lhs, rhs);
+    case ControlOpcode::kMultiply:
+      return builder->multiply(lhs, rhs);
+    case ControlOpcode::kFloatAdd:
+      return builder->float64_add(lhs, rhs);
+    case ControlOpcode::kFloatSubtract:
+      return builder->float64_subtract(lhs, rhs);
+    case ControlOpcode::kFloatMultiply:
+      return builder->float64_multiply(lhs, rhs);
+    case ControlOpcode::kFloatDivide:
+      return builder->float64_divide(lhs, rhs);
+    case ControlOpcode::kFloatLessThan:
+      return builder->float64_less_than(lhs, rhs);
+    case ControlOpcode::kFloatLessEqual:
+      return builder->float64_less_equal(lhs, rhs);
+    case ControlOpcode::kLessThan:
+      return builder->less_than(lhs, rhs);
+    case ControlOpcode::kLessEqual:
+      return builder->less_equal(lhs, rhs);
+    default:
+      return {};
+  }
+}
+
+bool control_value_available(const ControlFlowFunction& function,
+                             Value value, Value exit) {
+  if (!value.valid() || value.id() >= function.nodes().size() ||
+      !exit.valid() || exit.id() >= function.nodes().size()) {
+    return false;
+  }
+  const std::size_t block_count = function.blocks().size();
+  const std::size_t no_owner = block_count;
+  std::vector<std::size_t> owners(function.nodes().size(), no_owner);
+  std::vector<std::size_t> positions(function.nodes().size(), 0);
+  std::vector<std::vector<std::size_t>> predecessors(block_count);
+  for (std::size_t block_index = 0; block_index < block_count;
+       ++block_index) {
+    const BasicBlock& block = function.blocks()[block_index];
+    for (std::size_t position = 0; position < block.instructions.size();
+         ++position) {
+      const Value instruction = block.instructions[position];
+      owners[instruction.id()] = block_index;
+      positions[instruction.id()] = position;
+    }
+    const auto note_edge = [&](const ControlEdge& edge) {
+      predecessors[edge.target.id()].push_back(block_index);
+    };
+    if (block.terminator.opcode == TerminatorOpcode::kJump) {
+      note_edge(block.terminator.true_edge);
+    } else if (block.terminator.opcode == TerminatorOpcode::kBranch) {
+      note_edge(block.terminator.true_edge);
+      note_edge(block.terminator.false_edge);
+    }
+  }
+  const std::size_t value_block = owners[value.id()];
+  const std::size_t exit_block = owners[exit.id()];
+  if (value_block == no_owner || exit_block == no_owner) {
+    return false;
+  }
+  if (value_block == exit_block) {
+    return positions[value.id()] < positions[exit.id()];
+  }
+
+  std::vector<std::vector<bool>> dominates(
+      block_count, std::vector<bool>(block_count, true));
+  std::fill(dominates[0].begin(), dominates[0].end(), false);
+  dominates[0][0] = true;
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (std::size_t block_index = 1; block_index < block_count;
+         ++block_index) {
+      std::vector<bool> next(block_count, true);
+      for (const std::size_t predecessor : predecessors[block_index]) {
+        for (std::size_t candidate = 0; candidate < block_count;
+             ++candidate) {
+          next[candidate] =
+              next[candidate] && dominates[predecessor][candidate];
+        }
+      }
+      next[block_index] = true;
+      if (next != dominates[block_index]) {
+        dominates[block_index] = std::move(next);
+        changed = true;
+      }
+    }
+  }
+  return dominates[exit_block][value_block];
+}
+
 PassResult transform_once(
     const Function& input,
     const std::vector<OptimizationExitState>& exit_states) {
@@ -376,6 +543,311 @@ OptimizationResult Optimizer::run(
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate SSA optimization state"},
+            {}, {}, {}};
+  }
+}
+
+ControlFlowOptimizationResult Optimizer::run(
+    const ControlFlowFunction& function,
+    const std::vector<OptimizationExitState>& exit_states) {
+  const Status verification = verify(function);
+  if (!verification.ok()) {
+    return {verification, {}, {}, {}};
+  }
+
+  try {
+    const std::size_t node_count = function.nodes().size();
+    const std::size_t block_count = function.blocks().size();
+    std::vector<ValueType> parameter_types;
+    parameter_types.reserve(function.parameter_count());
+    for (std::size_t index = 0; index < function.parameter_count(); ++index) {
+      parameter_types.push_back(function.parameter_type(index));
+    }
+    ControlFlowBuilder builder(std::move(parameter_types));
+    std::vector<Block> blocks(block_count);
+    blocks[function.entry_block().id()] = builder.entry_block();
+    std::vector<Value> mapped(node_count);
+    const BasicBlock& input_entry =
+        function.blocks()[function.entry_block().id()];
+    for (std::size_t index = 0; index < input_entry.parameters.size();
+         ++index) {
+      mapped[input_entry.parameters[index].id()] = builder.parameter(index);
+    }
+    for (std::size_t block_index = 1; block_index < block_count;
+         ++block_index) {
+      const BasicBlock& input_block = function.blocks()[block_index];
+      std::vector<ValueType> block_parameter_types;
+      block_parameter_types.reserve(input_block.parameters.size());
+      for (const Value parameter : input_block.parameters) {
+        block_parameter_types.push_back(function.value_type(parameter));
+      }
+      blocks[block_index] =
+          builder.create_block(std::move(block_parameter_types));
+      if (!blocks[block_index].valid()) {
+        return {{StatusCode::kCodeGenerationFailed,
+                 "optimizer could not create a control-flow block",
+                 block_index},
+                {}, {}, {}};
+      }
+      for (std::size_t index = 0; index < input_block.parameters.size();
+           ++index) {
+        mapped[input_block.parameters[index].id()] =
+            builder.block_parameter(blocks[block_index], index);
+      }
+    }
+
+    const std::size_t no_owner = block_count;
+    std::vector<std::size_t> owners(node_count, no_owner);
+    for (std::size_t block_index = 0; block_index < block_count;
+         ++block_index) {
+      for (const Value instruction :
+           function.blocks()[block_index].instructions) {
+        owners[instruction.id()] = block_index;
+      }
+    }
+    for (const OptimizationExitState& exit_state : exit_states) {
+      if (!exit_state.exit.valid() ||
+          exit_state.exit.id() >= function.nodes().size() ||
+          function.nodes()[exit_state.exit.id()].opcode !=
+              ControlOpcode::kGuardFloatNonzero) {
+        return {{StatusCode::kInvalidArgument,
+                 "CFG optimizer exit state does not identify a guard"},
+                {}, {}, {}};
+      }
+      for (const Value value : exit_state.live_values) {
+        if (!control_value_available(function, value, exit_state.exit)) {
+          return {{StatusCode::kInvalidArgument,
+                   "CFG optimizer exit state value does not dominate its guard",
+                   exit_state.exit.id()},
+                  {}, {}, {}};
+        }
+      }
+    }
+
+    std::vector<bool> known_constant(node_count, false);
+    std::vector<Word> constant_value(node_count, 0);
+    std::vector<bool> folded_node(node_count, false);
+    std::vector<std::size_t> replacement(node_count, node_count);
+    for (std::size_t index = 0; index < node_count; ++index) {
+      const ControlNode& node = function.nodes()[index];
+      if (node.opcode == ControlOpcode::kConstant) {
+        known_constant[index] = true;
+        constant_value[index] = node.immediate;
+      } else if (is_control_binary(node.opcode)) {
+        const std::size_t lhs_id = node.lhs.id();
+        const std::size_t rhs_id = node.rhs.id();
+        if (known_constant[lhs_id] && known_constant[rhs_id]) {
+          constant_value[index] = fold_control_binary(
+              node.opcode, constant_value[lhs_id], constant_value[rhs_id]);
+          known_constant[index] = true;
+          folded_node[index] = true;
+        } else if (node.opcode == ControlOpcode::kAdd) {
+          if (known_constant[rhs_id] && constant_value[rhs_id] == 0) {
+            replacement[index] = lhs_id;
+          } else if (known_constant[lhs_id] &&
+                     constant_value[lhs_id] == 0) {
+            replacement[index] = rhs_id;
+          }
+        } else if (node.opcode == ControlOpcode::kSubtract) {
+          if (known_constant[rhs_id] && constant_value[rhs_id] == 0) {
+            replacement[index] = lhs_id;
+          }
+        } else if (node.opcode == ControlOpcode::kMultiply) {
+          if (known_constant[lhs_id] && constant_value[lhs_id] == 0) {
+            replacement[index] = lhs_id;
+          } else if (known_constant[rhs_id] &&
+                     constant_value[rhs_id] == 0) {
+            replacement[index] = rhs_id;
+          } else if (known_constant[lhs_id] &&
+                     constant_value[lhs_id] == 1) {
+            replacement[index] = rhs_id;
+          } else if (known_constant[rhs_id] &&
+                     constant_value[rhs_id] == 1) {
+            replacement[index] = lhs_id;
+          }
+        }
+        if (replacement[index] != node_count) {
+          known_constant[index] = known_constant[replacement[index]];
+          constant_value[index] = constant_value[replacement[index]];
+        }
+      }
+    }
+
+    std::vector<bool> live(node_count, false);
+    for (std::size_t index = 0; index < node_count; ++index) {
+      const ControlOpcode opcode = function.nodes()[index].opcode;
+      live[index] = opcode == ControlOpcode::kParameter ||
+                    opcode == ControlOpcode::kBlockParameter ||
+                    opcode == ControlOpcode::kCall ||
+                    opcode == ControlOpcode::kGuardFloatNonzero ||
+                    opcode == ControlOpcode::kSafepoint;
+    }
+    const auto mark_edge = [&live](const ControlEdge& edge) {
+      for (const Value argument : edge.arguments) {
+        live[argument.id()] = true;
+      }
+    };
+    for (const BasicBlock& block : function.blocks()) {
+      if (block.terminator.opcode == TerminatorOpcode::kReturn ||
+          block.terminator.opcode == TerminatorOpcode::kBranch) {
+        live[block.terminator.value.id()] = true;
+      }
+      if (block.terminator.opcode == TerminatorOpcode::kJump) {
+        mark_edge(block.terminator.true_edge);
+      } else if (block.terminator.opcode == TerminatorOpcode::kBranch) {
+        mark_edge(block.terminator.true_edge);
+        mark_edge(block.terminator.false_edge);
+      }
+    }
+    for (const OptimizationExitState& exit_state : exit_states) {
+      for (const Value value : exit_state.live_values) {
+        live[value.id()] = true;
+      }
+    }
+    for (std::size_t reverse = node_count; reverse > 0; --reverse) {
+      const std::size_t index = reverse - 1;
+      if (!live[index]) {
+        continue;
+      }
+      const ControlNode& node = function.nodes()[index];
+      if (node.opcode == ControlOpcode::kCall) {
+        for (std::size_t argument_index = 0;
+             argument_index < node.argument_count; ++argument_index) {
+          const Value argument = function.call_arguments()[
+              static_cast<std::size_t>(node.argument_begin) + argument_index];
+          live[argument.id()] = true;
+        }
+      } else if (node.opcode == ControlOpcode::kGuardFloatNonzero) {
+        live[node.lhs.id()] = true;
+      } else if (is_control_binary(node.opcode)) {
+        if (replacement[index] != node_count) {
+          live[replacement[index]] = true;
+        } else if (!folded_node[index]) {
+          live[node.lhs.id()] = true;
+          live[node.rhs.id()] = true;
+        }
+      }
+    }
+
+    std::size_t folded = 0;
+    std::size_t simplified = 0;
+    for (std::size_t index = 0; index < node_count; ++index) {
+      const ControlNode& node = function.nodes()[index];
+      if (node.opcode == ControlOpcode::kParameter ||
+          node.opcode == ControlOpcode::kBlockParameter || !live[index]) {
+        continue;
+      }
+      if (owners[index] == no_owner ||
+          !builder.set_insertion_block(blocks[owners[index]]).ok()) {
+        return {{StatusCode::kCodeGenerationFailed,
+                 "optimizer lost control-flow node ownership", index},
+                {}, {}, {}};
+      }
+      if (node.opcode == ControlOpcode::kConstant) {
+        mapped[index] = node.type == ValueType::kFloat64
+                            ? builder.float64_constant_bits(node.immediate)
+                            : builder.constant(node.immediate);
+      } else if (node.opcode == ControlOpcode::kCall) {
+        std::vector<Value> arguments;
+        arguments.reserve(node.argument_count);
+        for (std::size_t argument_index = 0;
+             argument_index < node.argument_count; ++argument_index) {
+          const Value argument = function.call_arguments()[
+              static_cast<std::size_t>(node.argument_begin) + argument_index];
+          arguments.push_back(mapped[argument.id()]);
+        }
+        mapped[index] = builder.call(unpack_runtime_helper(node.immediate),
+                                     std::move(arguments), node.type);
+      } else if (node.opcode == ControlOpcode::kSafepoint) {
+        mapped[index] =
+            builder.safepoint(static_cast<std::size_t>(node.immediate));
+      } else if (node.opcode == ControlOpcode::kGuardFloatNonzero) {
+        mapped[index] = builder.guard_float64_nonzero(
+            mapped[node.lhs.id()], static_cast<std::size_t>(node.immediate));
+      } else if (is_control_binary(node.opcode)) {
+        const std::size_t lhs_id = node.lhs.id();
+        const std::size_t rhs_id = node.rhs.id();
+        if (folded_node[index]) {
+          mapped[index] =
+              is_control_float_binary(node.opcode) &&
+                      !is_control_comparison(node.opcode)
+                  ? builder.float64_constant_bits(constant_value[index])
+                  : builder.constant(constant_value[index]);
+          ++folded;
+        } else if (replacement[index] != node_count) {
+          mapped[index] = mapped[replacement[index]];
+          ++simplified;
+        } else {
+          mapped[index] = emit_control_binary(
+              &builder, node.opcode, mapped[lhs_id], mapped[rhs_id]);
+        }
+      }
+      if (!mapped[index].valid()) {
+        return {{StatusCode::kCodeGenerationFailed,
+                 "optimizer could not rebuild a control-flow node", index},
+                {}, {}, {}};
+      }
+    }
+
+    const auto map_edge_values = [&mapped](const ControlEdge& edge) {
+      std::vector<Value> values;
+      values.reserve(edge.arguments.size());
+      for (const Value argument : edge.arguments) {
+        values.push_back(mapped[argument.id()]);
+      }
+      return values;
+    };
+    for (std::size_t block_index = 0; block_index < block_count;
+         ++block_index) {
+      const Status insertion =
+          builder.set_insertion_block(blocks[block_index]);
+      if (!insertion.ok()) {
+        return {insertion, {}, {}, {}};
+      }
+      const ControlTerminator& terminator =
+          function.blocks()[block_index].terminator;
+      Status status;
+      if (terminator.opcode == TerminatorOpcode::kReturn) {
+        status = builder.set_return(mapped[terminator.value.id()]);
+      } else if (terminator.opcode == TerminatorOpcode::kJump) {
+        status = builder.jump(blocks[terminator.true_edge.target.id()],
+                              map_edge_values(terminator.true_edge));
+      } else if (terminator.opcode == TerminatorOpcode::kBranch) {
+        status = builder.branch(
+            mapped[terminator.value.id()],
+            blocks[terminator.true_edge.target.id()],
+            map_edge_values(terminator.true_edge),
+            blocks[terminator.false_edge.target.id()],
+            map_edge_values(terminator.false_edge));
+      } else {
+        return {{StatusCode::kCodeGenerationFailed,
+                 "optimizer encountered an unterminated control-flow block",
+                 block_index},
+                {}, {}, {}};
+      }
+      if (!status.ok()) {
+        return {{StatusCode::kCodeGenerationFailed,
+                 "optimizer could not rebuild a control-flow terminator",
+                 block_index},
+                {}, {}, {}};
+      }
+    }
+
+    ControlFlowFunction output = std::move(builder).build();
+    const Status output_verification = verify(output);
+    if (!output_verification.ok()) {
+      return {{StatusCode::kCodeGenerationFailed,
+               "optimizer produced invalid control-flow SSA",
+               output_verification.location()},
+              {}, {}, {}};
+    }
+    const std::size_t output_nodes = output.nodes().size();
+    return {Status::ok_status(), std::move(output),
+            {node_count, output_nodes, folded, simplified},
+            std::move(mapped)};
+  } catch (const std::bad_alloc&) {
+    return {{StatusCode::kResourceExhausted,
+             "unable to allocate control-flow optimization state"},
             {}, {}, {}};
   }
 }

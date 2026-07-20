@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <vector>
 
+#include "unijit/ir/control_flow.h"
 #include "unijit/ir/function.h"
 #include "unijit/status.h"
 
@@ -35,10 +36,27 @@ struct OptimizationResult final {
   }
 };
 
+struct ControlFlowOptimizationResult final {
+  Status status;
+  ControlFlowFunction function;
+  OptimizationStats stats;
+  std::vector<Value> value_mapping;
+
+  bool ok() const noexcept { return status.ok(); }
+  Value map(Value input) const noexcept {
+    return input.valid() && input.id() < value_mapping.size()
+               ? value_mapping[input.id()]
+               : Value{};
+  }
+};
+
 class Optimizer final {
  public:
   static OptimizationResult run(
       const Function& function,
+      const std::vector<OptimizationExitState>& exit_states = {});
+  static ControlFlowOptimizationResult run(
+      const ControlFlowFunction& function,
       const std::vector<OptimizationExitState>& exit_states = {});
 };
 

@@ -167,13 +167,22 @@ class Compiler final {
       CompilationOptions options);
   static CompilationResult compile(const ir::ControlFlowFunction& function);
   static CompilationResult compile(const ir::ControlFlowFunction& function,
+                                   CompilationOptions options);
+  static CompilationResult compile(const ir::ControlFlowFunction& function,
                                    CompilationLimits limits);
   static CompilationResult compile(
       const ir::ControlFlowFunction& function,
       const runtime::DeoptimizationTable& deoptimization_table);
   static CompilationResult compile(
       const ir::ControlFlowFunction& function,
+      const runtime::DeoptimizationTable& deoptimization_table,
+      CompilationOptions options);
+  static CompilationResult compile(
+      const ir::ControlFlowFunction& function,
       const runtime::AssumptionSet& assumptions);
+  static CompilationResult compile(
+      const ir::ControlFlowFunction& function,
+      const runtime::AssumptionSet& assumptions, CompilationOptions options);
   static CompilationResult compile(
       const ir::ControlFlowFunction& function,
       const runtime::DeoptimizationTable& deoptimization_table,
@@ -182,6 +191,10 @@ class Compiler final {
       const ir::ControlFlowFunction& function,
       const runtime::DeoptimizationTable& deoptimization_table,
       const runtime::AssumptionSet& assumptions, CompilationLimits limits);
+  static CompilationResult compile(
+      const ir::ControlFlowFunction& function,
+      const runtime::DeoptimizationTable& deoptimization_table,
+      const runtime::AssumptionSet& assumptions, CompilationOptions options);
 };
 
 }  // namespace unijit::jit

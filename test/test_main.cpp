@@ -1929,6 +1929,63 @@ void test_optimization_pipeline() {
          "compiler must reject an unknown optimization level");
 }
 
+void test_control_flow_optimization_pipeline() {
+  unijit::ir::ControlFlowBuilder builder(1);
+  const Value zero = builder.constant(0);
+  const Value folded =
+      builder.add(builder.constant(40), builder.constant(2));
+  const Value simplified = builder.add(builder.parameter(0), zero);
+  expect(builder.set_return(builder.add(simplified, folded)).ok(),
+         "CFG optimization fixture must record its result");
+  const unijit::ir::ControlFlowFunction function = std::move(builder).build();
+
+  const auto optimization = unijit::ir::Optimizer::run(function);
+  expect(optimization.ok() && optimization.stats.input_nodes == 7 &&
+             optimization.stats.output_nodes == 3 &&
+             optimization.stats.constants_folded == 1 &&
+             optimization.stats.algebraic_simplifications == 1,
+         "CFG optimizer must fold constants and canonicalize Word identities");
+  if (!optimization.ok()) {
+    return;
+  }
+
+  const std::array<Word, 1> arguments = {9};
+  const auto interpreted = unijit::ir::ControlFlowInterpreter::evaluate(
+      optimization.function, arguments.data(), arguments.size());
+  expect(interpreted.ok() && interpreted.value == 51,
+         "optimized CFG must preserve observable semantics");
+
+  auto baseline = Compiler::compile(
+      function, unijit::jit::CompilationOptions{
+                    unijit::jit::OptimizationLevel::kBaseline});
+  auto optimized = Compiler::compile(
+      function, unijit::jit::CompilationOptions{
+                    unijit::jit::OptimizationLevel::kOptimized});
+  expect(baseline.ok() && optimized.ok() &&
+             baseline.function->stats().input_ir_nodes == 7 &&
+             baseline.function->stats().optimized_ir_nodes == 7 &&
+             optimized.function->stats().input_ir_nodes == 7 &&
+             optimized.function->stats().optimized_ir_nodes == 3,
+         "CFG compilation levels must expose distinct baseline and optimized tiers");
+  if (baseline.ok() && optimized.ok()) {
+    const auto baseline_result =
+        baseline.function->invoke(arguments.data(), arguments.size());
+    const auto optimized_result =
+        optimized.function->invoke(arguments.data(), arguments.size());
+    expect(baseline_result.ok() && optimized_result.ok() &&
+               baseline_result.value == 51 && optimized_result.value == 51,
+           "both CFG compilation tiers must preserve native results");
+  }
+
+  auto invalid_level = Compiler::compile(
+      function, unijit::jit::CompilationOptions{
+                    static_cast<unijit::jit::OptimizationLevel>(255)});
+  expect(!invalid_level.ok() &&
+             invalid_level.status.code() ==
+                 unijit::StatusCode::kInvalidArgument,
+         "CFG compiler must reject an unknown optimization level");
+}
+
 void test_optimization_exit_state_mapping() {
   FunctionBuilder builder(2);
   const Value dead = builder.add(builder.parameter(0), builder.constant(91));
@@ -2416,7 +2473,9 @@ void test_control_flow_float64_guard_deoptimization() {
       std::vector<ValueType>{ValueType::kFloat64, ValueType::kFloat64});
   const Value divisor = builder.parameter(1);
   const Value snapshot = builder.float64_add(
-      builder.parameter(0), builder.float64_constant(1.25));
+      builder.parameter(0),
+      builder.float64_multiply(builder.float64_constant(0.5),
+                               builder.float64_constant(2.5)));
   expect(builder.guard_float64_nonzero(divisor, kGuardSite).valid(),
          "CFG Float64 guard must produce an effect value");
   const Value quotient =
@@ -2453,6 +2512,8 @@ void test_control_flow_float64_guard_deoptimization() {
   const auto* compiled_record =
       compilation.function->deoptimization_record(kGuardSite);
   expect(compilation.function->requires_context() &&
+             compilation.function->stats().optimized_ir_nodes <
+                 compilation.function->stats().input_ir_nodes &&
              compiled_record != nullptr &&
              compiled_record->resume_offset == 77 &&
              compiled_record->reason ==
@@ -3830,6 +3891,7 @@ int main() {
   test_spill_path();
   test_argument_validation();
   test_optimization_pipeline();
+  test_control_flow_optimization_pipeline();
   test_optimization_exit_state_mapping();
   test_float64_constant_folding();
   test_control_flow_runtime_helper_ir();

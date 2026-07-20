@@ -159,8 +159,11 @@ int main() {
   unijit::ir::ControlFlowBuilder cfg_builder(
       {unijit::ir::ValueType::kFloat64,
        unijit::ir::ValueType::kFloat64});
+  const auto cfg_bias = cfg_builder.float64_add(
+      cfg_builder.float64_constant(0.25),
+      cfg_builder.float64_constant(0.25));
   const auto cfg_live = cfg_builder.float64_add(
-      cfg_builder.parameter(0), cfg_builder.float64_constant(0.5));
+      cfg_builder.parameter(0), cfg_bias);
   const auto cfg_called = cfg_builder.call(
       package_cfg_helper, {cfg_live, cfg_builder.parameter(1)},
       unijit::ir::ValueType::kFloat64);
@@ -173,8 +176,19 @@ int main() {
   if (!unijit::ir::verify(cfg_function).ok()) {
     return 35;
   }
-  auto cfg_compilation = unijit::jit::Compiler::compile(cfg_function);
-  if (!cfg_compilation.ok()) {
+  auto cfg_baseline = unijit::jit::Compiler::compile(
+      cfg_function,
+      unijit::jit::CompilationOptions{
+          unijit::jit::OptimizationLevel::kBaseline});
+  auto cfg_compilation = unijit::jit::Compiler::compile(
+      cfg_function,
+      unijit::jit::CompilationOptions{
+          unijit::jit::OptimizationLevel::kOptimized});
+  if (!cfg_baseline.ok() || !cfg_compilation.ok() ||
+      cfg_baseline.function->stats().optimized_ir_nodes !=
+          cfg_baseline.function->stats().input_ir_nodes ||
+      cfg_compilation.function->stats().optimized_ir_nodes >=
+          cfg_baseline.function->stats().optimized_ir_nodes) {
     return 36;
   }
   const std::array<unijit::ir::Word, 2> cfg_arguments = {
