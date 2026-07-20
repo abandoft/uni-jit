@@ -1,0 +1,133 @@
+#include <cstdlib>
+#include <iostream>
+
+extern "C" {
+#include "lauxlib.h"
+#include "lualib.h"
+}
+
+#include "unijit_lua.h"
+
+namespace {
+
+constexpr char kTestProgram[] = R"lua(
+local unijit = require("unijit")
+
+local function compare(original, arguments)
+  local native = unijit.compile(original)
+  for _, values in ipairs(arguments) do
+    assert(native(table.unpack(values)) == original(table.unpack(values)))
+  end
+  return native
+end
+
+local recurrence = function(a, b, c)
+  local difference = a - b
+  local sum = b + c
+  return difference * sum
+end
+
+local cases = {}
+for index = -256, 256 do
+  cases[#cases + 1] = {index * 17, index - 31, index * index + 9}
+end
+cases[#cases + 1] = {math.maxinteger, -1, 1}
+cases[#cases + 1] = {math.mininteger, 1, -1}
+local native_recurrence = compare(recurrence, cases)
+
+local immediate = compare(function(value)
+  return value + 7
+end, {{0}, {-100}, {math.maxinteger}})
+
+compare(function(value)
+  return value * 400 - 900
+end, {{0}, {17}, {-9123456}, {math.maxinteger}})
+
+compare(function(value)
+  local large = 9223372036854770000
+  return value + large
+end, {{0}, {807}, {-123456789}})
+
+compare(function()
+  return 17
+end, {{}})
+
+assert(native_recurrence(9, 3, 5, "extra arguments are ignored") == 48)
+
+local ok, message = pcall(native_recurrence, 1, 2.5, 3)
+assert(not ok and tostring(message):find("integer"))
+
+ok, message = pcall(native_recurrence, 1, 2)
+assert(not ok and tostring(message):find("requires"))
+
+ok, message = pcall(unijit.compile, function(value)
+  if value > 0 then
+    return value
+  end
+  return -value
+end)
+assert(not ok and tostring(message):find("unsupported Lua 5.5 opcode"))
+
+ok, message = pcall(unijit.compile, function(value)
+  return value / 2
+end)
+assert(not ok and tostring(message):find("unsupported Lua 5.5 opcode"))
+
+ok, message = pcall(unijit.compile, function(...)
+  return 1
+end)
+assert(not ok and tostring(message):find("vararg"))
+
+ok = pcall(unijit.compile, math.abs)
+assert(not ok)
+
+ok = pcall(unijit.compile, 42)
+assert(not ok)
+
+local disposable = unijit.compile(function(value)
+  return value + 1
+end)
+local _, owner = debug.getupvalue(disposable, 1)
+local owner_metatable = debug.getmetatable(owner)
+owner_metatable.__gc(owner)
+owner_metatable.__gc(owner)
+ok, message = pcall(disposable, 1)
+assert(not ok and tostring(message):find("invalid UniJIT compiled function"))
+
+immediate = nil
+native_recurrence = nil
+disposable = nil
+collectgarbage("collect")
+)lua";
+
+} // namespace
+
+int main() {
+  lua_State *state = luaL_newstate();
+  if (state == nullptr) {
+    std::cerr << "unable to create Lua state\n";
+    return EXIT_FAILURE;
+  }
+
+  luaL_openlibs(state);
+  luaL_requiref(state, "unijit", luaopen_unijit, 1);
+  lua_pop(state, 1);
+
+  int status = luaL_loadbuffer(state, kTestProgram, sizeof(kTestProgram) - 1,
+                               "@lua_frontend_test.lua");
+  if (status == LUA_OK) {
+    status = lua_pcall(state, 0, 0, 0);
+  }
+  if (status != LUA_OK) {
+    const char *message = lua_tostring(state, -1);
+    std::cerr << (message == nullptr ? "unknown Lua test failure" : message)
+              << '\n';
+  }
+
+  lua_close(state);
+  if (status != LUA_OK) {
+    return EXIT_FAILURE;
+  }
+  std::cout << "Lua 5.5 frontend tests passed\n";
+  return EXIT_SUCCESS;
+}

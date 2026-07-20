@@ -66,3 +66,48 @@ target_link_libraries(unijit_lua55 PRIVATE unijit_lua55_reference)
 set_target_properties(unijit_lua55 PROPERTIES
   OUTPUT_NAME "lua5.5-reference"
   RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin")
+
+add_library(unijit_lua55_frontend STATIC jit_module.cpp)
+target_include_directories(unijit_lua55_frontend
+  PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
+  PRIVATE "${UNIJIT_LUA_SOURCE_DIR}")
+target_compile_features(unijit_lua55_frontend PRIVATE cxx_std_17)
+target_link_libraries(unijit_lua55_frontend
+  PUBLIC UniJIT::unijit unijit_lua55_reference)
+set_target_properties(unijit_lua55_frontend PROPERTIES
+  ARCHIVE_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/lib")
+
+if(MSVC)
+  target_compile_options(unijit_lua55_frontend PRIVATE /W4 /permissive-)
+  if(UNIJIT_WARNINGS_AS_ERRORS)
+    target_compile_options(unijit_lua55_frontend PRIVATE /WX)
+  endif()
+else()
+  target_compile_options(unijit_lua55_frontend PRIVATE -Wall -Wextra -Wpedantic)
+  if(UNIJIT_WARNINGS_AS_ERRORS)
+    target_compile_options(unijit_lua55_frontend PRIVATE -Werror)
+  endif()
+endif()
+
+if(UNIJIT_BUILD_TESTS)
+  add_executable(unijit_lua55_tests
+    "${PROJECT_SOURCE_DIR}/test/lua_frontend_test.cpp")
+  target_compile_features(unijit_lua55_tests PRIVATE cxx_std_17)
+  target_link_libraries(unijit_lua55_tests PRIVATE unijit_lua55_frontend)
+  set_target_properties(unijit_lua55_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin")
+
+  if(MSVC)
+    target_compile_options(unijit_lua55_tests PRIVATE /W4 /permissive-)
+    if(UNIJIT_WARNINGS_AS_ERRORS)
+      target_compile_options(unijit_lua55_tests PRIVATE /WX)
+    endif()
+  else()
+    target_compile_options(unijit_lua55_tests PRIVATE -Wall -Wextra -Wpedantic)
+    if(UNIJIT_WARNINGS_AS_ERRORS)
+      target_compile_options(unijit_lua55_tests PRIVATE -Werror)
+    endif()
+  endif()
+
+  add_test(NAME unijit.lua55_frontend COMMAND unijit_lua55_tests)
+endif()
