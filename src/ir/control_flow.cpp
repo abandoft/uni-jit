@@ -26,6 +26,10 @@ bool is_binary(ControlOpcode opcode) {
   case ControlOpcode::kAdd:
   case ControlOpcode::kSubtract:
   case ControlOpcode::kMultiply:
+  case ControlOpcode::kFloatAdd:
+  case ControlOpcode::kFloatSubtract:
+  case ControlOpcode::kFloatMultiply:
+  case ControlOpcode::kFloatDivide:
   case ControlOpcode::kLessThan:
   case ControlOpcode::kLessEqual:
     return true;
@@ -89,6 +93,11 @@ Status verify_impl(const ControlFlowFunction &function) {
           return invalid_control_flow(block_index,
                                       "block parameter node is malformed");
         }
+        if (block_index == 0 &&
+            node.type != function.parameter_type(instruction_index)) {
+          return invalid_control_flow(
+              block_index, "entry parameter type is inconsistent");
+        }
       } else if (node.opcode == ControlOpcode::kParameter ||
                  node.opcode == ControlOpcode::kBlockParameter) {
         return invalid_control_flow(block_index,
@@ -109,6 +118,14 @@ Status verify_impl(const ControlFlowFunction &function) {
       if (edge.arguments.size() != target.parameters.size()) {
         return invalid_control_flow(
             block_index, "edge argument count does not match target block");
+      }
+      for (std::size_t index = 0; index < edge.arguments.size(); ++index) {
+        if (!valid_value(function, edge.arguments[index]) ||
+            function.value_type(edge.arguments[index]) !=
+                function.value_type(target.parameters[index])) {
+          return invalid_control_flow(
+              block_index, "edge argument type does not match block parameter");
+        }
       }
       predecessors[edge.target.id()].push_back(block_index);
       return Status::ok_status();
@@ -207,7 +224,8 @@ Status verify_impl(const ControlFlowFunction &function) {
         continue;
       }
       if (node.opcode == ControlOpcode::kSafepoint) {
-        if (node.immediate < 0 || node.lhs.valid() || node.rhs.valid()) {
+        if (node.immediate < 0 || node.lhs.valid() || node.rhs.valid() ||
+            node.type != ValueType::kWord) {
           return invalid_control_flow(value.id(),
                                       "control-flow safepoint is malformed");
         }
@@ -221,6 +239,24 @@ Status verify_impl(const ControlFlowFunction &function) {
         return invalid_control_flow(
             value.id(), "SSA operand does not dominate its instruction");
       }
+      const ValueType lhs_type = function.value_type(node.lhs);
+      const ValueType rhs_type = function.value_type(node.rhs);
+      if (node.opcode == ControlOpcode::kFloatAdd ||
+          node.opcode == ControlOpcode::kFloatSubtract ||
+          node.opcode == ControlOpcode::kFloatMultiply ||
+          node.opcode == ControlOpcode::kFloatDivide) {
+        if (node.type != ValueType::kFloat64 ||
+            lhs_type != ValueType::kFloat64 ||
+            rhs_type != ValueType::kFloat64) {
+          return invalid_control_flow(
+              value.id(), "Float64 CFG arithmetic has incompatible types");
+        }
+      } else if (node.type != ValueType::kWord ||
+                 lhs_type != ValueType::kWord ||
+                 rhs_type != ValueType::kWord) {
+        return invalid_control_flow(
+            value.id(), "word CFG operation has incompatible types");
+      }
     }
 
     const std::size_t terminator_position = block.instructions.size();
@@ -231,6 +267,11 @@ Status verify_impl(const ControlFlowFunction &function) {
         return invalid_control_flow(
             block_index, "terminator value is unavailable in its block");
       }
+    }
+    if (terminator.opcode == TerminatorOpcode::kBranch &&
+        function.value_type(terminator.value) != ValueType::kWord) {
+      return invalid_control_flow(block_index,
+                                  "branch condition must be a word value");
     }
     const auto verify_edge_values = [&](const ControlEdge &edge) -> bool {
       return std::all_of(
@@ -275,6 +316,18 @@ Word evaluate_node(ControlOpcode opcode, Word lhs, Word rhs) noexcept {
   if (opcode == ControlOpcode::kMultiply) {
     return from_bits(to_bits(lhs) * to_bits(rhs));
   }
+  if (opcode == ControlOpcode::kFloatAdd) {
+    return pack_float64(unpack_float64(lhs) + unpack_float64(rhs));
+  }
+  if (opcode == ControlOpcode::kFloatSubtract) {
+    return pack_float64(unpack_float64(lhs) - unpack_float64(rhs));
+  }
+  if (opcode == ControlOpcode::kFloatMultiply) {
+    return pack_float64(unpack_float64(lhs) * unpack_float64(rhs));
+  }
+  if (opcode == ControlOpcode::kFloatDivide) {
+    return pack_float64(unpack_float64(lhs) / unpack_float64(rhs));
+  }
   if (opcode == ControlOpcode::kLessThan) {
     return lhs < rhs ? 1 : 0;
   }
@@ -283,18 +336,25 @@ Word evaluate_node(ControlOpcode opcode, Word lhs, Word rhs) noexcept {
 
 } // namespace
 
-ControlFlowBuilder::ControlFlowBuilder(std::size_t parameter_count) {
-  function_.parameter_count_ = parameter_count;
+ControlFlowBuilder::ControlFlowBuilder(std::size_t parameter_count)
+    : ControlFlowBuilder(
+          std::vector<ValueType>(parameter_count, ValueType::kWord)) {}
+
+ControlFlowBuilder::ControlFlowBuilder(
+    std::vector<ValueType> parameter_types) {
+  function_.parameter_count_ = parameter_types.size();
+  function_.parameter_types_ = std::move(parameter_types);
   function_.entry_block_ = Block{0};
   function_.blocks_.emplace_back();
   insertion_block_ = function_.entry_block_;
-  function_.nodes_.reserve(parameter_count);
+  function_.nodes_.reserve(function_.parameter_count_);
   BasicBlock &entry = function_.blocks_[0];
-  entry.parameters.reserve(parameter_count);
-  entry.instructions.reserve(parameter_count);
-  for (std::size_t index = 0; index < parameter_count; ++index) {
+  entry.parameters.reserve(function_.parameter_count_);
+  entry.instructions.reserve(function_.parameter_count_);
+  for (std::size_t index = 0; index < function_.parameter_count_; ++index) {
     const Value value = append_node(ControlNode{
-        ControlOpcode::kParameter, {}, {}, static_cast<Word>(index)});
+        ControlOpcode::kParameter, {}, {}, static_cast<Word>(index),
+        function_.parameter_types_[index]});
     entry.parameters.push_back(value);
   }
 }
@@ -314,19 +374,26 @@ Value ControlFlowBuilder::block_parameter(Block block,
 }
 
 Block ControlFlowBuilder::create_block(std::size_t parameter_count) {
+  return create_block(
+      std::vector<ValueType>(parameter_count, ValueType::kWord));
+}
+
+Block ControlFlowBuilder::create_block(
+    std::vector<ValueType> parameter_types) {
   if (function_.blocks_.size() >= Block::kInvalidId) {
     return {};
   }
   const Block block{static_cast<std::uint32_t>(function_.blocks_.size())};
   function_.blocks_.emplace_back();
   BasicBlock &created = function_.blocks_.back();
-  created.parameters.reserve(parameter_count);
-  created.instructions.reserve(parameter_count);
+  created.parameters.reserve(parameter_types.size());
+  created.instructions.reserve(parameter_types.size());
   const Block previous = insertion_block_;
   insertion_block_ = block;
-  for (std::size_t index = 0; index < parameter_count; ++index) {
+  for (std::size_t index = 0; index < parameter_types.size(); ++index) {
     const Value value = append_node(ControlNode{
-        ControlOpcode::kBlockParameter, {}, {}, static_cast<Word>(index)});
+        ControlOpcode::kBlockParameter, {}, {}, static_cast<Word>(index),
+        parameter_types[index]});
     created.parameters.push_back(value);
   }
   insertion_block_ = previous;
@@ -358,12 +425,22 @@ Value ControlFlowBuilder::append_node(ControlNode node) {
 }
 
 Value ControlFlowBuilder::append_binary(ControlOpcode opcode, Value lhs,
-                                        Value rhs) {
-  return append_node(ControlNode{opcode, lhs, rhs, 0});
+                                        Value rhs, ValueType type) {
+  return append_node(ControlNode{opcode, lhs, rhs, 0, type});
 }
 
 Value ControlFlowBuilder::constant(Word value) {
-  return append_node(ControlNode{ControlOpcode::kConstant, {}, {}, value});
+  return append_node(ControlNode{ControlOpcode::kConstant, {}, {}, value,
+                                 ValueType::kWord});
+}
+
+Value ControlFlowBuilder::float64_constant(double value) {
+  return float64_constant_bits(pack_float64(value));
+}
+
+Value ControlFlowBuilder::float64_constant_bits(Word bits) {
+  return append_node(ControlNode{ControlOpcode::kConstant, {}, {}, bits,
+                                 ValueType::kFloat64});
 }
 
 Value ControlFlowBuilder::add(Value lhs, Value rhs) {
@@ -376,6 +453,26 @@ Value ControlFlowBuilder::subtract(Value lhs, Value rhs) {
 
 Value ControlFlowBuilder::multiply(Value lhs, Value rhs) {
   return append_binary(ControlOpcode::kMultiply, lhs, rhs);
+}
+
+Value ControlFlowBuilder::float64_add(Value lhs, Value rhs) {
+  return append_binary(ControlOpcode::kFloatAdd, lhs, rhs,
+                       ValueType::kFloat64);
+}
+
+Value ControlFlowBuilder::float64_subtract(Value lhs, Value rhs) {
+  return append_binary(ControlOpcode::kFloatSubtract, lhs, rhs,
+                       ValueType::kFloat64);
+}
+
+Value ControlFlowBuilder::float64_multiply(Value lhs, Value rhs) {
+  return append_binary(ControlOpcode::kFloatMultiply, lhs, rhs,
+                       ValueType::kFloat64);
+}
+
+Value ControlFlowBuilder::float64_divide(Value lhs, Value rhs) {
+  return append_binary(ControlOpcode::kFloatDivide, lhs, rhs,
+                       ValueType::kFloat64);
 }
 
 Value ControlFlowBuilder::less_than(Value lhs, Value rhs) {
@@ -391,7 +488,7 @@ Value ControlFlowBuilder::safepoint(std::size_t site) {
     return {};
   }
   return append_node(ControlNode{ControlOpcode::kSafepoint, {}, {},
-                                 static_cast<Word>(site)});
+                                 static_cast<Word>(site), ValueType::kWord});
 }
 
 Status
@@ -404,6 +501,16 @@ ControlFlowBuilder::validate_edge(Block target,
   if (arguments.size() != function_.blocks_[target.id()].parameters.size()) {
     return {StatusCode::kInvalidArgument,
             "edge argument count does not match target block"};
+  }
+  const BasicBlock &target_block = function_.blocks_[target.id()];
+  for (std::size_t index = 0; index < arguments.size(); ++index) {
+    if (!arguments[index].valid() ||
+        arguments[index].id() >= function_.nodes_.size() ||
+        function_.nodes_[arguments[index].id()].type !=
+            function_.nodes_[target_block.parameters[index].id()].type) {
+      return {StatusCode::kInvalidArgument,
+              "edge argument type does not match target block"};
+    }
   }
   return Status::ok_status();
 }

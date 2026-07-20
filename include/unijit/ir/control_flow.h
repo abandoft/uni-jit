@@ -42,6 +42,10 @@ enum class ControlOpcode : std::uint8_t {
   kAdd,
   kSubtract,
   kMultiply,
+  kFloatAdd,
+  kFloatSubtract,
+  kFloatMultiply,
+  kFloatDivide,
   kLessThan,
   kLessEqual,
   kSafepoint,
@@ -52,6 +56,7 @@ struct ControlNode final {
   Value lhs;
   Value rhs;
   Word immediate{0};
+  ValueType type{ValueType::kWord};
 };
 
 struct ControlEdge final {
@@ -84,6 +89,15 @@ public:
   ControlFlowFunction() = default;
 
   std::size_t parameter_count() const noexcept { return parameter_count_; }
+  ValueType parameter_type(std::size_t index) const noexcept {
+    return index < parameter_types_.size() ? parameter_types_[index]
+                                           : ValueType::kWord;
+  }
+  ValueType value_type(Value value) const noexcept {
+    return value.valid() && value.id() < nodes_.size()
+               ? nodes_[value.id()].type
+               : ValueType::kWord;
+  }
   Block entry_block() const noexcept { return entry_block_; }
   const std::vector<ControlNode> &nodes() const noexcept { return nodes_; }
   const std::vector<BasicBlock> &blocks() const noexcept { return blocks_; }
@@ -92,6 +106,7 @@ private:
   friend class ControlFlowBuilder;
 
   std::size_t parameter_count_{0};
+  std::vector<ValueType> parameter_types_;
   Block entry_block_;
   std::vector<ControlNode> nodes_;
   std::vector<BasicBlock> blocks_;
@@ -100,6 +115,7 @@ private:
 class ControlFlowBuilder final {
 public:
   explicit ControlFlowBuilder(std::size_t parameter_count);
+  explicit ControlFlowBuilder(std::vector<ValueType> parameter_types);
 
   Block entry_block() const noexcept { return function_.entry_block_; }
   Block insertion_block() const noexcept { return insertion_block_; }
@@ -107,12 +123,19 @@ public:
   Value block_parameter(Block block, std::size_t index) const noexcept;
 
   Block create_block(std::size_t parameter_count);
+  Block create_block(std::vector<ValueType> parameter_types);
   Status set_insertion_block(Block block);
 
   Value constant(Word value);
+  Value float64_constant(double value);
+  Value float64_constant_bits(Word bits);
   Value add(Value lhs, Value rhs);
   Value subtract(Value lhs, Value rhs);
   Value multiply(Value lhs, Value rhs);
+  Value float64_add(Value lhs, Value rhs);
+  Value float64_subtract(Value lhs, Value rhs);
+  Value float64_multiply(Value lhs, Value rhs);
+  Value float64_divide(Value lhs, Value rhs);
   Value less_than(Value lhs, Value rhs);
   Value less_equal(Value lhs, Value rhs);
   Value safepoint(std::size_t site);
@@ -127,7 +150,8 @@ public:
 
 private:
   Value append_node(ControlNode node);
-  Value append_binary(ControlOpcode opcode, Value lhs, Value rhs);
+  Value append_binary(ControlOpcode opcode, Value lhs, Value rhs,
+                      ValueType type = ValueType::kWord);
   Status validate_edge(Block target, const std::vector<Value> &arguments) const;
   Status set_terminator(ControlTerminator terminator);
 

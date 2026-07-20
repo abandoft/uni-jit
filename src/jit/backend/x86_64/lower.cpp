@@ -900,6 +900,35 @@ LoweringResult lower_control_flow_impl(
           }
           break;
         }
+        case ir::ControlOpcode::kFloatAdd:
+        case ir::ControlOpcode::kFloatSubtract:
+        case ir::ControlOpcode::kFloatMultiply:
+        case ir::ControlOpcode::kFloatDivide: {
+          const int lhs = load_control_value(
+              &assembler, allocation, node.lhs, block_index, kScratch0);
+          const int rhs = load_control_value(
+              &assembler, allocation, node.rhs, block_index, kScratch1);
+          assembler.move_word_to_float(kFloatScratch0, lhs);
+          assembler.move_word_to_float(kFloatScratch1, rhs);
+          if (node.opcode == ir::ControlOpcode::kFloatAdd) {
+            assembler.add_float(kFloatScratch0, kFloatScratch0,
+                                kFloatScratch1);
+          } else if (node.opcode == ir::ControlOpcode::kFloatSubtract) {
+            assembler.subtract_float(kFloatScratch0, kFloatScratch0,
+                                     kFloatScratch1);
+          } else if (node.opcode == ir::ControlOpcode::kFloatMultiply) {
+            assembler.multiply_float(kFloatScratch0, kFloatScratch0,
+                                     kFloatScratch1);
+          } else {
+            assembler.divide_float(kFloatScratch0, kFloatScratch0,
+                                   kFloatScratch1);
+          }
+          assembler.move_float_to_word(destination, kFloatScratch0);
+          if (allocated < 0 || allocation.requires_stack[value.id()]) {
+            assembler.store(destination, kRsp, destination_offset);
+          }
+          break;
+        }
         case ir::ControlOpcode::kAdd:
         case ir::ControlOpcode::kSubtract:
         case ir::ControlOpcode::kMultiply:
