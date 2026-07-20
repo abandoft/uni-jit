@@ -1,3 +1,7 @@
+## 0.1.2
+
+- Added isolated Lua 5.5 and LuaJIT reference builds for language benchmarks.
+
 ## 0.1.1
 
 - Added a verified straight-line integer SSA representation and reference
