@@ -13,6 +13,11 @@ namespace {
 constexpr char kTestProgram[] = R"lua(
 local unijit = require("unijit")
 
+local function checkpoint(name)
+  io.stderr:write("Lua frontend checkpoint: " .. name .. "\n")
+  io.stderr:flush()
+end
+
 local function compare(original, arguments)
   local native = unijit.compile(original)
   for _, values in ipairs(arguments) do
@@ -138,6 +143,8 @@ end, {{0}, {807}, {-123456789}})
 compare(function()
   return 17
 end, {{}})
+
+checkpoint("scalar arithmetic")
 
 local counted_sum = function(count)
   local sum = 0
@@ -332,6 +339,8 @@ assert(not native_zero_ok and
 assert(unijit.stats(native_parameter_step_sum).invocations ==
        invocations_before_zero_step)
 
+checkpoint("numeric loops")
+
 local guarded_body_sum = function(start, limit, step, threshold)
   local sum = 7
   for index = start, limit, step do
@@ -502,6 +511,8 @@ local guarded_zero_ok, guarded_zero_message =
 assert(not guarded_zero_ok and
        tostring(guarded_zero_message):find("'for' step is zero"))
 
+checkpoint("guarded loops")
+
 local near_max_stride = function(limit)
   local visits = 0
   for index = 9223372036854775790, limit, 3 do
@@ -559,6 +570,8 @@ promote_loop(native_minimum_stride, minimum_stride, math.mininteger)
 for _, limit in ipairs({math.maxinteger, 0, -1, math.mininteger}) do
   assert(native_minimum_stride(limit) == minimum_stride(limit))
 end
+
+checkpoint("boundary loops")
 
 assert(native_recurrence(9, 3, 5, "extra arguments are ignored") == 48)
 
@@ -640,6 +653,8 @@ assert(not ok)
 ok = pcall(unijit.compile, 42)
 assert(not ok)
 
+checkpoint("rejections")
+
 local disposable = unijit.compile(function(value)
   return value + 1
 end)
@@ -649,6 +664,8 @@ owner_metatable.__gc(owner)
 owner_metatable.__gc(owner)
 ok, message = pcall(disposable, 1)
 assert(not ok and tostring(message):find("invalid UniJIT compiled function"))
+
+checkpoint("explicit finalization")
 
 immediate = nil
 native_recurrence = nil
@@ -679,6 +696,7 @@ native_huge_positive_stride = nil
 native_minimum_stride = nil
 disposable = nil
 collectgarbage("collect")
+checkpoint("garbage collection")
 )lua";
 
 } // namespace

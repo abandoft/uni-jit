@@ -38,6 +38,7 @@ jobs:
   windows-address:
     name: Windows MSVC ASan x86-64
     runs-on: windows-2025
+    timeout-minutes: 10
     env:
       ASAN_OPTIONS: abort_on_error=1
     steps:
@@ -61,4 +62,4 @@ jobs:
       - name: Test Lua frontend
         run: >-
           ctest --test-dir build/sanitize -C Debug --output-on-failure
-          -R ^unijit.lua55_frontend$
+          --timeout 120 -R ^unijit.lua55_frontend$
