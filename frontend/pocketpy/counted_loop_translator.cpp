@@ -103,13 +103,16 @@ public:
         initial_values.size(), ir::ValueType::kFloat64);
     const ir::Block header = builder_->create_block(loop_types);
     const ir::Block body = builder_->create_block(0);
+    const ir::Block update = builder_->create_block(loop_types);
     const ir::Block exit = builder_->create_block(loop_types);
-    if (!header.valid() || !body.valid() || !exit.valid() ||
+    if (!header.valid() || !body.valid() || !update.valid() || !exit.valid() ||
         !builder_->jump(header, initial_values).ok() ||
         !builder_->set_insertion_block(header).ok()) {
       return fail(invalid_at(safepoint_site,
                              "unable to create counted-loop control flow"));
     }
+    continue_target_ = update;
+    break_target_ = exit;
     install_loop_parameters(header);
     const std::vector<ir::Value> header_values = loop_values();
     Symbol *induction = symbol(induction_name_);
@@ -130,6 +133,12 @@ public:
     if (!parse_body(8)) {
       return fail(status_);
     }
+    if (!builder_->jump(update, loop_values()).ok() ||
+        !builder_->set_insertion_block(update).ok()) {
+      return fail(invalid_at(safepoint_site,
+                             "unable to enter counted-loop update"));
+    }
+    install_loop_parameters(update);
     induction = symbol(induction_name_);
     induction->value = builder_->float64_add(
         induction->value, builder_->float64_constant(1.0));
@@ -451,6 +460,39 @@ private:
       return false;
     }
     ++line_index_;
+
+    if (line_index_ < lines_.size() &&
+        lines_[line_index_].indent == indent + 4 &&
+        (lines_[line_index_].text == "break" ||
+         lines_[line_index_].text == "continue") &&
+        (line_index_ + 1 == lines_.size() ||
+         lines_[line_index_ + 1].indent <= indent)) {
+      const bool breaks = lines_[line_index_].text == "break";
+      const std::vector<ir::Value> incoming = loop_values();
+      const std::vector<ir::ValueType> types(
+          incoming.size(), ir::ValueType::kFloat64);
+      const ir::Block fallthrough = builder_->create_block(types);
+      ++line_index_;
+      if (line_index_ < lines_.size() &&
+          lines_[line_index_].indent == indent &&
+          lines_[line_index_].text == "else:") {
+        invalid_line(lines_[line_index_],
+                     "break/continue guards cannot have an else arm");
+        return false;
+      }
+      const ir::Block transfer = breaks ? break_target_ : continue_target_;
+      if (!fallthrough.valid() || !transfer.valid() ||
+          !builder_
+               ->branch(condition, transfer, incoming, fallthrough, incoming)
+               .ok() ||
+          !builder_->set_insertion_block(fallthrough).ok()) {
+        invalid_line(condition_line,
+                     "unable to construct break/continue guard");
+        return false;
+      }
+      install_loop_parameters(fallthrough);
+      return true;
+    }
 
     const std::vector<ir::Value> incoming = loop_values();
     const std::vector<ir::ValueType> types(
@@ -797,6 +839,8 @@ private:
   std::vector<std::size_t> loop_symbol_indices_;
   std::string induction_name_;
   ir::Value count_value_;
+  ir::Block continue_target_;
+  ir::Block break_target_;
   std::unique_ptr<ir::ControlFlowBuilder> builder_;
   runtime::DeoptimizationTable deoptimization_table_;
   std::string_view expression_;
