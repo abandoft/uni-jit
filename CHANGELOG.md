@@ -23,6 +23,7 @@
 - Added arbitrary Word and Float64 SSA inputs to deoptimization recovery, with guard-scoped optimizer preservation and Value-ID remapping, straight-line availability and CFG dominance validation, forced allocator and data-flow liveness on all three backends, resolved canonical capture indices, and exact baseline, optimized, cached-lease, and installed-package reconstruction.
 - Materialized PocketPy primitive division frames with the current straight-line left operand plus every counted-loop local and induction value while retaining stable parameter and signed-zero divisor slots for existing `ZeroDivisionError` mapping.
 - Added site-and-resume-bound transactional object materialization with primitive, constant, forward, backward, and cyclic recipe inputs, bounded graph validation, two-phase shell allocation and field population, opaque frontend handles, exactly-once rollback for every callback failure phase, explicit object-valued logical slots, and compiled-function plus generation-stable cache-lease APIs.
+- Made object materialization and logical interpreter-frame installation one atomic frontend transaction, passing exact exit metadata and slot counts at begin, staging typed primitive and object slots before commit, and rolling back both the graph and frame exactly once on installation failure.
 
 ## 0.1.6
 
