@@ -33,6 +33,36 @@ word has an independent runtime-only wake bit for assumption invalidation; it
 does not consume or clear a concurrent user interruption. `user_data` is an
 opaque frontend-owned pointer and is never dereferenced by the core runtime.
 
+## Runtime helper calls
+
+Straight-line and CFG IR can invoke an embedder-owned helper through the same
+portable signature:
+
+```cpp
+unijit::ir::Word helper(const unijit::ir::Word* arguments,
+                        std::size_t count);
+```
+
+`FunctionBuilder::call` and `ControlFlowBuilder::call` preserve argument order
+and exact Word or Float64 bits in a flat, call-scoped area. The declared result
+type determines whether the returned bits re-enter the Word or Float64 register
+class. Calls are effectful and execute even when their SSA result is dead. CFG
+verification additionally requires a non-null helper, an owned argument range,
+and a dominating definition for every argument; compilation accounts for all
+flattened call arguments in its resource budget.
+
+The reference interpreters execute the identical helper contract. Native
+lowering saves only caller-clobbered Word and Float64 values that remain live,
+materializes mixed arguments from registers or canonical spill slots, supplies
+the target ABI's pointer/count registers and Windows x64 shadow space where
+required, and preserves AArch64/RISC-V link registers. This applies to calls in
+branches and loop bodies as well as straight-line code. The argument pointer is
+valid only for the duration of the helper call and must not be retained.
+
+Helpers must return normally and must not unwind a C++ exception through
+generated code. Language exceptions should be represented through an explicit
+result/status convention or a subsequent diagnosed guard.
+
 ## Safepoints and exits
 
 Safepoints are explicit effectful IR nodes. Optimization cannot remove them
@@ -49,7 +79,7 @@ three native backends implement the same behavior:
    `StatusCode::kExecutionInterrupted` and retains the site in
    `Status::location()`.
 
-Straight-line lowering supports safety around runtime-helper calls, including
+Both IR forms support safety around runtime-helper calls, including
 caller-clobbered live values and link-register restoration. CFG lowering can
 place a poll in a loop body so long-running generated code can be interrupted
 without a signal handler or writable executable memory.

@@ -34,10 +34,12 @@ auto cfg_result = unijit::jit::Compiler::compile(cfg, cfg_limits);
 
 ## Enforcement order
 
-The compiler rejects excessive parameters, nodes, CFG blocks, call arguments,
-edge arguments, requested exit records, and recovery operations before the IR
-verifier runs. This ordering bounds verifier work, including CFG dominance
-state, rather than merely rejecting an oversized result afterward.
+The compiler rejects excessive parameters, nodes, CFG blocks, flattened
+straight-line or CFG runtime-call arguments, CFG edge arguments, requested exit
+records, and recovery operations before the IR verifier runs. CFG call and edge
+arguments share the aggregate `maximum_ir_arguments` budget. This ordering
+bounds verifier work, including CFG dominance state, rather than merely
+rejecting an oversized result afterward.
 
 After optimization and recovery preparation, UniJIT bounds stack-map record
 and live-value requirements before native lowering. It checks emitted stack

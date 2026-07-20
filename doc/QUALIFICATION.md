@@ -62,6 +62,14 @@ verification, dominance analysis, or executable publication. Frontend tests
 submit source beyond the 1 MiB retention ceiling and require native runtime
 range/value errors without entering translation.
 
+Typed CFG runtime-call qualification executes Word helpers inside backedge
+loops, keeps Word and Float64 state live across each call, and marshals twelve
+ordered mixed arguments so every target exercises register and stack sources.
+It also proves effectful dead-result calls remain observable and that guard and
+safepoint exits return safely after a helper has changed the link register.
+The external installed-package consumer builds and executes the same public CFG
+call API without access to private headers.
+
 ## CFG register-residency benchmark
 
 `unijit_cfg_float64_benchmark` executes one typed CFG with four loop-carried

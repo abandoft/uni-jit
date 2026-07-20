@@ -60,9 +60,10 @@ language Boolean values without routing through a runtime helper.
 
 Effectful runtime helpers use one portable signature: a pointer to a flat
 value-bits argument area plus its element count, returning one value-bits word.
-Calls are explicit SSA definitions and cannot be removed when their result is
-dead. Lowering saves caller-clobbered Word and Float64 values that remain live,
-materializes the per-call argument area, satisfies each platform's stack and
+Calls are explicit effectful SSA definitions in both straight-line and CFG IR
+and cannot be removed when their result is dead. Lowering saves caller-clobbered
+Word and Float64 values that remain live, materializes ordered mixed-type
+arguments from registers or spills, satisfies each platform's stack and
 shadow-space ABI, and preserves the link register on AArch64 and RISC-V 64.
 
 Native entries also accept an optional execution context. Explicit effectful
@@ -123,6 +124,11 @@ comparisons return false for NaN inputs and produce Word conditions suitable
 for CFG branches. Effectful CFG Float64 nonzero guards consume one dominated
 Float64 value, retain their source site, and use the same diagnosed runtime-exit
 ABI and immutable frame-reconstruction metadata as straight-line guards.
+Effectful CFG helper calls likewise require every argument to dominate the call,
+can return either Word or Float64 bits, and remain valid inside branches and
+loops. Per-call liveness preserves only values needed after the call, while one
+bounded frame area handles any mixture of register-resident and spilled
+arguments.
 Block-local allocation uses independent Word and Float64 register banks, so
 loop-carried floating-point values remain in native floating-point registers
 across arithmetic, comparisons, and CFG backedges. Bit-level transfers are

@@ -47,8 +47,11 @@ treated as errors for the library:
 The native test suite checks full-width constants, all bootstrap arithmetic
 operations, forced register spilling, invocation validation, and 5,000 seeded
 random comparisons against the interpreter oracle. It also checks helper calls
-and interruptible safepoints in straight-line and loop CFG code. Machine
-addresses and credentials are intentionally kept outside version control.
+and interruptible safepoints in straight-line and loop CFG code. CFG helper
+coverage includes mixed Word/Float64 register and stack arguments, live values
+across repeated calls, effectful dead results, and diagnosed exits after calls.
+Machine addresses and credentials are intentionally kept outside version
+control.
 
 ## Executable-memory policy
 
