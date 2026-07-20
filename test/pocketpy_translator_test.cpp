@@ -159,7 +159,7 @@ int main() {
       "def numeric_workload(count):\n"
       "    lhs = 1.25\n"
       "    rhs = -7.5\n"
-      "    checksum = 0.0\n"
+      "    checksum = 20.0 + -20.0\n"
       "    for iteration in range(count):\n"
       "        checksum = checksum + (lhs + rhs) * (lhs - 3.25) + rhs * 0.75\n"
       "        lhs = lhs + 0.125\n"
@@ -172,9 +172,17 @@ int main() {
   const auto counted_loop =
       unijit::frontend::pocketpy::translate_numeric_function(
           kCountedLoopSource);
+  const auto baseline_counted_loop =
+      unijit::frontend::pocketpy::translate_numeric_function(
+          kCountedLoopSource, unijit::jit::OptimizationLevel::kBaseline);
   if (!counted_loop.ok() || counted_loop.parameter_count != 1 ||
       !counted_loop.function->requires_context() ||
-      unijit::frontend::pocketpy::supports_tiered_translation(
+      !baseline_counted_loop.ok() ||
+      baseline_counted_loop.function->stats().input_ir_nodes !=
+          baseline_counted_loop.function->stats().optimized_ir_nodes ||
+      counted_loop.function->stats().optimized_ir_nodes >=
+          baseline_counted_loop.function->stats().optimized_ir_nodes ||
+      !unijit::frontend::pocketpy::supports_tiered_translation(
           kCountedLoopSource)) {
     std::cerr << "PocketPy counted loop did not compile: "
               << counted_loop.status.message() << '\n';
@@ -458,7 +466,7 @@ int main() {
       "native_loop = unijit.compile('''def numeric_workload(count):\n"
       "    lhs = 1.25\n"
       "    rhs = -7.5\n"
-      "    checksum = 0.0\n"
+      "    checksum = 20.0 + -20.0\n"
       "    for iteration in range(count):\n"
       "        checksum = checksum + (lhs + rhs) * (lhs - 3.25) + rhs * 0.75\n"
       "        lhs = lhs + 0.125\n"
@@ -531,10 +539,19 @@ int main() {
     py_finalize();
     return EXIT_FAILURE;
   }
-  if (!py_exec("loop_tier = unijit.stats(native_loop)\n"
-               "assert loop_tier['active_tier'] == 'baseline'\n"
-               "assert not loop_tier['tierable']\n"
-               "assert loop_tier['compilation_attempts'] == 0\n",
+  if (!py_exec("for loop_tier_iteration in range(63):\n"
+               "    loop_result = native_loop(10000)\n"
+               "assert unijit.wait(native_loop, 5000)\n"
+               "loop_tier = unijit.stats(native_loop)\n"
+               "assert loop_tier['active_tier'] == 'optimized'\n"
+               "assert loop_tier['tierable']\n"
+               "assert loop_tier['compilation_attempts'] == 1\n"
+               "assert loop_tier['successful_compilations'] == 1\n"
+               "assert loop_tier['failed_compilations'] == 0\n"
+               "assert loop_tier['promotions'] == 1\n"
+               "assert loop_tier['compilation_state'] == 'succeeded'\n"
+               "assert loop_tier['active_ir_nodes'] < "
+               "loop_tier['input_ir_nodes']\n",
                "<unijit-pocketpy-loop-tier>", EXEC_MODE, nullptr)) {
     py_printexc();
     py_finalize();
@@ -548,10 +565,19 @@ int main() {
       "    return quotient\n''')\n"
       "loop_quotient = native_loop_divide(2, 2)\n"
       "skipped_quotient = native_loop_divide(0, 0)\n"
+      "for loop_division_iteration in range(62):\n"
+      "    loop_quotient = native_loop_divide(2, 2)\n"
+      "assert unijit.wait(native_loop_divide, 5000)\n"
       "loop_division_tier = unijit.stats(native_loop_divide)\n"
       "assert loop_quotient == 3.0\n"
       "assert skipped_quotient == 12.0\n"
-      "assert not loop_division_tier['tierable']\n";
+      "assert loop_division_tier['tierable']\n"
+      "assert loop_division_tier['active_tier'] == 'optimized'\n"
+      "assert loop_division_tier['compilation_attempts'] == 1\n"
+      "assert loop_division_tier['successful_compilations'] == 1\n"
+      "assert loop_division_tier['failed_compilations'] == 0\n"
+      "assert loop_division_tier['promotions'] == 1\n"
+      "assert loop_division_tier['compilation_state'] == 'succeeded'\n";
   if (!py_exec(kNativeLoopDivisionSource,
                "<unijit-pocketpy-counted-loop-division>", EXEC_MODE,
                nullptr)) {

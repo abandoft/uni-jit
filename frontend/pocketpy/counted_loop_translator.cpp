@@ -58,7 +58,9 @@ struct Symbol final {
 
 class CountedLoopParser final {
 public:
-  explicit CountedLoopParser(std::string_view source) : source_(source) {}
+  CountedLoopParser(std::string_view source,
+                    jit::OptimizationLevel optimization_level)
+      : source_(source), optimization_level_(optimization_level) {}
 
   TranslationResult translate() {
     if (source_.size() > kMaximumSourceBytes) {
@@ -192,7 +194,8 @@ public:
 
     jit::CompilationResult compilation =
         jit::Compiler::compile(std::move(*builder_).build(),
-                               deoptimization_table_);
+                               deoptimization_table_,
+                               jit::CompilationOptions{optimization_level_});
     if (!compilation.ok()) {
       return {compilation.status, parameter_names_.size(), nullptr};
     }
@@ -912,6 +915,7 @@ private:
   }
 
   std::string_view source_;
+  jit::OptimizationLevel optimization_level_;
   std::vector<Line> lines_;
   std::size_t line_index_{0};
   Status status_;
@@ -953,9 +957,10 @@ bool looks_like_counted_loop(std::string_view source) noexcept {
   return false;
 }
 
-TranslationResult translate_counted_loop(std::string_view source) {
+TranslationResult translate_counted_loop(
+    std::string_view source, jit::OptimizationLevel optimization_level) {
   try {
-    return CountedLoopParser(source).translate();
+    return CountedLoopParser(source, optimization_level).translate();
   } catch (const std::bad_alloc &) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate PocketPy counted-loop translation state"},

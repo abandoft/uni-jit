@@ -424,7 +424,7 @@ TranslationResult translate_numeric_function(
     std::string_view source, jit::OptimizationLevel optimization_level) {
   try {
     if (looks_like_counted_loop(source)) {
-      return translate_counted_loop(source);
+      return translate_counted_loop(source, optimization_level);
     }
     return Parser(source, optimization_level).translate();
   } catch (const std::bad_alloc &) {
@@ -436,7 +436,8 @@ TranslationResult translate_numeric_function(
 }
 
 bool supports_tiered_translation(std::string_view source) noexcept {
-  return !looks_like_counted_loop(source);
+  (void)source;
+  return true;
 }
 
 } // namespace unijit::frontend::pocketpy
