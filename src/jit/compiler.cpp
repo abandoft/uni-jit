@@ -47,8 +47,9 @@ NativeEntry CompiledFunction::native_entry() const noexcept {
   return impl_ == nullptr ? nullptr : impl_->entry();
 }
 
-ir::EvaluationResult CompiledFunction::invoke(const ir::Word* args,
-                                              std::size_t arg_count) const {
+ir::EvaluationResult CompiledFunction::invoke(
+    const ir::Word* args, std::size_t arg_count,
+    runtime::ExecutionContext* context) const {
   if (arg_count != parameter_count_) {
     return {{StatusCode::kInvalidArgument,
              "argument count does not match compiled function signature"},
@@ -65,7 +66,22 @@ ir::EvaluationResult CompiledFunction::invoke(const ir::Word* args,
              "compiled function has no published entry point"},
             0};
   }
-  return {Status::ok_status(), entry(args)};
+  if (context != nullptr) {
+    context->clear_exit();
+  }
+  const ir::Word value = entry(args, context);
+  if (context == nullptr ||
+      context->exit_reason() == runtime::ExitReason::kNone) {
+    return {Status::ok_status(), value};
+  }
+  if (context->exit_reason() == runtime::ExitReason::kSafepoint) {
+    return {{StatusCode::kExecutionInterrupted,
+             "execution interrupted at a safepoint", context->exit_site()},
+            value};
+  }
+  return {{StatusCode::kRuntimeExit,
+           "compiled execution requested a runtime exit", context->exit_site()},
+          value};
 }
 
 CompilationResult Compiler::compile(const ir::Function& function) {

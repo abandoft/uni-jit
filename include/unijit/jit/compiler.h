@@ -8,11 +8,12 @@
 #include "unijit/ir/control_flow.h"
 #include "unijit/ir/function.h"
 #include "unijit/ir/interpreter.h"
+#include "unijit/runtime/execution_context.h"
 #include "unijit/status.h"
 
 namespace unijit::jit {
 
-using NativeEntry = ir::Word (*)(const ir::Word*);
+using NativeEntry = ir::Word (*)(const ir::Word*, runtime::ExecutionContext*);
 
 struct CompilationStats final {
   std::size_t code_size{0};
@@ -30,11 +31,14 @@ class CompiledFunction final {
   CompiledFunction(const CompiledFunction&) = delete;
   CompiledFunction& operator=(const CompiledFunction&) = delete;
 
-  ir::EvaluationResult invoke(const ir::Word* args,
-                              std::size_t arg_count) const;
+  ir::EvaluationResult invoke(
+      const ir::Word* args, std::size_t arg_count,
+      runtime::ExecutionContext* context = nullptr) const;
 
-  ir::EvaluationResult invoke(const std::vector<ir::Word>& args) const {
-    return invoke(args.data(), args.size());
+  ir::EvaluationResult invoke(
+      const std::vector<ir::Word>& args,
+      runtime::ExecutionContext* context = nullptr) const {
+    return invoke(args.data(), args.size(), context);
   }
 
   NativeEntry native_entry() const noexcept;

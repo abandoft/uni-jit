@@ -90,6 +90,36 @@ void test_constant_native_function() {
          "native constant materialization must preserve all 64 bits");
 }
 
+void test_execution_context_lifecycle() {
+  unijit::runtime::ExecutionContext context;
+  expect(!context.interrupt_requested(),
+         "new execution contexts must not request interruption");
+  context.request_interrupt();
+  expect(context.interrupt_requested(),
+         "execution contexts must publish interruption requests");
+  context.clear_interrupt();
+  expect(!context.interrupt_requested(),
+         "execution contexts must clear interruption requests");
+
+  context.record_exit(unijit::runtime::ExitReason::kRuntime, 91, -17);
+  expect(context.exit_reason() == unijit::runtime::ExitReason::kRuntime &&
+             context.exit_site() == 91 && context.exit_value() == -17,
+         "execution contexts must retain runtime-exit diagnostics");
+
+  FunctionBuilder builder(0);
+  expect(builder.set_return(builder.constant(73)).ok(),
+         "execution-context fixture must have a return value");
+  auto compilation = Compiler::compile(std::move(builder).build());
+  expect(compilation.ok(), "execution-context fixture must compile");
+  if (compilation.ok()) {
+    const auto result = compilation.function->invoke(nullptr, 0, &context);
+    expect(result.ok() && result.value == 73,
+           "invocation must clear stale exits before entering native code");
+    expect(context.exit_reason() == unijit::runtime::ExitReason::kNone,
+           "successful invocation must leave no exit reason");
+  }
+}
+
 void test_differential_arithmetic() {
   const Function function = arithmetic_function();
   auto compilation = Compiler::compile(function);
@@ -614,6 +644,7 @@ void test_control_flow_builder_rejects_edge_arity() {
 int main() {
   test_verifier_rejects_forward_reference();
   test_constant_native_function();
+  test_execution_context_lifecycle();
   test_differential_arithmetic();
   test_float64_ir_and_interpreter();
   test_verifier_rejects_mixed_arithmetic();

@@ -15,6 +15,8 @@ enum class StatusCode {
   kResourceExhausted,
   kCodeGenerationFailed,
   kMemoryProtectionFailed,
+  kExecutionInterrupted,
+  kRuntimeExit,
 };
 
 class Status final {

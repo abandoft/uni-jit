@@ -736,7 +736,8 @@ int invoke_compiled_function(lua_State *state) {
             : unijit::ir::pack_float64(static_cast<double>(fltvalue(argument)));
   }
 
-  const Word value = owned->function->native_entry()(arguments.data());
+  const Word value =
+      owned->function->native_entry()(arguments.data(), nullptr);
   if (owned->mode == NumericMode::kInteger) {
     setivalue(s2v(state->top.p), static_cast<lua_Integer>(value));
   } else {

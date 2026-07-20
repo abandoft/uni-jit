@@ -79,7 +79,7 @@ Measurement measure_native(unijit::jit::NativeEntry entry,
   std::uint64_t checksum = 0;
   const auto started = Clock::now();
   for (std::size_t iteration = 0; iteration < iterations; ++iteration) {
-    checksum ^= to_bits(entry(arguments.data()));
+    checksum ^= to_bits(entry(arguments.data(), nullptr));
     advance_arguments(&arguments);
   }
   const auto elapsed = Clock::now() - started;
