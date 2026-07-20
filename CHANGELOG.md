@@ -3,6 +3,8 @@
 - Added a fixed-worker background compilation scheduler with task-count and estimated-byte queue budgets, nonblocking admission, deadline-bounded backpressure, exact identity-and-generation deduplication, and starvation-bounded urgent, normal, and background priorities.
 - Added copyable compilation tickets with queued/running/terminal states, immediate queued cancellation and capacity reclamation, lock-free cooperative running cancellation, exception containment, bounded waits, current/peak resource telemetry, and deterministic drain or cancel shutdown.
 - Added production compilation-scheduler stress that coordinates many producers through a deterministic barrier, compiles and publishes native code concurrently, validates cache residency and execution, reconciles lifecycle counters, retains machine-readable records, runs under ThreadSanitizer, and is consumed through the installed CMake package.
+- Integrated live QuickJS baseline-to-optimized tiering so accepted straight-line callables publish low-latency baseline code immediately, claim optimization after 64 calls, compile through a bounded runtime-independent worker, reuse an exact-source optimized cache, reject stale generations, and cancel queued work during garbage collection.
+- Added QuickJS callable telemetry plus bounded waiting and explicit cancellation through `unijit.stats`, `unijit.wait`, and `unijit.cancel`, with deterministic tests for distinct compilation levels, asynchronous promotion, scheduler completion, non-tierable CFG reporting, and retained executable lifetime.
 
 ## 0.1.6
 

@@ -67,14 +67,21 @@ straight-line SSA. Baseline compilation skips the optimization pipeline while
 preserving verification, guards, deoptimization metadata, allocation, native
 lowering, and W^X publication; optimized compilation remains the default API.
 
-PocketPy is the first live frontend consumer. It retains exact accepted source,
-publishes a baseline immediately, claims optimization after 64 successful
-invocations, reuses an independent optimized cache, and switches with an
-expected-generation check. Its complete counted-loop CFG path remains a single
-native tier because repeating the same compilation would add latency without
-improving code. QuickJS and Lua still need frontend-owned profiling and real
-baseline/optimized installation, and broader language regions still need
-background scheduling away from latency-sensitive runtime threads.
+PocketPy retains exact accepted source, publishes a baseline immediately,
+claims optimization after 64 successful invocations, reuses an independent
+optimized cache, and switches with an expected-generation check. Its complete
+counted-loop CFG path remains a single native tier because repeating the same
+compilation would add latency without improving code.
+
+QuickJS applies the same baseline and optimized split to accepted straight-line
+callables, but submits optimization to a bounded frontend-owned scheduler after
+64 calls. The worker never accesses `JSRuntime` or `JSContext`: it only
+translates retained immutable source, publishes through the thread-safe cache,
+checks cancellation, and installs against the captured tier generation. The
+QuickJS class finalizer cancels outstanding work while the job's shared state
+keeps all native publication inputs alive through terminal completion. Lua
+still needs frontend-owned invocation and backedge profiling, and broader
+language regions need additional tier-specific lowering.
 
 The shared background execution primitive is now
 `CompilationScheduler`. Frontends can deduplicate an expected generation,
