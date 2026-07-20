@@ -25,6 +25,15 @@ class CodeBuffer final {
     }
   }
 
+  void patch_u32(std::size_t offset, std::uint32_t instruction) {
+    bytes_[offset] = static_cast<std::uint8_t>(instruction);
+    bytes_[offset + 1] = static_cast<std::uint8_t>(instruction >> 8U);
+    bytes_[offset + 2] = static_cast<std::uint8_t>(instruction >> 16U);
+    bytes_[offset + 3] = static_cast<std::uint8_t>(instruction >> 24U);
+  }
+
+  std::size_t size() const noexcept { return bytes_.size(); }
+
   const std::vector<std::uint8_t>& bytes() const noexcept { return bytes_; }
   std::vector<std::uint8_t> take_bytes() noexcept { return std::move(bytes_); }
 
