@@ -102,3 +102,32 @@ if(UNIJIT_BUILD_TESTS)
 
   add_test(NAME unijit.quickjs_frontend COMMAND unijit_quickjs_tests)
 endif()
+
+if(UNIJIT_BUILD_BENCHMARKS)
+  add_executable(unijit_quickjs_benchmark
+    "${PROJECT_SOURCE_DIR}/benchmark/quickjs/call_runner.cpp")
+  target_compile_features(unijit_quickjs_benchmark PRIVATE cxx_std_17)
+  target_link_libraries(unijit_quickjs_benchmark
+    PRIVATE unijit_quickjs_frontend)
+  set_target_properties(unijit_quickjs_benchmark PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin")
+
+  if(MSVC)
+    target_compile_options(unijit_quickjs_benchmark PRIVATE /W4 /permissive-)
+    if(UNIJIT_WARNINGS_AS_ERRORS)
+      target_compile_options(unijit_quickjs_benchmark PRIVATE /WX)
+    endif()
+  else()
+    target_compile_options(unijit_quickjs_benchmark PRIVATE
+      -Wall -Wextra -Wpedantic)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+      target_compile_options(unijit_quickjs_benchmark PRIVATE
+        -Wno-c99-extensions -Wno-c++20-designator)
+    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+      target_compile_options(unijit_quickjs_benchmark PRIVATE -Wno-pedantic)
+    endif()
+    if(UNIJIT_WARNINGS_AS_ERRORS)
+      target_compile_options(unijit_quickjs_benchmark PRIVATE -Werror)
+    endif()
+  endif()
+endif()
