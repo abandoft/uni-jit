@@ -274,7 +274,7 @@ private:
         deoptimization.reason =
             runtime::DeoptimizationReason::kDivisionByZero;
         try {
-          deoptimization.recovery.reserve(parameters_.size() + 1);
+          deoptimization.recovery.reserve(parameters_.size() + 2);
           for (std::size_t index = 0; index < parameters_.size(); ++index) {
             deoptimization.recovery.push_back(
                 runtime::RecoveryOperation::argument(
@@ -283,6 +283,9 @@ private:
           deoptimization.recovery.push_back(
               runtime::RecoveryOperation::exit_value(
                   parameters_.size(), ir::ValueType::kFloat64));
+          deoptimization.recovery.push_back(
+              runtime::RecoveryOperation::captured_value(
+                  parameters_.size() + 1, ir::ValueType::kFloat64, value));
         } catch (const std::bad_alloc &) {
           status_ = {StatusCode::kResourceExhausted,
                      "unable to allocate PocketPy deoptimization state",

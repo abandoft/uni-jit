@@ -580,13 +580,21 @@ private:
     deoptimization.site = site;
     deoptimization.resume_offset = site;
     deoptimization.reason = runtime::DeoptimizationReason::kDivisionByZero;
-    deoptimization.recovery.reserve(parameter_names_.size() + 1);
+    deoptimization.recovery.reserve(parameter_names_.size() + 1 +
+                                    loop_symbol_indices_.size());
     for (std::size_t index = 0; index < parameter_names_.size(); ++index) {
       deoptimization.recovery.push_back(runtime::RecoveryOperation::argument(
           index, ir::ValueType::kFloat64, index));
     }
     deoptimization.recovery.push_back(runtime::RecoveryOperation::exit_value(
         parameter_names_.size(), ir::ValueType::kFloat64));
+    for (std::size_t index = 0; index < loop_symbol_indices_.size(); ++index) {
+      deoptimization.recovery.push_back(
+          runtime::RecoveryOperation::captured_value(
+              parameter_names_.size() + 1 + index,
+              ir::ValueType::kFloat64,
+              symbols_[loop_symbol_indices_[index]].value));
+    }
     const Status metadata_status = deoptimization_table_.add(deoptimization);
     if (!metadata_status.ok()) {
       status_ = metadata_status;
