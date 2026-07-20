@@ -28,6 +28,7 @@ jobs:
         run: >-
           cmake --build build/qualification --parallel
           --target unijit_differential_fuzz unijit_code_cache_stress
+          unijit_compilation_scheduler_stress
 
       - name: Run committed qualification corpus
         run: >-
@@ -53,6 +54,12 @@ jobs:
           --readers 12 --writers 4 --reads 50000
           --publications 3000 --keys 32
           > build/qualification/records/code-cache-stress.json
+
+      - name: Run sustained compilation-scheduler stress
+        run: >-
+          build/qualification/test/unijit_compilation_scheduler_stress
+          --producers 16 --submissions 20000 --identities 512 --workers 8
+          > build/qualification/records/compilation-scheduler-stress.json
 
       - name: Retain qualification records
         uses: actions/upload-artifact@v7
@@ -85,7 +92,8 @@ jobs:
       - name: Build ThreadSanitizer runtime tests
         run: >-
           cmake --build build/thread-sanitize --parallel
-          --target unijit_code_cache_stress unijit_tests
+          --target unijit_code_cache_stress
+          unijit_compilation_scheduler_stress unijit_tests
 
       - name: Run ThreadSanitizer cache stress
         run: >-
@@ -96,3 +104,8 @@ jobs:
 
       - name: Run ThreadSanitizer assumption invalidation
         run: build/thread-sanitize/test/unijit_tests
+
+      - name: Run ThreadSanitizer compilation scheduling
+        run: >-
+          build/thread-sanitize/test/unijit_compilation_scheduler_stress
+          --producers 8 --submissions 2000 --identities 64 --workers 4
