@@ -101,7 +101,9 @@ python3 benchmark/quickjs/run_v8.py \
 
 The JSON records exact source revisions and Node/V8 versions. Hosted
 validation pins Node, runs both V8 modes, and retains the record as an
-artifact.
+artifact. It also requires at least a 1.25x speedup over stock QuickJS and a
+1.10x speedup over V8 Jitless at the complete-loop boundary, retaining the
+machine-readable gate decision beside the raw result.
 
 ## PocketPy and CPython 3.14.6 JIT target comparison
 
@@ -128,3 +130,6 @@ The runner requires exactly CPython 3.14.6, checks `sys._jit` availability and
 the requested runtime mode, and records exact source revisions. Hosted
 validation verifies the official Python.org package checksum before extracting
 it below `build/` and retains the comparison record as an artifact.
+Hosted validation requires at least a 1.25x speedup over stock PocketPy and a
+1.10x speedup over both CPython interpreter and JIT modes at the complete-loop
+boundary. `doc/QUALIFICATION.md` defines replay, stress, and gate policy.

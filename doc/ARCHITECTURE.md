@@ -154,4 +154,5 @@ language semantics permit, with semantic differences listed in the report.
    deoptimization, and on-stack replacement.
 5. Additional frontends: QuickJS and PocketPy adapters sharing the same core.
 6. Release qualification: sustained stress, fuzzing, security review,
-   performance gates, artifacts, changelog, and monitored release pipelines.
+   performance gates, artifacts, changelog, and monitored release pipelines as
+   specified in `doc/QUALIFICATION.md`.

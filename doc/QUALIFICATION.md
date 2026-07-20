@@ -1,0 +1,76 @@
+# Release qualification
+
+UniJIT treats correctness under generated inputs, concurrent native-code
+lifecycle safety, and repeatable target performance as release-blocking product
+properties. Qualification executables are opt-in for ordinary local builds and
+mandatory in hosted continuous validation.
+
+## Deterministic differential fuzzing
+
+`unijit_differential_fuzz` generates valid programs from a reported 64-bit
+seed, compiles them with the production pipeline, and compares every native
+result bit-for-bit with the matching reference interpreter. Each corpus covers:
+
+- straight-line Word SSA with random constants, addition, subtraction,
+  multiplication, spills, and optimizer input shapes;
+- straight-line Float64 SSA with bounded finite inputs and all four arithmetic
+  operations;
+- typed Word and Float64 CFGs with diamonds, 1 to 12 loop-carried state values,
+  permuted and duplicated edge sources, ordered comparisons, backedges, and
+  mandatory safepoints.
+
+Mismatch diagnostics contain the tier, seed, program index, input index,
+statuses, and exact result bits. A hosted failure can therefore be replayed
+locally without preserving a mutable random corpus.
+
+## Concurrent code-cache stress
+
+`unijit_code_cache_stress` runs configurable reader and writer populations over
+a deliberately undersized cache. Writers concurrently publish, replace, and
+invalidate fingerprinted generations while readers look up, invoke, and retain
+leases across eviction. Every identity has a deterministic expected result.
+
+The test rejects wrong execution, failed publication, counter drift, capacity
+overflow, failed clearing, and reclamation of a retained lease. The dedicated
+workflow also runs this executable under ThreadSanitizer, in addition to the
+repository-wide AddressSanitizer and UndefinedBehaviorSanitizer job.
+
+## Performance gates
+
+`tool/performance_gate.py` consumes retained benchmark JSON instead of parsing
+human-readable logs. It rejects the wrong schema, a narrower measurement
+boundary, missing or non-finite ratios, and any result below the configured
+floor. Hosted validation currently enforces:
+
+| Target | Complete-loop minimum |
+|---|---:|
+| UniJIT over stock QuickJS | 1.25x |
+| UniJIT over V8 Jitless | 1.10x |
+| UniJIT over stock PocketPy | 1.25x |
+| UniJIT over CPython 3.14.6 interpreter | 1.10x |
+| UniJIT over CPython 3.14.6 JIT | 1.10x |
+
+The margins are performance floors, not claims that the current observed ratio
+is stable across unrelated machines. Both the raw comparison and the
+machine-readable gate decision are retained as workflow artifacts.
+
+Lua records now include the direct `unijit_speedup_over_luajit` ratio and all
+four hosted Lua baselines are retained. The current Lua complete-loop tier is
+not yet a passing LuaJIT target, so it is deliberately not represented as a
+release-qualified performance gate. Closing that target remains mandatory
+before the corresponding commercial release claim.
+
+## Local execution
+
+```sh
+cmake -S . -B build/qualification -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DUNIJIT_BUILD_TESTS=ON \
+  -DUNIJIT_BUILD_QUALIFICATION_TESTS=ON \
+  -DUNIJIT_WARNINGS_AS_ERRORS=ON
+cmake --build build/qualification --parallel
+ctest --test-dir build/qualification -L qualification --output-on-failure
+```
+
+Both executables accept explicit scale and seed options. Generated JSON records
+and all other run output must remain under the repository `build/` directory.
