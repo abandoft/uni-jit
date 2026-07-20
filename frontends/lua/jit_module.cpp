@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <memory>
 #include <new>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -15,6 +16,7 @@ extern "C" {
 #include "lstate.h"
 }
 
+#include "unijit/ir/control_flow.h"
 #include "unijit/ir/function.h"
 #include "unijit/jit/compiler.h"
 #include "unijit/status.h"
@@ -24,6 +26,7 @@ namespace {
 using unijit::Status;
 using unijit::StatusCode;
 using unijit::ir::FunctionBuilder;
+using unijit::ir::ControlFlowBuilder;
 using unijit::ir::Value;
 using unijit::ir::Word;
 using unijit::jit::CompilationResult;
@@ -54,7 +57,7 @@ bool valid_destination(const std::vector<Value> &registers, int index) {
   return index >= 0 && static_cast<std::size_t>(index) < registers.size();
 }
 
-CompilationResult compile_prototype(const Proto &prototype) {
+CompilationResult compile_straight_prototype(const Proto &prototype) {
   if (isvararg(&prototype)) {
     return translation_error(0, "vararg Lua functions are not supported");
   }
@@ -258,6 +261,426 @@ CompilationResult compile_prototype(const Proto &prototype) {
              "unable to allocate Lua frontend translation state"},
             nullptr};
   }
+}
+
+CompilationResult compile_numeric_for_prototype(const Proto &prototype) {
+  if (isvararg(&prototype)) {
+    return translation_error(0, "vararg Lua functions are not supported");
+  }
+  if (prototype.numparams > prototype.maxstacksize) {
+    return translation_error(0, "Lua prototype has an invalid stack layout");
+  }
+
+  int preparation_pc = -1;
+  for (int pc = 0; pc < prototype.sizecode; ++pc) {
+    if (GET_OPCODE(prototype.code[pc]) == OP_FORPREP) {
+      if (preparation_pc >= 0) {
+        return translation_error(static_cast<std::size_t>(pc),
+                                 "only one numeric for loop is supported");
+      }
+      preparation_pc = pc;
+    }
+  }
+  if (preparation_pc < 0) {
+    return translation_error(0, "Lua function has no numeric for loop");
+  }
+
+  const Instruction preparation = prototype.code[preparation_pc];
+  const int loop_pc =
+      preparation_pc + GETARG_Bx(preparation) + 1;
+  if (loop_pc <= preparation_pc || loop_pc >= prototype.sizecode ||
+      GET_OPCODE(prototype.code[loop_pc]) != OP_FORLOOP ||
+      GETARG_Bx(prototype.code[loop_pc]) != loop_pc - preparation_pc) {
+    return translation_error(static_cast<std::size_t>(preparation_pc),
+                             "numeric for loop has malformed control flow");
+  }
+
+  const int state_base = GETARG_A(preparation);
+  if (state_base < 0 || state_base + 2 >= prototype.maxstacksize ||
+      GETARG_A(prototype.code[loop_pc]) != state_base) {
+    return translation_error(static_cast<std::size_t>(preparation_pc),
+                             "numeric for loop has invalid state registers");
+  }
+
+  try {
+    ControlFlowBuilder builder(prototype.numparams);
+    std::vector<Value> registers(prototype.maxstacksize);
+    std::vector<std::optional<Word>> known(prototype.maxstacksize);
+    for (std::size_t index = 0; index < prototype.numparams; ++index) {
+      registers[index] = builder.parameter(index);
+    }
+
+    const auto bytecode_error = [](int pc, const char *message) {
+      return Status{StatusCode::kInvalidArgument, message,
+                    static_cast<std::size_t>(pc)};
+    };
+
+    const auto translate_range =
+        [&](int begin, int end, bool allow_return, int protected_state_base,
+            std::vector<Value> *values,
+            std::vector<std::optional<Word>> *constants,
+            bool *returned) -> Status {
+      for (int pc = begin; pc < end; ++pc) {
+        const Instruction instruction = prototype.code[pc];
+        const OpCode opcode = GET_OPCODE(instruction);
+        const int destination = GETARG_A(instruction);
+        const bool writes_destination =
+            opcode == OP_MOVE || opcode == OP_LOADI || opcode == OP_LOADK ||
+            opcode == OP_ADDI || opcode == OP_ADDK || opcode == OP_SUBK ||
+            opcode == OP_MULK || opcode == OP_ADD || opcode == OP_SUB ||
+            opcode == OP_MUL;
+        if (writes_destination && protected_state_base >= 0 &&
+            destination >= protected_state_base &&
+            destination <= protected_state_base + 2) {
+          return bytecode_error(
+              pc, "numeric for body modifies an internal loop register");
+        }
+
+        switch (opcode) {
+          case OP_MOVE: {
+            const int source = GETARG_B(instruction);
+            if (!valid_destination(*values, destination) ||
+                !valid_register(*values, source)) {
+              return bytecode_error(pc, "invalid register in OP_MOVE");
+            }
+            (*values)[static_cast<std::size_t>(destination)] =
+                (*values)[static_cast<std::size_t>(source)];
+            (*constants)[static_cast<std::size_t>(destination)] =
+                (*constants)[static_cast<std::size_t>(source)];
+            break;
+          }
+
+          case OP_LOADI: {
+            if (!valid_destination(*values, destination)) {
+              return bytecode_error(pc, "invalid destination in OP_LOADI");
+            }
+            const Word immediate =
+                static_cast<Word>(GETARG_sBx(instruction));
+            (*values)[static_cast<std::size_t>(destination)] =
+                builder.constant(immediate);
+            (*constants)[static_cast<std::size_t>(destination)] = immediate;
+            break;
+          }
+
+          case OP_LOADK: {
+            const int constant_index = GETARG_Bx(instruction);
+            if (!valid_destination(*values, destination) ||
+                constant_index < 0 || constant_index >= prototype.sizek) {
+              return bytecode_error(pc, "invalid operand in OP_LOADK");
+            }
+            const TValue *constant = &prototype.k[constant_index];
+            if (!ttisinteger(constant)) {
+              return bytecode_error(
+                  pc, "only integer constants are supported in OP_LOADK");
+            }
+            const Word immediate = static_cast<Word>(ivalue(constant));
+            (*values)[static_cast<std::size_t>(destination)] =
+                builder.constant(immediate);
+            (*constants)[static_cast<std::size_t>(destination)] = immediate;
+            break;
+          }
+
+          case OP_ADDI: {
+            const int source = GETARG_B(instruction);
+            if (!valid_destination(*values, destination) ||
+                !valid_register(*values, source)) {
+              return bytecode_error(pc, "invalid register in OP_ADDI");
+            }
+            (*values)[static_cast<std::size_t>(destination)] = builder.add(
+                (*values)[static_cast<std::size_t>(source)],
+                builder.constant(static_cast<Word>(GETARG_sC(instruction))));
+            (*constants)[static_cast<std::size_t>(destination)].reset();
+            if (pc + 1 >= end ||
+                GET_OPCODE(prototype.code[pc + 1]) != OP_MMBINI) {
+              return bytecode_error(
+                  pc, "OP_ADDI is missing its Lua metamethod fallback");
+            }
+            ++pc;
+            break;
+          }
+
+          case OP_ADDK:
+          case OP_SUBK:
+          case OP_MULK: {
+            const int source = GETARG_B(instruction);
+            const int constant_index = GETARG_C(instruction);
+            if (!valid_destination(*values, destination) ||
+                !valid_register(*values, source) || constant_index < 0 ||
+                constant_index >= prototype.sizek) {
+              return bytecode_error(pc,
+                                    "invalid operand in constant arithmetic");
+            }
+            const TValue *constant = &prototype.k[constant_index];
+            if (!ttisinteger(constant)) {
+              return bytecode_error(
+                  pc, "constant arithmetic requires an integer constant");
+            }
+            const Value lhs = (*values)[static_cast<std::size_t>(source)];
+            const Value rhs =
+                builder.constant(static_cast<Word>(ivalue(constant)));
+            if (opcode == OP_ADDK) {
+              (*values)[static_cast<std::size_t>(destination)] =
+                  builder.add(lhs, rhs);
+            } else if (opcode == OP_SUBK) {
+              (*values)[static_cast<std::size_t>(destination)] =
+                  builder.subtract(lhs, rhs);
+            } else {
+              (*values)[static_cast<std::size_t>(destination)] =
+                  builder.multiply(lhs, rhs);
+            }
+            (*constants)[static_cast<std::size_t>(destination)].reset();
+            if (pc + 1 >= end ||
+                GET_OPCODE(prototype.code[pc + 1]) != OP_MMBINK) {
+              return bytecode_error(
+                  pc,
+                  "constant arithmetic is missing its Lua metamethod fallback");
+            }
+            ++pc;
+            break;
+          }
+
+          case OP_ADD:
+          case OP_SUB:
+          case OP_MUL: {
+            const int lhs_index = GETARG_B(instruction);
+            const int rhs_index = GETARG_C(instruction);
+            if (!valid_destination(*values, destination) ||
+                !valid_register(*values, lhs_index) ||
+                !valid_register(*values, rhs_index)) {
+              return bytecode_error(pc,
+                                    "invalid register in binary arithmetic");
+            }
+            const Value lhs = (*values)[static_cast<std::size_t>(lhs_index)];
+            const Value rhs = (*values)[static_cast<std::size_t>(rhs_index)];
+            if (opcode == OP_ADD) {
+              (*values)[static_cast<std::size_t>(destination)] =
+                  builder.add(lhs, rhs);
+            } else if (opcode == OP_SUB) {
+              (*values)[static_cast<std::size_t>(destination)] =
+                  builder.subtract(lhs, rhs);
+            } else {
+              (*values)[static_cast<std::size_t>(destination)] =
+                  builder.multiply(lhs, rhs);
+            }
+            (*constants)[static_cast<std::size_t>(destination)].reset();
+            if (pc + 1 >= end ||
+                GET_OPCODE(prototype.code[pc + 1]) != OP_MMBIN) {
+              return bytecode_error(
+                  pc,
+                  "binary arithmetic is missing its Lua metamethod fallback");
+            }
+            ++pc;
+            break;
+          }
+
+          case OP_RETURN1:
+            if (!allow_return || !valid_register(*values, destination)) {
+              return bytecode_error(pc, "unsupported return in numeric loop");
+            }
+            if (!builder
+                     .set_return(
+                         (*values)[static_cast<std::size_t>(destination)])
+                     .ok()) {
+              return bytecode_error(pc,
+                                    "unable to record the Lua return value");
+            }
+            *returned = true;
+            return Status::ok_status();
+
+          case OP_RETURN:
+            if (!allow_return || GETARG_B(instruction) != 2 ||
+                GETARG_k(instruction) != 0 ||
+                !valid_register(*values, destination)) {
+              return bytecode_error(
+                  pc, "only one-value fixed Lua returns are supported");
+            }
+            if (!builder
+                     .set_return(
+                         (*values)[static_cast<std::size_t>(destination)])
+                     .ok()) {
+              return bytecode_error(pc,
+                                    "unable to record the Lua return value");
+            }
+            *returned = true;
+            return Status::ok_status();
+
+          default: {
+            char message[96] = {};
+            std::snprintf(message, sizeof(message),
+                          "unsupported Lua 5.5 opcode %d in numeric loop",
+                          static_cast<int>(opcode));
+            return bytecode_error(pc, message);
+          }
+        }
+      }
+      return Status::ok_status();
+    };
+
+    bool returned = false;
+    Status status = translate_range(0, preparation_pc, false, -1, &registers,
+                                    &known, &returned);
+    if (!status.ok()) {
+      return {status, nullptr};
+    }
+
+    if (!valid_register(registers, state_base) ||
+        !valid_register(registers, state_base + 1) ||
+        !valid_register(registers, state_base + 2) ||
+        !known[static_cast<std::size_t>(state_base)].has_value() ||
+        !known[static_cast<std::size_t>(state_base + 2)].has_value() ||
+        known[static_cast<std::size_t>(state_base + 2)].value() != 1) {
+      return translation_error(
+          static_cast<std::size_t>(preparation_pc),
+          "numeric for loop requires an integer constant start and step 1");
+    }
+
+    std::vector<bool> needed_registers(prototype.maxstacksize, false);
+    const auto note_register_reads = [&](int begin, int end) {
+      for (int pc = begin; pc < end; ++pc) {
+        const Instruction instruction = prototype.code[pc];
+        const OpCode opcode = GET_OPCODE(instruction);
+        const auto note = [&](int index) {
+          if (index >= 0 && index < prototype.maxstacksize) {
+            needed_registers[static_cast<std::size_t>(index)] = true;
+          }
+        };
+        if (opcode == OP_MOVE || opcode == OP_ADDI || opcode == OP_ADDK ||
+            opcode == OP_SUBK || opcode == OP_MULK) {
+          note(GETARG_B(instruction));
+        } else if (opcode == OP_ADD || opcode == OP_SUB || opcode == OP_MUL) {
+          note(GETARG_B(instruction));
+          note(GETARG_C(instruction));
+        } else if (opcode == OP_RETURN || opcode == OP_RETURN1) {
+          note(GETARG_A(instruction));
+        }
+      }
+    };
+    note_register_reads(preparation_pc + 1, loop_pc);
+    note_register_reads(loop_pc + 1, prototype.sizecode);
+    needed_registers[static_cast<std::size_t>(state_base + 1)] = true;
+    needed_registers[static_cast<std::size_t>(state_base + 2)] = true;
+
+    std::vector<std::size_t> carried_registers;
+    for (std::size_t index = 0; index < registers.size(); ++index) {
+      if (registers[index].valid() && needed_registers[index]) {
+        carried_registers.push_back(index);
+      }
+    }
+    const unijit::ir::Block loop =
+        builder.create_block(carried_registers.size());
+    const unijit::ir::Block exit =
+        builder.create_block(carried_registers.size());
+    if (!loop.valid() || !exit.valid()) {
+      return {{StatusCode::kResourceExhausted,
+               "unable to allocate Lua numeric-loop blocks"},
+              nullptr};
+    }
+
+    std::vector<Value> initial_loop_arguments;
+    std::vector<Value> skipped_loop_arguments;
+    initial_loop_arguments.reserve(carried_registers.size());
+    skipped_loop_arguments.reserve(carried_registers.size());
+    for (const std::size_t lua_register : carried_registers) {
+      skipped_loop_arguments.push_back(registers[lua_register]);
+      initial_loop_arguments.push_back(
+          lua_register == static_cast<std::size_t>(state_base + 2)
+              ? registers[static_cast<std::size_t>(state_base)]
+              : registers[lua_register]);
+    }
+    const Value enters_loop = builder.less_equal(
+        registers[static_cast<std::size_t>(state_base)],
+        registers[static_cast<std::size_t>(state_base + 1)]);
+    status = builder.branch(enters_loop, loop, initial_loop_arguments, exit,
+                            skipped_loop_arguments);
+    if (!status.ok()) {
+      return {status, nullptr};
+    }
+
+    status = builder.set_insertion_block(loop);
+    if (!status.ok()) {
+      return {status, nullptr};
+    }
+    std::vector<Value> loop_registers(prototype.maxstacksize);
+    std::vector<std::optional<Word>> loop_known(prototype.maxstacksize);
+    for (std::size_t index = 0; index < carried_registers.size(); ++index) {
+      loop_registers[carried_registers[index]] =
+          builder.block_parameter(loop, index);
+    }
+    status = translate_range(preparation_pc + 1, loop_pc, false, state_base,
+                             &loop_registers, &loop_known, &returned);
+    if (!status.ok()) {
+      return {status, nullptr};
+    }
+
+    const Value current_index =
+        loop_registers[static_cast<std::size_t>(state_base + 2)];
+    const Value limit =
+        loop_registers[static_cast<std::size_t>(state_base + 1)];
+    if (!current_index.valid() || !limit.valid()) {
+      return translation_error(static_cast<std::size_t>(loop_pc),
+                               "numeric loop lost its induction state");
+    }
+    const Value continues = builder.less_than(current_index, limit);
+    const Value next_index = builder.add(
+        current_index, registers[static_cast<std::size_t>(state_base + 2)]);
+
+    std::vector<Value> backedge_arguments;
+    std::vector<Value> completed_arguments;
+    backedge_arguments.reserve(carried_registers.size());
+    completed_arguments.reserve(carried_registers.size());
+    for (const std::size_t lua_register : carried_registers) {
+      const Value value = loop_registers[lua_register];
+      if (!value.valid()) {
+        return translation_error(
+            static_cast<std::size_t>(loop_pc),
+            "numeric loop has an undefined carried register");
+      }
+      completed_arguments.push_back(value);
+      backedge_arguments.push_back(
+          lua_register == static_cast<std::size_t>(state_base + 2)
+              ? next_index
+              : value);
+    }
+    status = builder.branch(continues, loop, backedge_arguments, exit,
+                            completed_arguments);
+    if (!status.ok()) {
+      return {status, nullptr};
+    }
+
+    status = builder.set_insertion_block(exit);
+    if (!status.ok()) {
+      return {status, nullptr};
+    }
+    std::vector<Value> exit_registers(prototype.maxstacksize);
+    std::vector<std::optional<Word>> exit_known(prototype.maxstacksize);
+    for (std::size_t index = 0; index < carried_registers.size(); ++index) {
+      exit_registers[carried_registers[index]] =
+          builder.block_parameter(exit, index);
+    }
+    status = translate_range(loop_pc + 1, prototype.sizecode, true, -1,
+                             &exit_registers, &exit_known, &returned);
+    if (!status.ok()) {
+      return {status, nullptr};
+    }
+    if (!returned) {
+      return translation_error(static_cast<std::size_t>(prototype.sizecode),
+                               "Lua numeric loop has no supported return");
+    }
+    return Compiler::compile(std::move(builder).build());
+  } catch (const std::bad_alloc &) {
+    return {{StatusCode::kResourceExhausted,
+             "unable to allocate Lua numeric-loop translation state"},
+            nullptr};
+  }
+}
+
+CompilationResult compile_prototype(const Proto &prototype) {
+  for (int pc = 0; pc < prototype.sizecode; ++pc) {
+    if (GET_OPCODE(prototype.code[pc]) == OP_FORPREP) {
+      return compile_numeric_for_prototype(prototype);
+    }
+  }
+  return compile_straight_prototype(prototype);
 }
 
 int destroy_compiled_function(lua_State *state) {

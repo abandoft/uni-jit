@@ -52,6 +52,30 @@ compare(function()
   return 17
 end, {{}})
 
+local counted_sum = function(count)
+  local sum = 0
+  for index = 1, count do
+    sum = sum + index
+  end
+  return sum
+end
+local native_counted_sum = unijit.compile(counted_sum)
+for _, count in ipairs({-7, 0, 1, 2, 17, 100, 10000}) do
+  assert(native_counted_sum(count) == counted_sum(count))
+end
+
+local offset_sum = function(count)
+  local sum = 5
+  for index = 3, count do
+    sum = sum + index * 2
+  end
+  return sum
+end
+local native_offset_sum = unijit.compile(offset_sum)
+for _, count in ipairs({-1, 0, 2, 3, 19, 1000}) do
+  assert(native_offset_sum(count) == offset_sum(count))
+end
+
 assert(native_recurrence(9, 3, 5, "extra arguments are ignored") == 48)
 
 local ok, message = pcall(native_recurrence, 1, 2.5, 3)
@@ -78,6 +102,27 @@ ok, message = pcall(unijit.compile, function(...)
 end)
 assert(not ok and tostring(message):find("vararg"))
 
+ok, message = pcall(unijit.compile, function(count)
+  local sum = 0
+  for index = 1, count, 2 do
+    sum = sum + index
+  end
+  return sum
+end)
+assert(not ok and tostring(message):find("step 1"))
+
+ok, message = pcall(unijit.compile, function(count)
+  local sum = 0
+  for index = 1, count do
+    sum = sum + index
+  end
+  for index = 1, count do
+    sum = sum + index
+  end
+  return sum
+end)
+assert(not ok and tostring(message):find("only one numeric for loop"))
+
 ok = pcall(unijit.compile, math.abs)
 assert(not ok)
 
@@ -96,6 +141,8 @@ assert(not ok and tostring(message):find("invalid UniJIT compiled function"))
 
 immediate = nil
 native_recurrence = nil
+native_counted_sum = nil
+native_offset_sum = nil
 disposable = nil
 collectgarbage("collect")
 )lua";
