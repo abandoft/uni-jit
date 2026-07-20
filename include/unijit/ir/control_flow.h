@@ -44,6 +44,7 @@ enum class ControlOpcode : std::uint8_t {
   kMultiply,
   kLessThan,
   kLessEqual,
+  kSafepoint,
 };
 
 struct ControlNode final {
@@ -114,6 +115,7 @@ public:
   Value multiply(Value lhs, Value rhs);
   Value less_than(Value lhs, Value rhs);
   Value less_equal(Value lhs, Value rhs);
+  Value safepoint(std::size_t site);
 
   Status set_return(Value value);
   Status jump(Block target, std::vector<Value> arguments);
@@ -140,13 +142,15 @@ public:
   static EvaluationResult
   evaluate(const ControlFlowFunction &function, const Word *args,
            std::size_t arg_count,
-           std::size_t maximum_block_executions = 1000000);
+           std::size_t maximum_block_executions = 1000000,
+           runtime::ExecutionContext *context = nullptr);
 
   static EvaluationResult
   evaluate(const ControlFlowFunction &function, const std::vector<Word> &args,
-           std::size_t maximum_block_executions = 1000000) {
+           std::size_t maximum_block_executions = 1000000,
+           runtime::ExecutionContext *context = nullptr) {
     return evaluate(function, args.data(), args.size(),
-                    maximum_block_executions);
+                    maximum_block_executions, context);
   }
 };
 

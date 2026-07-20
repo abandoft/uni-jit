@@ -166,6 +166,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kParameter:
         case ir::ControlOpcode::kBlockParameter:
         case ir::ControlOpcode::kConstant:
+        case ir::ControlOpcode::kSafepoint:
           break;
       }
     }
@@ -246,6 +247,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kParameter:
         case ir::ControlOpcode::kBlockParameter:
         case ir::ControlOpcode::kConstant:
+        case ir::ControlOpcode::kSafepoint:
           break;
       }
     }

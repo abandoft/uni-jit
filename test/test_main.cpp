@@ -681,6 +681,71 @@ void test_control_flow_rejects_non_dominating_value() {
          "CFG verifier must reject a sibling-block SSA use");
 }
 
+void test_control_flow_safepoint() {
+  unijit::ir::ControlFlowBuilder builder(1);
+  const unijit::ir::Block loop = builder.create_block(2);
+  const unijit::ir::Block exit = builder.create_block(1);
+  const Value zero = builder.constant(0);
+  const Value one = builder.constant(1);
+  expect(builder.jump(loop, {builder.parameter(0), zero}).ok(),
+         "CFG safepoint fixture must enter its loop");
+
+  expect(builder.set_insertion_block(loop).ok(),
+         "CFG safepoint loop must exist");
+  const Value remaining = builder.block_parameter(loop, 0);
+  const Value sum = builder.block_parameter(loop, 1);
+  const Value safepoint = builder.safepoint(314);
+  expect(safepoint.valid(), "CFG safepoint must be inserted in the loop");
+  const Value next_sum = builder.add(builder.add(sum, remaining), safepoint);
+  const Value next_remaining = builder.subtract(remaining, one);
+  const Value continue_loop = builder.less_than(zero, next_remaining);
+  expect(builder
+             .branch(continue_loop, loop, {next_remaining, next_sum}, exit,
+                     {next_sum})
+             .ok(),
+         "CFG safepoint loop must branch to its backedge and exit");
+
+  expect(builder.set_insertion_block(exit).ok(),
+         "CFG safepoint exit must exist");
+  expect(builder.set_return(builder.block_parameter(exit, 0)).ok(),
+         "CFG safepoint exit must return its sum");
+  const unijit::ir::ControlFlowFunction function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(), "CFG safepoint IR must verify");
+
+  const std::array<Word, 1> args = {4};
+  unijit::runtime::ExecutionContext context;
+  context.request_interrupt();
+  const auto interpreted = unijit::ir::ControlFlowInterpreter::evaluate(
+      function, args.data(), args.size(), 100, &context);
+  expect(!interpreted.ok() &&
+             interpreted.status.code() ==
+                 unijit::StatusCode::kExecutionInterrupted &&
+             interpreted.status.location() == 314,
+         "CFG interpreter must exit at the requested loop safepoint");
+
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "CFG safepoint loop must compile");
+  if (compilation.ok()) {
+    context.request_interrupt();
+    const auto interrupted =
+        compilation.function->invoke(args.data(), args.size(), &context);
+    expect(!interrupted.ok() &&
+               interrupted.status.code() ==
+                   unijit::StatusCode::kExecutionInterrupted &&
+               interrupted.status.location() == 314 &&
+               context.exit_site() == 314,
+           "native CFG loop must exit at the requested safepoint");
+
+    context.clear_interrupt();
+    const auto completed =
+        compilation.function->invoke(args.data(), args.size(), &context);
+    expect(completed.ok() && completed.value == 10,
+           "native CFG loop must continue when interruption is clear");
+    expect(compilation.function->native_entry()(args.data(), nullptr) == 10,
+           "null execution contexts must bypass CFG safepoints");
+  }
+}
+
 void test_control_flow_execution_budget() {
   unijit::ir::ControlFlowBuilder builder(0);
   const unijit::ir::Block loop = builder.create_block(0);
@@ -727,6 +792,7 @@ int main() {
   test_control_flow_merge();
   test_control_flow_parallel_edge_copy();
   test_control_flow_rejects_non_dominating_value();
+  test_control_flow_safepoint();
   test_control_flow_execution_budget();
   test_control_flow_builder_rejects_edge_arity();
 

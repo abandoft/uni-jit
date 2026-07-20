@@ -700,9 +700,17 @@ LoweringResult lower_control_flow_impl(
     maximum_block_parameters =
         std::max(maximum_block_parameters, block.parameters.size());
   }
+  const bool has_safepoints = std::any_of(
+      function.nodes().begin(), function.nodes().end(),
+      [](const ir::ControlNode& node) {
+        return node.opcode == ir::ControlOpcode::kSafepoint;
+      });
   const std::size_t spill_slots =
       function.nodes().size() + maximum_block_parameters;
-  const std::size_t raw_stack_size = spill_slots * sizeof(ir::Word);
+  const std::size_t context_slot = spill_slots;
+  const std::size_t total_slots =
+      spill_slots + static_cast<std::size_t>(has_safepoints);
+  const std::size_t raw_stack_size = total_slots * sizeof(ir::Word);
   const std::size_t stack_size = (raw_stack_size + 15U) & ~std::size_t{15U};
   if (stack_size > kMaximumStackSize) {
     return {{StatusCode::kResourceExhausted,
@@ -721,6 +729,10 @@ LoweringResult lower_control_flow_impl(
   assembler.move_register(kArgumentBaseRegister, kReturnRegister);
   if (stack_size != 0) {
     assembler.reserve_stack(stack_size);
+  }
+  if (has_safepoints) {
+    assembler.store(kContextArgumentRegister, kStackPointer,
+                    context_slot * sizeof(ir::Word));
   }
 
   const std::size_t no_label = std::numeric_limits<std::size_t>::max();
@@ -755,6 +767,50 @@ LoweringResult lower_control_flow_impl(
             assembler.store(destination, kStackPointer, destination_offset);
           }
           break;
+        case ir::ControlOpcode::kSafepoint: {
+          assembler.load(kScratch0, kStackPointer,
+                         context_slot * sizeof(ir::Word));
+          const std::size_t no_context = assembler.branch_zero(kScratch0);
+          assembler.load(
+              kScratch0, kScratch0,
+              runtime::ExecutionContext::interrupt_requested_offset());
+          const std::size_t not_interrupted = assembler.branch_zero(kScratch0);
+          assembler.load(kScratch0, kStackPointer,
+                         context_slot * sizeof(ir::Word));
+          assembler.move_immediate(kScratch1, 0);
+          assembler.store(kScratch1, kScratch0,
+                          runtime::ExecutionContext::exit_value_offset());
+          assembler.move_immediate(kScratch1, node.immediate);
+          assembler.store(kScratch1, kScratch0,
+                          runtime::ExecutionContext::exit_site_offset());
+          assembler.move_immediate(
+              kScratch1,
+              static_cast<ir::Word>(runtime::ExitReason::kSafepoint));
+          assembler.store(kScratch1, kScratch0,
+                          runtime::ExecutionContext::exit_reason_offset());
+          assembler.move_immediate(kReturnRegister, 0);
+          if (stack_size != 0) {
+            assembler.release_stack(stack_size);
+          }
+          assembler.return_to_caller();
+
+          const std::size_t resume = assembler.size();
+          const Status context_status =
+              assembler.patch_zero_branch(no_context, resume);
+          if (!context_status.ok()) {
+            return {context_status, {}, 0};
+          }
+          const Status interrupt_status =
+              assembler.patch_zero_branch(not_interrupted, resume);
+          if (!interrupt_status.ok()) {
+            return {interrupt_status, {}, 0};
+          }
+          assembler.move_immediate(destination, 0);
+          if (allocated < 0 || allocation.requires_stack[value.id()]) {
+            assembler.store(destination, kStackPointer, destination_offset);
+          }
+          break;
+        }
         case ir::ControlOpcode::kAdd:
         case ir::ControlOpcode::kSubtract:
         case ir::ControlOpcode::kMultiply:
@@ -832,7 +888,7 @@ LoweringResult lower_control_flow_impl(
       return {patch_status, {}, 0};
     }
   }
-  return {Status::ok_status(), assembler.take_code(), spill_slots};
+  return {Status::ok_status(), assembler.take_code(), total_slots};
 }
 
 }  // namespace

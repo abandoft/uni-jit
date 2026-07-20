@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <new>
 #include <string>
 #include <utility>
@@ -31,6 +32,7 @@ bool is_binary(ControlOpcode opcode) {
   case ControlOpcode::kParameter:
   case ControlOpcode::kBlockParameter:
   case ControlOpcode::kConstant:
+  case ControlOpcode::kSafepoint:
     return false;
   }
   return false;
@@ -202,6 +204,13 @@ Status verify_impl(const ControlFlowFunction &function) {
       const Value value = block.instructions[instruction_index];
       const ControlNode &node = nodes[value.id()];
       if (node.opcode == ControlOpcode::kConstant) {
+        continue;
+      }
+      if (node.opcode == ControlOpcode::kSafepoint) {
+        if (node.immediate < 0 || node.lhs.valid() || node.rhs.valid()) {
+          return invalid_control_flow(value.id(),
+                                      "control-flow safepoint is malformed");
+        }
         continue;
       }
       if (!is_binary(node.opcode)) {
@@ -377,6 +386,14 @@ Value ControlFlowBuilder::less_equal(Value lhs, Value rhs) {
   return append_binary(ControlOpcode::kLessEqual, lhs, rhs);
 }
 
+Value ControlFlowBuilder::safepoint(std::size_t site) {
+  if (site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {
+    return {};
+  }
+  return append_node(ControlNode{ControlOpcode::kSafepoint, {}, {},
+                                 static_cast<Word>(site)});
+}
+
 Status
 ControlFlowBuilder::validate_edge(Block target,
                                   const std::vector<Value> &arguments) const {
@@ -464,7 +481,8 @@ Status verify(const ControlFlowFunction &function) {
 EvaluationResult
 ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
                                  const Word *args, std::size_t arg_count,
-                                 std::size_t maximum_block_executions) {
+                                 std::size_t maximum_block_executions,
+                                 runtime::ExecutionContext *context) {
   const Status verification = verify(function);
   if (!verification.ok()) {
     return {verification, 0};
@@ -484,6 +502,9 @@ ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
              "control-flow execution budget must be positive"},
             0};
   }
+  if (context != nullptr) {
+    context->clear_exit();
+  }
 
   try {
     std::vector<Word> values(function.nodes().size(), 0);
@@ -502,6 +523,16 @@ ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
         const ControlNode &node = function.nodes()[value.id()];
         if (node.opcode == ControlOpcode::kConstant) {
           values[value.id()] = node.immediate;
+        } else if (node.opcode == ControlOpcode::kSafepoint) {
+          values[value.id()] = 0;
+          if (context != nullptr && context->interrupt_requested()) {
+            const auto site = static_cast<std::size_t>(node.immediate);
+            context->record_exit(runtime::ExitReason::kSafepoint, site);
+            return {{StatusCode::kExecutionInterrupted,
+                     "execution interrupted at a control-flow safepoint",
+                     site},
+                    0};
+          }
         } else {
           values[value.id()] = evaluate_node(node.opcode, values[node.lhs.id()],
                                              values[node.rhs.id()]);
