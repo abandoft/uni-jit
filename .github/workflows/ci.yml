@@ -35,14 +35,20 @@ jobs:
         run: >-
           cmake -S . -B build/language -G Ninja
           -DCMAKE_BUILD_TYPE=Release
-          -DUNIJIT_BUILD_TESTS=OFF
+          -DUNIJIT_BUILD_TESTS=ON
+          -DUNIJIT_WARNINGS_AS_ERRORS=ON
           -DUNIJIT_BUILD_LUA_REFERENCE=ON
           -DUNIJIT_BUILD_LUAJIT_REFERENCE=ON
 
       - name: Build reference runtimes
         run: >-
           cmake --build build/language --parallel
-          --target unijit_lua55 unijit_luajit_reference
+          --target unijit_lua55 unijit_lua55_tests unijit_luajit_reference
+
+      - name: Test UniJIT Lua frontend
+        run: >-
+          ctest --test-dir build/language --output-on-failure
+          -R unijit.lua55_frontend
 
       - name: Run semantic and performance baseline
         run: >-
