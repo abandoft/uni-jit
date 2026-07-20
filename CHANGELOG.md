@@ -1,5 +1,8 @@
 ## 0.1.6
 
+- Added one-shot concurrent runtime assumptions for straight-line and CFG compilation, with validated dependency sites, typed entry-frame recovery, managed entry and return checks, safepoint wakeups isolated from user interrupts, and blocking quiescence before protected state mutation.
+- Integrated assumption validity with the native-code cache so lookup retires stale generations, same-identity publication replaces rather than reuses them, retained leases deoptimize safely, and dedicated telemetry reports automatic assumption invalidations.
+- Extended the ThreadSanitizer runtime gate with active native-loop assumption invalidation, quiescence, frame reconstruction, stale-generation replacement, and independent sticky-interrupt coverage.
 - Added public immutable deoptimization records with semantic reasons, frontend resume offsets, typed recovery of entry arguments, constants, and guarded exit values, compiler validation and optimization pruning, cached-lease lifetime guarantees, and ABI-boundary frame reconstruction.
 - Preserved the exact triggering Float64 value bits for diagnosed guard exits in the reference interpreter and all AArch64, x86-64, and RISC-V 64 native backends, including the sign of zero.
 - Integrated PocketPy checked division with validated deoptimization reconstruction so only a confirmed division-by-zero record becomes `ZeroDivisionError`, while unknown runtime exits fail diagnostically instead of being misclassified.
