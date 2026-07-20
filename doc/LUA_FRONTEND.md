@@ -29,6 +29,12 @@ the same way a fixed-parameter Lua function does, but every declared argument
 must be a Lua integer. Native code uses Lua's 64-bit wrapping semantics for
 addition, subtraction, and multiplication.
 
+`unijit.compile_float(function)` creates a separate Float64 specialization.
+Every declared argument must carry Lua's Float64 tag (integer values are not
+silently converted at the guard boundary), and the result is returned with the
+Float64 tag. This explicit entry point keeps the initial specialization policy
+deterministic until runtime type profiling and multi-version dispatch land.
+
 ## Supported bytecode contract
 
 The initial tier accepts straight-line `MOVE`, integer `LOADI`/`LOADK`, integer
@@ -36,6 +42,12 @@ The initial tier accepts straight-line `MOVE`, integer `LOADI`/`LOADK`, integer
 returns. Arithmetic is accepted only when the corresponding Lua metamethod
 fallback instruction is structurally present. Runtime integer guards make
 that fallback unreachable in the specialized closure.
+
+The Float64 tier accepts the corresponding straight-line numeric loads,
+constant arithmetic, binary `ADD`/`SUB`/`MUL`, and one-value returns. Integer
+literals are converted exactly as Lua does when paired with a Float64 operand;
+integer-only arithmetic and non-Float64 results are rejected rather than
+changing Lua's numeric tag semantics.
 
 Varargs, general branches, calls, tables, floating-point values, upvalue
 access, and all other opcodes are rejected at compile time with the bytecode

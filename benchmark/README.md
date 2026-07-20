@@ -73,3 +73,8 @@ Passing `--script benchmark/lua/integer_loop.lua` to the same runner measures
 an entire 1,000-iteration Lua numeric loop compiled through CFG SSA. Reported
 latency is normalized per inner-loop iteration, and the exact three-engine
 checksum requirement remains in force.
+
+Passing `--script benchmark/lua/float_call.lua` measures the guarded Float64
+specialization with identical floating-point inputs in stock Lua, UniJIT, and
+LuaJIT. Checksums are compared without integer truncation before performance
+ratios are emitted.

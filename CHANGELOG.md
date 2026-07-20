@@ -1,3 +1,8 @@
+## 0.1.3
+
+- Added guarded stock Lua 5.5 Float64 bytecode compilation and a reproducible
+  three-engine floating-point call benchmark.
+
 ## 0.1.2
 
 - Added typed Float64 SSA constants and arithmetic, an IEEE-754 interpreter
