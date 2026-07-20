@@ -1,5 +1,7 @@
 ## 0.1.5
 
+- Added a single-source language-loop benchmark across QuickJS, UniJIT, V8 Jitless, and V8 with pinned Node execution, bit-exact validation, engine metadata, and retained CI records.
+- Added a single-source language-loop benchmark across PocketPy, UniJIT, CPython 3.14.6, and CPython 3.14.6 JIT with strict runtime-mode checks, verified official packages, and retained CI records.
 - Advanced the no-release LuaJIT reference to the latest upstream v2.1 commit while keeping all generated reference-build state under `build/`.
 - Eliminated provably passing Float64 nonzero guards so PocketPy division by a known nonzero constant retains the unchecked native-call fast path.
 
