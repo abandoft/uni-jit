@@ -96,6 +96,14 @@ class Assembler final {
     emit_modrm(3, source, destination);
   }
 
+  void move_float_register(int destination, int source) {
+    buffer_.emit_u8(0xF2U);
+    emit_float_rex(destination, source);
+    buffer_.emit_u8(0x0FU);
+    buffer_.emit_u8(0x10U);
+    emit_modrm(3, destination, source);
+  }
+
   void load_float(int destination, int base, std::size_t byte_offset) {
     buffer_.emit_u8(0xF2U);
     emit_float_rex(destination, base);
@@ -267,14 +275,6 @@ class Assembler final {
     if (destination != lhs) {
       move_register(destination, lhs);
     }
-  }
-
-  void move_float_register(int destination, int source) {
-    buffer_.emit_u8(0xF2U);
-    emit_float_rex(destination, source);
-    buffer_.emit_u8(0x0FU);
-    buffer_.emit_u8(0x10U);
-    emit_modrm(3, destination, source);
   }
 
   void prepare_float_binary(int destination, int lhs) {
@@ -810,7 +810,7 @@ std::size_t control_spill_offset(std::size_t slot) noexcept {
   return slot * sizeof(ir::Word);
 }
 
-int control_value_register(
+int control_word_register(
     const ControlFlowRegisterAllocation& allocation, ir::Value value,
     std::size_t current_block) noexcept {
   if (allocation.owner_blocks[value.id()] != current_block ||
@@ -820,12 +820,22 @@ int control_value_register(
   return kAllocationRegisters[allocation.register_indices[value.id()]];
 }
 
-int load_control_value(Assembler* assembler,
-                       const ControlFlowRegisterAllocation& allocation,
-                       ir::Value value, std::size_t current_block,
-                       int scratch) {
+int control_float_register(
+    const ControlFlowRegisterAllocation& allocation, ir::Value value,
+    std::size_t current_block) noexcept {
+  if (allocation.owner_blocks[value.id()] != current_block ||
+      allocation.register_indices[value.id()] == ValueLocation::kNone) {
+    return -1;
+  }
+  return kFloatAllocationRegisters[allocation.register_indices[value.id()]];
+}
+
+int load_control_word(Assembler* assembler,
+                      const ControlFlowRegisterAllocation& allocation,
+                      ir::Value value, std::size_t current_block,
+                      int scratch) {
   const int allocated =
-      control_value_register(allocation, value, current_block);
+      control_word_register(allocation, value, current_block);
   if (allocated >= 0) {
     return allocated;
   }
@@ -833,14 +843,37 @@ int load_control_value(Assembler* assembler,
   return scratch;
 }
 
+int load_control_float(Assembler* assembler,
+                       const ControlFlowRegisterAllocation& allocation,
+                       ir::Value value, std::size_t current_block,
+                       int scratch) {
+  const int allocated =
+      control_float_register(allocation, value, current_block);
+  if (allocated >= 0) {
+    return allocated;
+  }
+  assembler->load_float(scratch, kRsp, control_spill_offset(value.id()));
+  return scratch;
+}
+
 void spill_control_stack_map_values(
-    Assembler* assembler, const ControlFlowRegisterAllocation& allocation,
+    Assembler* assembler, const ir::ControlFlowFunction& function,
+    const ControlFlowRegisterAllocation& allocation,
     const std::vector<ir::Value>& live_values, std::size_t current_block) {
   for (const ir::Value value : live_values) {
-    const int source =
-        control_value_register(allocation, value, current_block);
-    if (source >= 0) {
-      assembler->store(source, kRsp, control_spill_offset(value.id()));
+    if (function.value_type(value) == ir::ValueType::kFloat64) {
+      const int source =
+          control_float_register(allocation, value, current_block);
+      if (source >= 0) {
+        assembler->store_float(source, kRsp,
+                               control_spill_offset(value.id()));
+      }
+    } else {
+      const int source =
+          control_word_register(allocation, value, current_block);
+      if (source >= 0) {
+        assembler->store(source, kRsp, control_spill_offset(value.id()));
+      }
     }
   }
 }
@@ -893,47 +926,88 @@ void copy_edge_arguments(Assembler* assembler,
   const ir::BasicBlock& target = function.blocks()[edge.target.id()];
   if (moves.uses_registers) {
     for (const ControlFlowRegisterMove& move : moves.moves) {
-      const int destination =
-          move.destination_index == ValueLocation::kNone
-              ? kScratch0
-              : kAllocationRegisters[move.destination_index];
-      if (move.source_kind == ControlFlowMoveSource::kRegister) {
-        assembler->move_register(
-            destination, kAllocationRegisters[move.source_index]);
-      } else if (move.source_kind == ControlFlowMoveSource::kStack) {
-        assembler->load(destination, kRsp,
-                        control_spill_offset(move.source_index));
+      if (move.type == ir::ValueType::kFloat64) {
+        const int destination =
+            move.destination_index == ValueLocation::kNone
+                ? kFloatScratch0
+                : kFloatAllocationRegisters[move.destination_index];
+        if (move.source_kind == ControlFlowMoveSource::kRegister) {
+          assembler->move_float_register(
+              destination, kFloatAllocationRegisters[move.source_index]);
+        } else if (move.source_kind == ControlFlowMoveSource::kStack) {
+          assembler->load_float(destination, kRsp,
+                                control_spill_offset(move.source_index));
+        } else {
+          assembler->move_float_register(destination, kFloatScratch0);
+        }
       } else {
-        assembler->move_register(destination, kScratch0);
+        const int destination =
+            move.destination_index == ValueLocation::kNone
+                ? kScratch0
+                : kAllocationRegisters[move.destination_index];
+        if (move.source_kind == ControlFlowMoveSource::kRegister) {
+          assembler->move_register(
+              destination, kAllocationRegisters[move.source_index]);
+        } else if (move.source_kind == ControlFlowMoveSource::kStack) {
+          assembler->load(destination, kRsp,
+                          control_spill_offset(move.source_index));
+        } else {
+          assembler->move_register(destination, kScratch0);
+        }
       }
     }
     for (const ir::Value parameter : target.parameters) {
       if (allocation.requires_stack[parameter.id()]) {
-        const int source = control_value_register(
-            allocation, parameter, edge.target.id());
-        assembler->store(source, kRsp,
-                         control_spill_offset(parameter.id()));
+        if (function.value_type(parameter) == ir::ValueType::kFloat64) {
+          const int source = control_float_register(
+              allocation, parameter, edge.target.id());
+          assembler->store_float(source, kRsp,
+                                 control_spill_offset(parameter.id()));
+        } else {
+          const int source = control_word_register(
+              allocation, parameter, edge.target.id());
+          assembler->store(source, kRsp,
+                           control_spill_offset(parameter.id()));
+        }
       }
     }
     return;
   }
 
   for (std::size_t index = 0; index < edge.arguments.size(); ++index) {
-    const int source =
-        load_control_value(assembler, allocation, edge.arguments[index],
-                           current_block, kScratch0);
-    assembler->store(source, kRsp,
-                     control_spill_offset(temporary_base + index));
+    const ir::Value argument = edge.arguments[index];
+    if (function.value_type(argument) == ir::ValueType::kFloat64) {
+      const int source = load_control_float(
+          assembler, allocation, argument, current_block, kFloatScratch0);
+      assembler->store_float(source, kRsp,
+                             control_spill_offset(temporary_base + index));
+    } else {
+      const int source = load_control_word(
+          assembler, allocation, argument, current_block, kScratch0);
+      assembler->store(source, kRsp,
+                       control_spill_offset(temporary_base + index));
+    }
   }
   for (std::size_t index = 0; index < edge.arguments.size(); ++index) {
     const ir::Value parameter = target.parameters[index];
-    const int allocated =
-        control_value_register(allocation, parameter, edge.target.id());
-    const int destination = allocated >= 0 ? allocated : kScratch0;
-    assembler->load(destination, kRsp,
-                    control_spill_offset(temporary_base + index));
-    assembler->store(destination, kRsp,
-                     control_spill_offset(parameter.id()));
+    if (function.value_type(parameter) == ir::ValueType::kFloat64) {
+      const int allocated =
+          control_float_register(allocation, parameter, edge.target.id());
+      const int destination =
+          allocated >= 0 ? allocated : kFloatScratch0;
+      assembler->load_float(destination, kRsp,
+                            control_spill_offset(temporary_base + index));
+      assembler->store_float(destination, kRsp,
+                             control_spill_offset(parameter.id()));
+    } else {
+      const int allocated =
+          control_word_register(allocation, parameter, edge.target.id());
+      const int destination = allocated >= 0 ? allocated : kScratch0;
+      assembler->load(destination, kRsp,
+                      control_spill_offset(temporary_base + index));
+      assembler->store(destination, kRsp,
+                       control_spill_offset(parameter.id()));
+    }
   }
 }
 
@@ -979,7 +1053,8 @@ LoweringResult lower_control_flow_impl(
   }
 
   ControlFlowRegisterAllocation allocation = allocate_control_flow_registers(
-      function, kAllocationRegisters.size(), requirements);
+      function, kAllocationRegisters.size(), kFloatAllocationRegisters.size(),
+      requirements);
   if (!allocation.status.ok()) {
     return {allocation.status, {}, 0, {}};
   }
@@ -1012,41 +1087,73 @@ LoweringResult lower_control_flow_impl(
     for (const ir::Value value : block.instructions) {
       const ir::ControlNode& node = function.nodes()[value.id()];
       const std::size_t destination_offset = control_spill_offset(value.id());
-      const int allocated =
-          control_value_register(allocation, value, block_index);
-      const int destination = allocated >= 0 ? allocated : kScratch0;
+      const bool destination_is_float =
+          function.value_type(value) == ir::ValueType::kFloat64;
+      const int allocated_word =
+          destination_is_float
+              ? -1
+              : control_word_register(allocation, value, block_index);
+      const int allocated_float =
+          destination_is_float
+              ? control_float_register(allocation, value, block_index)
+              : -1;
+      const int word_destination =
+          allocated_word >= 0 ? allocated_word : kScratch0;
+      const int float_destination =
+          allocated_float >= 0 ? allocated_float : kFloatScratch0;
       const std::vector<ir::Value>& live_values =
           stack_map_liveness.live_values_by_node[value.id()];
       if (node.opcode == ir::ControlOpcode::kSafepoint ||
           node.opcode == ir::ControlOpcode::kGuardFloatNonzero) {
-        spill_control_stack_map_values(&assembler, allocation, live_values,
-                                       block_index);
+        spill_control_stack_map_values(&assembler, function, allocation,
+                                       live_values, block_index);
         stack_maps.push_back(make_stack_map_record(
             function, node, live_values, assembler.size(), stack_size));
       }
       switch (node.opcode) {
         case ir::ControlOpcode::kParameter:
-          assembler.load(
-              destination, kArgumentBaseRegister,
-              static_cast<std::size_t>(node.immediate) * sizeof(ir::Word));
-          if (allocated < 0 || allocation.requires_stack[value.id()]) {
-            assembler.store(destination, kRsp, destination_offset);
+          if (destination_is_float) {
+            assembler.load_float(
+                float_destination, kArgumentBaseRegister,
+                static_cast<std::size_t>(node.immediate) * sizeof(ir::Word));
+            if (allocated_float < 0 ||
+                allocation.requires_stack[value.id()]) {
+              assembler.store_float(float_destination, kRsp,
+                                    destination_offset);
+            }
+          } else {
+            assembler.load(
+                word_destination, kArgumentBaseRegister,
+                static_cast<std::size_t>(node.immediate) * sizeof(ir::Word));
+            if (allocated_word < 0 ||
+                allocation.requires_stack[value.id()]) {
+              assembler.store(word_destination, kRsp, destination_offset);
+            }
           }
           break;
         case ir::ControlOpcode::kBlockParameter:
           break;
         case ir::ControlOpcode::kConstant:
-          assembler.move_immediate(destination, node.immediate);
-          if (allocated < 0 || allocation.requires_stack[value.id()]) {
-            assembler.store(destination, kRsp, destination_offset);
+          if (destination_is_float) {
+            assembler.move_immediate(kScratch0, node.immediate);
+            assembler.move_word_to_float(float_destination, kScratch0);
+            if (allocated_float < 0 ||
+                allocation.requires_stack[value.id()]) {
+              assembler.store_float(float_destination, kRsp,
+                                    destination_offset);
+            }
+          } else {
+            assembler.move_immediate(word_destination, node.immediate);
+            if (allocated_word < 0 ||
+                allocation.requires_stack[value.id()]) {
+              assembler.store(word_destination, kRsp, destination_offset);
+            }
           }
           break;
         case ir::ControlOpcode::kGuardFloatNonzero: {
-          const int source = load_control_value(
-              &assembler, allocation, node.lhs, block_index, kScratch0);
-          if (source != kScratch0) {
-            assembler.move_register(kScratch0, source);
-          }
+          const int source = load_control_float(
+              &assembler, allocation, node.lhs, block_index, kFloatScratch0);
+          assembler.move_float_to_word(kScratch0, source);
           assembler.move_register(kScratch1, kScratch0);
           assembler.add(kScratch0, kScratch0, kScratch0);
           const std::size_t nonzero = assembler.branch_nonzero(kScratch0);
@@ -1084,9 +1191,10 @@ LoweringResult lower_control_flow_impl(
           if (!guard_status.ok()) {
             return {guard_status, {}, 0};
           }
-          assembler.move_immediate(destination, 0);
-          if (allocated < 0 || allocation.requires_stack[value.id()]) {
-            assembler.store(destination, kRsp, destination_offset);
+          assembler.move_immediate(word_destination, 0);
+          if (allocated_word < 0 ||
+              allocation.requires_stack[value.id()]) {
+            assembler.store(word_destination, kRsp, destination_offset);
           }
           break;
         }
@@ -1128,9 +1236,10 @@ LoweringResult lower_control_flow_impl(
           if (!interrupt_status.ok()) {
             return {interrupt_status, {}, 0};
           }
-          assembler.move_immediate(destination, 0);
-          if (allocated < 0 || allocation.requires_stack[value.id()]) {
-            assembler.store(destination, kRsp, destination_offset);
+          assembler.move_immediate(word_destination, 0);
+          if (allocated_word < 0 ||
+              allocation.requires_stack[value.id()]) {
+            assembler.store(word_destination, kRsp, destination_offset);
           }
           break;
         }
@@ -1138,44 +1247,38 @@ LoweringResult lower_control_flow_impl(
         case ir::ControlOpcode::kFloatSubtract:
         case ir::ControlOpcode::kFloatMultiply:
         case ir::ControlOpcode::kFloatDivide: {
-          const int lhs = load_control_value(
-              &assembler, allocation, node.lhs, block_index, kScratch0);
-          const int rhs = load_control_value(
-              &assembler, allocation, node.rhs, block_index, kScratch1);
-          assembler.move_word_to_float(kFloatScratch0, lhs);
-          assembler.move_word_to_float(kFloatScratch1, rhs);
+          const int lhs = load_control_float(
+              &assembler, allocation, node.lhs, block_index, kFloatScratch0);
+          const int rhs = load_control_float(
+              &assembler, allocation, node.rhs, block_index, kFloatScratch1);
           if (node.opcode == ir::ControlOpcode::kFloatAdd) {
-            assembler.add_float(kFloatScratch0, kFloatScratch0,
-                                kFloatScratch1);
+            assembler.add_float(float_destination, lhs, rhs);
           } else if (node.opcode == ir::ControlOpcode::kFloatSubtract) {
-            assembler.subtract_float(kFloatScratch0, kFloatScratch0,
-                                     kFloatScratch1);
+            assembler.subtract_float(float_destination, lhs, rhs);
           } else if (node.opcode == ir::ControlOpcode::kFloatMultiply) {
-            assembler.multiply_float(kFloatScratch0, kFloatScratch0,
-                                     kFloatScratch1);
+            assembler.multiply_float(float_destination, lhs, rhs);
           } else {
-            assembler.divide_float(kFloatScratch0, kFloatScratch0,
-                                   kFloatScratch1);
+            assembler.divide_float(float_destination, lhs, rhs);
           }
-          assembler.move_float_to_word(destination, kFloatScratch0);
-          if (allocated < 0 || allocation.requires_stack[value.id()]) {
-            assembler.store(destination, kRsp, destination_offset);
+          if (allocated_float < 0 ||
+              allocation.requires_stack[value.id()]) {
+            assembler.store_float(float_destination, kRsp,
+                                  destination_offset);
           }
           break;
         }
         case ir::ControlOpcode::kFloatLessThan:
         case ir::ControlOpcode::kFloatLessEqual: {
-          const int lhs = load_control_value(
-              &assembler, allocation, node.lhs, block_index, kScratch0);
-          const int rhs = load_control_value(
-              &assembler, allocation, node.rhs, block_index, kScratch1);
-          assembler.move_word_to_float(kFloatScratch0, lhs);
-          assembler.move_word_to_float(kFloatScratch1, rhs);
+          const int lhs = load_control_float(
+              &assembler, allocation, node.lhs, block_index, kFloatScratch0);
+          const int rhs = load_control_float(
+              &assembler, allocation, node.rhs, block_index, kFloatScratch1);
           assembler.compare_float(
-              destination, kFloatScratch0, kFloatScratch1,
+              word_destination, lhs, rhs,
               node.opcode == ir::ControlOpcode::kFloatLessEqual);
-          if (allocated < 0 || allocation.requires_stack[value.id()]) {
-            assembler.store(destination, kRsp, destination_offset);
+          if (allocated_word < 0 ||
+              allocation.requires_stack[value.id()]) {
+            assembler.store(word_destination, kRsp, destination_offset);
           }
           break;
         }
@@ -1184,22 +1287,23 @@ LoweringResult lower_control_flow_impl(
         case ir::ControlOpcode::kMultiply:
         case ir::ControlOpcode::kLessThan:
         case ir::ControlOpcode::kLessEqual:
-          const int lhs = load_control_value(
+          const int lhs = load_control_word(
               &assembler, allocation, node.lhs, block_index, kScratch0);
-          const int rhs = load_control_value(
+          const int rhs = load_control_word(
               &assembler, allocation, node.rhs, block_index, kScratch1);
           if (node.opcode == ir::ControlOpcode::kAdd) {
-            assembler.add(destination, lhs, rhs);
+            assembler.add(word_destination, lhs, rhs);
           } else if (node.opcode == ir::ControlOpcode::kSubtract) {
-            assembler.subtract(destination, lhs, rhs);
+            assembler.subtract(word_destination, lhs, rhs);
           } else if (node.opcode == ir::ControlOpcode::kMultiply) {
-            assembler.multiply(destination, lhs, rhs);
+            assembler.multiply(word_destination, lhs, rhs);
           } else {
-            assembler.compare(destination, lhs, rhs,
+            assembler.compare(word_destination, lhs, rhs,
                               node.opcode == ir::ControlOpcode::kLessEqual);
           }
-          if (allocated < 0 || allocation.requires_stack[value.id()]) {
-            assembler.store(destination, kRsp, destination_offset);
+          if (allocated_word < 0 ||
+              allocation.requires_stack[value.id()]) {
+            assembler.store(word_destination, kRsp, destination_offset);
           }
           break;
       }
@@ -1207,10 +1311,17 @@ LoweringResult lower_control_flow_impl(
 
     const ir::ControlTerminator& terminator = block.terminator;
     if (terminator.opcode == ir::TerminatorOpcode::kReturn) {
-      const int returned = load_control_value(
-          &assembler, allocation, terminator.value, block_index, kScratch0);
-      if (returned != kReturnRegister) {
-        assembler.move_register(kReturnRegister, returned);
+      if (function.return_type() == ir::ValueType::kFloat64) {
+        const int returned = load_control_float(
+            &assembler, allocation, terminator.value, block_index,
+            kFloatScratch0);
+        assembler.move_float_to_word(kReturnRegister, returned);
+      } else {
+        const int returned = load_control_word(
+            &assembler, allocation, terminator.value, block_index, kScratch0);
+        if (returned != kReturnRegister) {
+          assembler.move_register(kReturnRegister, returned);
+        }
       }
       if (stack_size != 0) {
         assembler.release_stack(stack_size);
@@ -1221,7 +1332,7 @@ LoweringResult lower_control_flow_impl(
                           allocation, block_index, temporary_base);
       fixups.push_back({assembler.branch(), terminator.true_edge.target});
     } else {
-      const int condition = load_control_value(
+      const int condition = load_control_word(
           &assembler, allocation, terminator.value, block_index, kScratch0);
       if (condition != kScratch0) {
         assembler.move_register(kScratch0, condition);
