@@ -287,6 +287,24 @@ int main() {
   if (!tiered.publish_baseline(guarded_publication.handle).ok()) {
     return 19;
   }
+  unijit::runtime::OsrFrame tiered_osr_frame(32, 8);
+  unijit::runtime::OsrEntryPlan tiered_osr_plan(32, 8);
+  if (!tiered_osr_frame
+           .add(4, unijit::ir::ValueType::kFloat64,
+                unijit::ir::pack_float64(2.0))
+           .ok() ||
+      !tiered_osr_plan
+           .add_argument(4, unijit::ir::ValueType::kFloat64)
+           .ok()) {
+    return 31;
+  }
+  const auto tiered_osr =
+      tiered.enter_osr(tiered_osr_frame, tiered_osr_plan);
+  if (!tiered_osr.ok() ||
+      unijit::ir::unpack_float64(tiered_osr.entry.result.value) != 2.0 ||
+      tiered.stats().osr_entries != 1) {
+    return 32;
+  }
   const auto baseline_snapshot = tiered.snapshot();
   const std::array<unijit::ir::Word, 1> tiered_arguments = {
       unijit::ir::pack_float64(2.0)};

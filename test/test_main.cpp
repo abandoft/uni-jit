@@ -2655,9 +2655,21 @@ void test_hotness_and_tiered_switching() {
 
   unijit::jit::TieredCode tiered({3, 5, 2});
   const std::array<Word, 1> arguments = {41};
+  unijit::runtime::OsrFrame unpublished_osr_frame(850, 17);
+  unijit::runtime::OsrEntryPlan unpublished_osr_plan(850, 17);
+  expect(unpublished_osr_frame
+             .add(1, unijit::ir::ValueType::kWord, 41)
+             .ok() &&
+             unpublished_osr_plan
+                 .add_argument(1, unijit::ir::ValueType::kWord)
+                 .ok(),
+         "tiered OSR fixture must define its interpreter state");
   expect(!tiered.snapshot().valid() &&
-             !tiered.invoke(arguments.data(), arguments.size()).ok(),
-         "tiered invocation must reject a missing baseline");
+             !tiered.invoke(arguments.data(), arguments.size()).ok() &&
+             !tiered
+                  .enter_osr(unpublished_osr_frame, unpublished_osr_plan)
+                  .entered(),
+         "tiered invocation and OSR must reject a missing baseline");
   expect(tiered.publish_baseline(baseline_publication.handle).ok(),
          "tiered code must publish an assumption-free baseline");
   const auto baseline_snapshot = tiered.snapshot();
@@ -2785,6 +2797,13 @@ void test_hotness_and_tiered_switching() {
   expect(stable_compilation.status.ok() && stable_publication.ok(),
          "stable optimized fixture must compile and publish");
 
+  unijit::runtime::OsrFrame switching_frame(851, 18);
+  unijit::runtime::OsrEntryPlan switching_plan(851, 18);
+  expect(switching_frame.add(70, unijit::ir::ValueType::kWord, 41).ok() &&
+             switching_plan
+                 .add_argument(70, unijit::ir::ValueType::kWord)
+                 .ok(),
+         "concurrent tiered OSR fixture must define its live slot");
   std::atomic<std::size_t> switching_errors{0};
   std::atomic<bool> start{false};
   std::vector<std::thread> readers;
@@ -2794,8 +2813,18 @@ void test_hotness_and_tiered_switching() {
         std::this_thread::yield();
       }
       for (std::size_t invocation = 0; invocation < 2000; ++invocation) {
-        const auto result = tiered.invoke(arguments.data(), arguments.size());
-        if (!result.ok() || result.result.value != 42) {
+        bool valid = false;
+        if (invocation % 2 == 0) {
+          const auto result =
+              tiered.invoke(arguments.data(), arguments.size());
+          valid = result.ok() && result.result.value == 42;
+        } else {
+          const auto result = tiered.enter_osr(switching_frame,
+                                               switching_plan);
+          valid = result.ok() && result.entry.result.value == 42 &&
+                  result.attempted_handle.valid();
+        }
+        if (!valid) {
           switching_errors.fetch_add(1, std::memory_order_relaxed);
         }
       }
@@ -2822,8 +2851,75 @@ void test_hotness_and_tiered_switching() {
   expect(switching_errors.load(std::memory_order_relaxed) == 0 &&
              tiered_stats.promotions > 0 && tiered_stats.withdrawals > 0 &&
              tiered_stats.assumption_deoptimizations == 1 &&
-             tiered_stats.baseline_retries == 1,
-         "concurrent tier switching must retain safe immutable snapshots");
+             tiered_stats.baseline_retries == 1 &&
+             tiered_stats.osr_attempts == 4001 &&
+             tiered_stats.osr_entries == 4000 &&
+             tiered_stats.osr_exits == 0,
+         "concurrent invocation and OSR must retain safe immutable tier snapshots");
+
+  auto osr_assumption = std::make_shared<unijit::runtime::Assumption>();
+  unijit::runtime::AssumptionSet osr_assumptions;
+  expect(osr_assumptions.add(osr_assumption, 809, 13).ok(),
+         "tiered OSR assumption fixture must bind its dependency");
+  FunctionBuilder osr_optimized_builder(1);
+  expect(osr_optimized_builder
+             .set_return(osr_optimized_builder.add(
+                 osr_optimized_builder.parameter(0),
+                 osr_optimized_builder.constant(1)))
+             .ok(),
+         "tiered OSR optimized fixture must record its result");
+  auto osr_optimized_compilation = Compiler::compile(
+      std::move(osr_optimized_builder).build(), osr_assumptions);
+  auto osr_optimized_publication = cache.publish(
+      "tiered-osr-optimized", 1,
+      std::move(osr_optimized_compilation.function));
+  expect(osr_optimized_compilation.status.ok() &&
+             osr_optimized_publication.ok(),
+         "tiered OSR optimized fixture must compile and publish");
+
+  unijit::jit::TieredCode osr_tiered;
+  expect(osr_tiered.publish_baseline(baseline_publication.handle).ok(),
+         "tiered OSR must publish its baseline");
+  const auto osr_baseline = osr_tiered.snapshot();
+  expect(osr_tiered
+             .publish_optimized(osr_optimized_publication.handle,
+                                osr_baseline.generation)
+             .ok(),
+         "tiered OSR must publish its optimized generation");
+  unijit::runtime::OsrFrame osr_frame(852, 19);
+  unijit::runtime::OsrEntryPlan osr_plan(852, 19);
+  expect(osr_frame.add(71, unijit::ir::ValueType::kWord, 41).ok() &&
+             osr_plan.add_argument(71, unijit::ir::ValueType::kWord).ok(),
+         "tiered OSR transfer must define its frame mapping");
+  const auto successful_osr = osr_tiered.enter_osr(osr_frame, osr_plan);
+  expect(successful_osr.ok() && successful_osr.entry.result.value == 42 &&
+             successful_osr.attempted_tier ==
+                 unijit::jit::CodeTier::kOptimized,
+         "tiered OSR must enter the active optimized generation");
+  expect(osr_assumption->invalidate(),
+         "tiered OSR assumption must invalidate once");
+  unijit::runtime::ExecutionContext osr_context;
+  const auto exited_osr =
+      osr_tiered.enter_osr(osr_frame, osr_plan, &osr_context);
+  const auto osr_reconstruction =
+      exited_osr.attempted_handle.reconstruct_deoptimization(
+          809, exited_osr.entry.arguments.data(),
+          exited_osr.entry.arguments.count, osr_context);
+  const auto osr_stats = osr_tiered.stats();
+  expect(exited_osr.entered() && !exited_osr.ok() &&
+             exited_osr.deoptimized &&
+             exited_osr.attempted_tier ==
+                 unijit::jit::CodeTier::kOptimized &&
+             exited_osr.entry.result.status.location() == 809 &&
+             osr_reconstruction.ok() &&
+             osr_reconstruction.frame.find(0) != nullptr &&
+             osr_reconstruction.frame.find(0)->value == 41 &&
+             osr_tiered.snapshot().tier ==
+                 unijit::jit::CodeTier::kBaseline &&
+             osr_stats.osr_attempts == 2 && osr_stats.osr_entries == 2 &&
+             osr_stats.osr_exits == 1 &&
+             osr_stats.assumption_deoptimizations == 1,
+         "assumption exits from tiered OSR must retain the attempted generation and withdraw it");
 }
 
 void test_compilation_scheduler() {
