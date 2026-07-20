@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare one Python numeric kernel across PocketPy, UniJIT, and CPython."""
+"""Compare one Python numeric loop across PocketPy, UniJIT, and CPython."""
 
 from __future__ import annotations
 
@@ -103,7 +103,7 @@ def main() -> int:
         "system": platform.system().lower(),
         "machine": platform.machine().lower(),
         "workload_source": str(WORKLOAD.relative_to(ROOT)),
-        "measurement_boundary": "language_loop_kernel_call",
+        "measurement_boundary": "complete_numeric_loop",
         "unijit_revision": revision(ROOT),
         "pocketpy_revision": revision(ROOT / "third/pocketpy"),
         "pocketpy_and_unijit": embedded,

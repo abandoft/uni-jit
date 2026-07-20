@@ -1,13 +1,9 @@
-def numeric_kernel(a, b):
-    return (a + b) * (a - 3.25) + b * 0.75
-
-
-def execute_numeric_kernel(kernel, count):
+def numeric_workload(count):
     lhs = 1.25
     rhs = -7.5
     checksum = 0.0
     for _ in range(count):
-        checksum = checksum + kernel(lhs, rhs)
+        checksum = checksum + (lhs + rhs) * (lhs - 3.25) + rhs * 0.75
         lhs = lhs + 0.125
         rhs = rhs - 0.0625
         if lhs > 4096.0:
@@ -17,6 +13,4 @@ def execute_numeric_kernel(kernel, count):
     return checksum
 
 
-unijit_native_source = (
-    "def native(a, b): return (a + b) * (a - 3.25) + b * 0.75"
-)
+unijit_native_source = "def numeric_workload(count):\n    lhs = 1.25\n    rhs = -7.5\n    checksum = 0.0\n    for iteration in range(count):\n        checksum = checksum + (lhs + rhs) * (lhs - 3.25) + rhs * 0.75\n        lhs = lhs + 0.125\n        rhs = rhs - 0.0625\n        if lhs > 4096.0:\n            lhs = 1.25\n        if rhs < -4096.0:\n            rhs = -7.5\n    return checksum\n"

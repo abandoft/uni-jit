@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure the shared numeric-call workload in one CPython JIT mode."""
+"""Measure the shared numeric-loop workload in one CPython JIT mode."""
 
 from __future__ import annotations
 
@@ -19,13 +19,9 @@ def checksum_bits(value: float) -> str:
     return f"0x{struct.unpack('>Q', struct.pack('>d', value))[0]:016x}"
 
 
-def measure(
-    execute: Callable[[Callable[[float, float], float], int], float],
-    kernel: Callable[[float, float], float],
-    iterations: int,
-) -> tuple[float, str]:
+def measure(workload: Callable[[int], float], iterations: int) -> tuple[float, str]:
     started = time.perf_counter_ns()
-    result = execute(kernel, iterations)
+    result = workload(iterations)
     elapsed = time.perf_counter_ns() - started
     return elapsed / iterations, checksum_bits(result)
 
@@ -63,16 +59,13 @@ def main() -> int:
         )
 
     namespace = runpy.run_path(str(arguments.workload))
-    kernel = namespace["numeric_kernel"]
-    execute = namespace["execute_numeric_kernel"]
-    execute(kernel, arguments.warmup)
+    workload = namespace["numeric_workload"]
+    workload(arguments.warmup)
 
     timings: list[float] = []
     checksum = ""
     for _ in range(arguments.samples):
-        current_timing, current_checksum = measure(
-            execute, kernel, arguments.iterations
-        )
+        current_timing, current_checksum = measure(workload, arguments.iterations)
         if checksum and current_checksum != checksum:
             raise RuntimeError("CPython benchmark samples produced different checksums")
         timings.append(current_timing)
@@ -81,7 +74,7 @@ def main() -> int:
     print(
         json.dumps(
             {
-                "schema": "unijit.python-numeric-call.v1",
+                "schema": "unijit.python-numeric-loop.v2",
                 "engine": "CPython",
                 "mode": "jit" if enabled else "interpreter",
                 "python_version": platform.python_version(),

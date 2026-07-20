@@ -96,13 +96,12 @@ std::uint64_t bits(double value) noexcept {
   return result;
 }
 
-Measurement measure(py_Ref execute, py_Ref function, std::size_t iterations) {
-  std::array<py_TValue, 2> arguments{};
-  py_assign(&arguments[0], function);
-  py_newint(&arguments[1], static_cast<py_i64>(iterations));
+Measurement measure(py_Ref function, std::size_t iterations) {
+  std::array<py_TValue, 1> arguments{};
+  py_newint(&arguments[0], static_cast<py_i64>(iterations));
   const auto started = Clock::now();
   const bool succeeded =
-      py_call(execute, static_cast<int>(arguments.size()), arguments.data());
+      py_call(function, static_cast<int>(arguments.size()), arguments.data());
   const auto elapsed = Clock::now() - started;
   if (!succeeded || !py_isfloat(py_retval())) {
     return {};
@@ -155,16 +154,14 @@ int main(int argc, char **argv) {
                "<unijit-pocketpy-compile>", EXEC_MODE, nullptr)) {
     return fail("unable to compile the PocketPy benchmark functions");
   }
-  const py_Ref stock = py_getglobal(py_name("numeric_kernel"));
+  const py_Ref stock = py_getglobal(py_name("numeric_workload"));
   const py_Ref native = py_getglobal(py_name("native"));
-  const py_Ref execute = py_getglobal(py_name("execute_numeric_kernel"));
-  if (stock == nullptr || native == nullptr || execute == nullptr) {
+  if (stock == nullptr || native == nullptr) {
     return fail("unable to resolve the PocketPy benchmark functions");
   }
 
-  if (measure(execute, stock, options.warmup).nanoseconds_per_iteration < 0.0 ||
-      measure(execute, native, options.warmup).nanoseconds_per_iteration <
-          0.0) {
+  if (measure(stock, options.warmup).nanoseconds_per_iteration < 0.0 ||
+      measure(native, options.warmup).nanoseconds_per_iteration < 0.0) {
     return fail("PocketPy benchmark warmup failed");
   }
 
@@ -176,9 +173,9 @@ int main(int argc, char **argv) {
   bool has_checksum = false;
   for (std::size_t sample = 0; sample < options.samples; ++sample) {
     const Measurement stock_measurement =
-        measure(execute, stock, options.iterations);
+        measure(stock, options.iterations);
     const Measurement native_measurement =
-        measure(execute, native, options.iterations);
+        measure(native, options.iterations);
     if (stock_measurement.nanoseconds_per_iteration < 0.0 ||
         native_measurement.nanoseconds_per_iteration < 0.0 ||
         stock_measurement.checksum != native_measurement.checksum ||
@@ -195,7 +192,7 @@ int main(int argc, char **argv) {
   const double stock_median = median(std::move(stock_samples));
   const double native_median = median(std::move(native_samples));
   std::cout << std::fixed << std::setprecision(3) << "{\n"
-            << "  \"schema\": \"unijit.pocketpy-numeric-call.v2\",\n"
+            << "  \"schema\": \"unijit.pocketpy-numeric-loop.v3\",\n"
             << "  \"pocketpy_version\": \"2.1.8\",\n"
             << "  \"warmup_iterations\": " << options.warmup << ",\n"
             << "  \"measurement_iterations\": " << options.iterations
