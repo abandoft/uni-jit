@@ -36,6 +36,7 @@ jobs:
           cmake -S . -B build/language -G Ninja
           -DCMAKE_BUILD_TYPE=Release
           -DUNIJIT_BUILD_TESTS=ON
+          -DUNIJIT_BUILD_BENCHMARKS=ON
           -DUNIJIT_WARNINGS_AS_ERRORS=ON
           -DUNIJIT_BUILD_LUA_REFERENCE=ON
           -DUNIJIT_BUILD_LUAJIT_REFERENCE=ON
@@ -43,12 +44,13 @@ jobs:
       - name: Build reference runtimes
         run: >-
           cmake --build build/language --parallel
-          --target unijit_lua55 unijit_lua55_tests unijit_luajit_reference
+          --target unijit_lua55 unijit_lua55_tests
+          unijit_lua55_benchmark_runner unijit_luajit_reference
 
       - name: Test UniJIT Lua frontend
         run: >-
           ctest --test-dir build/language --output-on-failure
-          -R unijit.lua55_frontend
+          -R unijit.lua55_
 
       - name: Run semantic and performance baseline
         run: >-
@@ -57,6 +59,15 @@ jobs:
           --luajit build/language/references/luajit/src/luajit
           --warmup 10000 --iterations 100000 --samples 3
           > build/language/lua-reference.json
+
+      - name: Compare stock Lua, UniJIT, and LuaJIT integer execution
+        run: >-
+          python3 benchmark/lua/run_integer.py
+          --lua build/language/bin/lua5.5-reference
+          --unijit build/language/bin/lua5.5-unijit
+          --luajit build/language/references/luajit/src/luajit
+          --warmup 10000 --iterations 100000 --samples 3
+          > build/language/lua-integer.json
 
   build-and-test:
     name: ${{ matrix.name }}
