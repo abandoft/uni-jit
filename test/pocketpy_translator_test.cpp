@@ -429,6 +429,31 @@ int main() {
     py_finalize();
     return EXIT_FAILURE;
   }
+  constexpr char kNativeLoopControlSource[] =
+      "native_control_loop = unijit.compile('''def gated_sum(count):\n"
+      "    sum = 0.0\n"
+      "    for iteration in range(count):\n"
+      "        if iteration >= 8.0:\n"
+      "            break\n"
+      "        if iteration < 3.0:\n"
+      "            continue\n"
+      "        sum += iteration\n"
+      "    return sum\n''')\n"
+      "control_loop_result = native_control_loop(100)\n";
+  if (!py_exec(kNativeLoopControlSource,
+               "<unijit-pocketpy-loop-control>", EXEC_MODE, nullptr)) {
+    py_printexc();
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  const py_Ref control_loop_result =
+      py_getglobal(py_name("control_loop_result"));
+  if (control_loop_result == nullptr || !py_isfloat(control_loop_result) ||
+      py_tofloat(control_loop_result) != 25.0) {
+    std::cerr << "PocketPy runtime did not execute loop control guards\n";
+    py_finalize();
+    return EXIT_FAILURE;
+  }
   if (!py_exec("loop_tier = unijit.stats(native_loop)\n"
                "assert loop_tier['active_tier'] == 'baseline'\n"
                "assert not loop_tier['tierable']\n"

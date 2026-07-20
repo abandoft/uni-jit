@@ -319,6 +319,20 @@ int main() {
   }
   JS_FreeValue(context, result);
 
+  const std::string control_loop_call =
+      std::string("const nativeControlLoop = unijit.compile(") +
+      kLoopControlSource + "); nativeControlLoop(100);";
+  result = JS_Eval(context, control_loop_call.data(), control_loop_call.size(),
+                   "<unijit-quickjs-loop-control>", JS_EVAL_TYPE_GLOBAL);
+  number = 0.0;
+  if (JS_IsException(result) ||
+      JS_ToFloat64(context, &number, result) != 0 || number != 25.0) {
+    std::cerr << "QuickJS runtime did not execute loop control guards\n";
+    JS_FreeValue(context, result);
+    return EXIT_FAILURE;
+  }
+  JS_FreeValue(context, result);
+
   constexpr char kLoopStatsSource[] =
       "const loopStats = unijit.stats(nativeLoop);"
       "loopStats.tierable === false &&"
