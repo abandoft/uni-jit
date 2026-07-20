@@ -21,6 +21,14 @@ local function compare(original, arguments)
   return native
 end
 
+local function promote_loop(native, original, argument)
+  for _ = 1, 64 do
+    assert(native(argument) == original(argument))
+  end
+  assert(unijit.wait(native, 5000))
+  assert(unijit.stats(native).active_tier == "optimized")
+end
+
 local recurrence = function(a, b, c)
   local difference = a - b
   local sum = b + c
@@ -183,6 +191,104 @@ for _, limit in ipairs({math.maxinteger - 8, math.maxinteger - 7,
   assert(native_near_max_loop(limit) == near_max_loop(limit))
 end
 
+local positive_stride_sum = function(limit)
+  local sum = 0
+  for index = 1, limit, 3 do
+    sum = sum + index
+  end
+  return sum
+end
+local native_positive_stride_sum = unijit.compile(positive_stride_sum)
+local positive_stride_baseline_stats = unijit.stats(native_positive_stride_sum)
+assert(native_positive_stride_sum(30001) == positive_stride_sum(30001))
+assert(unijit.wait(native_positive_stride_sum, 5000))
+local positive_stride_stats = unijit.stats(native_positive_stride_sum)
+assert(positive_stride_stats.active_tier == "optimized")
+assert(positive_stride_stats.backedges == 10001)
+assert(positive_stride_stats.input_ir_nodes >
+       positive_stride_baseline_stats.input_ir_nodes)
+for _, limit in ipairs({-7, 0, 1, 2, 3, 4, 17, 1000, 30002}) do
+  assert(native_positive_stride_sum(limit) == positive_stride_sum(limit))
+end
+
+local negative_stride_sum = function(limit)
+  local sum = 0
+  for index = 30001, limit, -3 do
+    sum = sum + index
+  end
+  return sum
+end
+local native_negative_stride_sum = unijit.compile(negative_stride_sum)
+local negative_stride_baseline_stats = unijit.stats(native_negative_stride_sum)
+assert(native_negative_stride_sum(1) == negative_stride_sum(1))
+assert(unijit.wait(native_negative_stride_sum, 5000))
+local negative_stride_stats = unijit.stats(native_negative_stride_sum)
+assert(negative_stride_stats.active_tier == "optimized")
+assert(negative_stride_stats.backedges == 10001)
+assert(negative_stride_stats.input_ir_nodes >
+       negative_stride_baseline_stats.input_ir_nodes)
+for _, limit in ipairs({30008, 30002, 30001, 30000, 29998, 17, 0, -1000}) do
+  assert(native_negative_stride_sum(limit) == negative_stride_sum(limit))
+end
+
+local near_max_stride = function(limit)
+  local visits = 0
+  for index = 9223372036854775790, limit, 3 do
+    visits = visits + 1
+  end
+  return visits
+end
+local native_near_max_stride = unijit.compile(near_max_stride)
+promote_loop(native_near_max_stride, near_max_stride, math.maxinteger)
+for _, limit in ipairs({math.maxinteger - 18, math.maxinteger - 17,
+                        math.maxinteger - 16, math.maxinteger - 2,
+                        math.maxinteger}) do
+  assert(native_near_max_stride(limit) == near_max_stride(limit))
+end
+
+local near_min_stride = function(limit)
+  local visits = 0
+  for index = -9223372036854775791, limit, -3 do
+    visits = visits + 1
+  end
+  return visits
+end
+local native_near_min_stride = unijit.compile(near_min_stride)
+promote_loop(native_near_min_stride, near_min_stride, math.mininteger)
+for _, limit in ipairs({math.mininteger + 18, math.mininteger + 17,
+                        math.mininteger + 16, math.mininteger + 2,
+                        math.mininteger}) do
+  assert(native_near_min_stride(limit) == near_min_stride(limit))
+end
+
+local huge_positive_stride = function(limit)
+  local visits = 0
+  for index = (-9223372036854775807 - 1), limit, 9223372036854775807 do
+    visits = visits + 1
+  end
+  return visits
+end
+local native_huge_positive_stride = unijit.compile(huge_positive_stride)
+promote_loop(native_huge_positive_stride, huge_positive_stride,
+             math.maxinteger)
+for _, limit in ipairs({math.mininteger, -2, -1,
+                        math.maxinteger - 1, math.maxinteger}) do
+  assert(native_huge_positive_stride(limit) == huge_positive_stride(limit))
+end
+
+local minimum_stride = function(limit)
+  local visits = 0
+  for index = 9223372036854775807, limit, (-9223372036854775807 - 1) do
+    visits = visits + 1
+  end
+  return visits
+end
+local native_minimum_stride = unijit.compile(minimum_stride)
+promote_loop(native_minimum_stride, minimum_stride, math.mininteger)
+for _, limit in ipairs({math.maxinteger, 0, -1, math.mininteger}) do
+  assert(native_minimum_stride(limit) == minimum_stride(limit))
+end
+
 assert(native_recurrence(9, 3, 5, "extra arguments are ignored") == 48)
 
 local ok, message = pcall(native_recurrence, 1, 2.5, 3)
@@ -211,12 +317,12 @@ assert(not ok and tostring(message):find("vararg"))
 
 ok, message = pcall(unijit.compile, function(count)
   local sum = 0
-  for index = 1, count, 2 do
+  for index = 1, count, 0 do
     sum = sum + index
   end
   return sum
 end)
-assert(not ok and tostring(message):find("step 1"))
+assert(not ok and tostring(message):find("step cannot be zero"))
 
 ok, message = pcall(unijit.compile, function(count)
   local sum = 0
@@ -255,6 +361,12 @@ backedge_counted_sum = nil
 native_counted_sum = nil
 native_offset_sum = nil
 native_near_max_loop = nil
+native_positive_stride_sum = nil
+native_negative_stride_sum = nil
+native_near_max_stride = nil
+native_near_min_stride = nil
+native_huge_positive_stride = nil
+native_minimum_stride = nil
 disposable = nil
 collectgarbage("collect")
 )lua";

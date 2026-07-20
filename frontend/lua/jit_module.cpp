@@ -104,20 +104,35 @@ struct LoopHotnessPlan final {
     } else {
       return 1;
     }
-    if (limit < start) {
+    std::uint64_t distance = 0;
+    std::uint64_t stride = 0;
+    if (step > 0) {
+      if (limit < start) {
+        return 0;
+      }
+      distance = static_cast<std::uint64_t>(limit) -
+                 static_cast<std::uint64_t>(start);
+      stride = static_cast<std::uint64_t>(step);
+    } else if (step < 0) {
+      if (start < limit) {
+        return 0;
+      }
+      distance = static_cast<std::uint64_t>(start) -
+                 static_cast<std::uint64_t>(limit);
+      stride = std::uint64_t{0} - static_cast<std::uint64_t>(step);
+    } else {
       return 0;
     }
-    const std::uint64_t distance =
-        static_cast<std::uint64_t>(limit) -
-        static_cast<std::uint64_t>(start);
-    return distance == std::numeric_limits<std::uint64_t>::max()
-               ? distance
-               : distance + 1;
+    const std::uint64_t completed_backedges = distance / stride;
+    return completed_backedges == std::numeric_limits<std::uint64_t>::max()
+               ? completed_backedges
+               : completed_backedges + 1;
   }
 
   bool is_loop{false};
   LimitKind limit_kind{LimitKind::kUnknown};
   Word start{0};
+  Word step{0};
   Word limit_constant{0};
   std::size_t limit_parameter{0};
 };
@@ -352,10 +367,11 @@ LoopHotnessPlan analyze_loop_hotness(const Proto &prototype) {
       const SymbolicInteger &step =
           registers[static_cast<std::size_t>(state_base + 2)];
       if (!start.constant.has_value() || !step.constant.has_value() ||
-          step.constant.value() != 1) {
+          step.constant.value() == 0) {
         return plan;
       }
       plan.start = start.constant.value();
+      plan.step = step.constant.value();
       if (limit.constant.has_value()) {
         plan.limit_kind = LoopHotnessPlan::LimitKind::kConstant;
         plan.limit_constant = limit.constant.value();
@@ -896,12 +912,18 @@ CompilationResult compile_numeric_for_prototype(
         !valid_register(registers, state_base + 1) ||
         !valid_register(registers, state_base + 2) ||
         !known[static_cast<std::size_t>(state_base)].has_value() ||
-        !known[static_cast<std::size_t>(state_base + 2)].has_value() ||
-        known[static_cast<std::size_t>(state_base + 2)].value() != 1) {
+        !known[static_cast<std::size_t>(state_base + 2)].has_value()) {
       return translation_error(
           static_cast<std::size_t>(preparation_pc),
-          "numeric for loop requires an integer constant start and step 1");
+          "numeric for loop requires integer constant start and step");
     }
+    const Word loop_step =
+        known[static_cast<std::size_t>(state_base + 2)].value();
+    if (loop_step == 0) {
+      return translation_error(static_cast<std::size_t>(preparation_pc),
+                               "numeric for loop step cannot be zero");
+    }
+    const bool ascending = loop_step > 0;
 
     std::vector<bool> needed_registers(prototype.maxstacksize, false);
     const auto note_register_reads = [&](int begin, int end) {
@@ -935,21 +957,42 @@ CompilationResult compile_numeric_for_prototype(
         carried_registers.push_back(index);
       }
     }
-    const Word loop_unroll_factor =
-        optimization_level == unijit::jit::OptimizationLevel::kBaseline ? 1
-                                                                         : 8;
+    Word loop_unroll_factor = 1;
+    Word unrolled_index_delta = 0;
+    constexpr Word kOptimizedUnrollFactor = 8;
+    constexpr Word kUnrolledStepCount = kOptimizedUnrollFactor - 1;
+    if (optimization_level != unijit::jit::OptimizationLevel::kBaseline &&
+        ((ascending &&
+          loop_step <=
+              std::numeric_limits<Word>::max() / kUnrolledStepCount) ||
+         (!ascending &&
+          loop_step >=
+              std::numeric_limits<Word>::min() / kUnrolledStepCount))) {
+      loop_unroll_factor = kOptimizedUnrollFactor;
+      unrolled_index_delta = loop_step * kUnrolledStepCount;
+    }
+    const bool has_unit_step = loop_step == 1 || loop_step == -1;
     const unijit::ir::Block dispatch =
         builder.create_block(carried_registers.size());
     const unijit::ir::Block unroll_check =
-        builder.create_block(carried_registers.size());
+        builder.create_block(carried_registers.size() + 1);
     const unijit::ir::Block unrolled_loop =
         builder.create_block(carried_registers.size());
+    const unijit::ir::Block unrolled_continue_check =
+        has_unit_step ? unijit::ir::Block{}
+                      : builder.create_block(carried_registers.size() + 1);
     const unijit::ir::Block scalar_loop =
         builder.create_block(carried_registers.size());
+    const unijit::ir::Block scalar_continue_check =
+        has_unit_step ? unijit::ir::Block{}
+                      : builder.create_block(carried_registers.size() + 1);
     const unijit::ir::Block exit =
         builder.create_block(carried_registers.size());
     if (!dispatch.valid() || !unroll_check.valid() ||
-        !unrolled_loop.valid() || !scalar_loop.valid() || !exit.valid()) {
+        !unrolled_loop.valid() ||
+        (!has_unit_step && !unrolled_continue_check.valid()) ||
+        !scalar_loop.valid() ||
+        (!has_unit_step && !scalar_continue_check.valid()) || !exit.valid()) {
       return {{StatusCode::kResourceExhausted,
                "unable to allocate Lua numeric-loop blocks"},
               nullptr};
@@ -966,9 +1009,11 @@ CompilationResult compile_numeric_for_prototype(
               ? registers[static_cast<std::size_t>(state_base)]
               : registers[lua_register]);
     }
-    const Value enters_loop = builder.less_equal(
-        registers[static_cast<std::size_t>(state_base)],
-        registers[static_cast<std::size_t>(state_base + 1)]);
+    const Value start = registers[static_cast<std::size_t>(state_base)];
+    const Value limit = registers[static_cast<std::size_t>(state_base + 1)];
+    const Value enters_loop =
+        ascending ? builder.less_equal(start, limit)
+                  : builder.less_equal(limit, start);
     status = builder.branch(enters_loop, dispatch, initial_loop_arguments,
                             exit, skipped_loop_arguments);
     if (!status.ok()) {
@@ -1004,12 +1049,18 @@ CompilationResult compile_numeric_for_prototype(
     const std::vector<Value> dispatch_registers = block_registers(dispatch);
     const Value dispatch_index =
         dispatch_registers[static_cast<std::size_t>(state_base + 2)];
-    const Value maximum_unrolled_start = builder.constant(
-        std::numeric_limits<Word>::max() - (loop_unroll_factor - 1));
-    const Value unroll_cannot_overflow =
-        builder.less_equal(dispatch_index, maximum_unrolled_start);
-    status = builder.branch(unroll_cannot_overflow, unroll_check,
-                            dispatch_arguments, scalar_loop,
+    const Value last_unrolled_index = builder.add(
+        dispatch_index, builder.constant(unrolled_index_delta));
+    const Value unrolled_group_advances =
+        loop_unroll_factor == 1
+            ? builder.constant(1)
+            : (ascending
+                   ? builder.less_than(dispatch_index, last_unrolled_index)
+                   : builder.less_than(last_unrolled_index, dispatch_index));
+    std::vector<Value> unroll_check_arguments = dispatch_arguments;
+    unroll_check_arguments.push_back(last_unrolled_index);
+    status = builder.branch(unrolled_group_advances, unroll_check,
+                            unroll_check_arguments, scalar_loop,
                             dispatch_arguments);
     if (!status.ok()) {
       return {status, nullptr};
@@ -1022,14 +1073,14 @@ CompilationResult compile_numeric_for_prototype(
     const std::vector<Value> check_arguments = block_arguments(unroll_check);
     const std::vector<Value> check_registers =
         block_registers(unroll_check);
-    const Value check_index =
-        check_registers[static_cast<std::size_t>(state_base + 2)];
     const Value check_limit =
         check_registers[static_cast<std::size_t>(state_base + 1)];
-    const Value last_unrolled_index = builder.add(
-        check_index, builder.constant(loop_unroll_factor - 1));
+    const Value checked_last_unrolled_index =
+        builder.block_parameter(unroll_check, carried_registers.size());
     const Value has_full_unrolled_group =
-        builder.less_equal(last_unrolled_index, check_limit);
+        ascending ? builder.less_equal(checked_last_unrolled_index, check_limit)
+                  : builder.less_equal(check_limit,
+                                       checked_last_unrolled_index);
     status = builder.branch(has_full_unrolled_group, unrolled_loop,
                             check_arguments, scalar_loop, check_arguments);
     if (!status.ok()) {
@@ -1058,19 +1109,14 @@ CompilationResult compile_numeric_for_prototype(
     }
     const Value unrolled_index =
         unrolled_registers[static_cast<std::size_t>(state_base + 2)];
-    const Value unrolled_limit =
-        unrolled_registers[static_cast<std::size_t>(state_base + 1)];
-    if (!unrolled_index.valid() || !unrolled_limit.valid()) {
+    if (!unrolled_index.valid() ||
+        !unrolled_registers[static_cast<std::size_t>(state_base + 1)].valid()) {
       return translation_error(static_cast<std::size_t>(loop_pc),
                                "numeric loop lost its induction state");
     }
-    const Value continues_unrolled =
-        builder.less_than(unrolled_index, unrolled_limit);
     const Value next_unrolled_index = builder.add(
         unrolled_index, registers[static_cast<std::size_t>(state_base + 2)]);
-    std::vector<Value> unrolled_backedge;
     std::vector<Value> unrolled_completed;
-    unrolled_backedge.reserve(carried_registers.size());
     unrolled_completed.reserve(carried_registers.size());
     for (const std::size_t lua_register : carried_registers) {
       const Value value = unrolled_registers[lua_register];
@@ -1080,15 +1126,70 @@ CompilationResult compile_numeric_for_prototype(
             "numeric loop has an undefined carried register");
       }
       unrolled_completed.push_back(value);
-      unrolled_backedge.push_back(
-          lua_register == static_cast<std::size_t>(state_base + 2)
-              ? next_unrolled_index
-              : value);
     }
-    status = builder.branch(continues_unrolled, dispatch, unrolled_backedge,
-                            exit, unrolled_completed);
-    if (!status.ok()) {
-      return {status, nullptr};
+    if (has_unit_step) {
+      const Value unrolled_limit =
+          unrolled_registers[static_cast<std::size_t>(state_base + 1)];
+      const Value continues_unrolled =
+          ascending ? builder.less_than(unrolled_index, unrolled_limit)
+                    : builder.less_than(unrolled_limit, unrolled_index);
+      std::vector<Value> unrolled_backedge = unrolled_completed;
+      for (std::size_t index = 0; index < carried_registers.size(); ++index) {
+        if (carried_registers[index] ==
+            static_cast<std::size_t>(state_base + 2)) {
+          unrolled_backedge[index] = next_unrolled_index;
+        }
+      }
+      status = builder.branch(continues_unrolled, dispatch,
+                              unrolled_backedge, exit, unrolled_completed);
+      if (!status.ok()) {
+        return {status, nullptr};
+      }
+    } else {
+      const Value unrolled_advance_is_safe =
+          ascending ? builder.less_than(unrolled_index, next_unrolled_index)
+                    : builder.less_than(next_unrolled_index, unrolled_index);
+      std::vector<Value> unrolled_continue_arguments = unrolled_completed;
+      unrolled_continue_arguments.push_back(next_unrolled_index);
+      status = builder.branch(unrolled_advance_is_safe,
+                              unrolled_continue_check,
+                              unrolled_continue_arguments, exit,
+                              unrolled_completed);
+      if (!status.ok()) {
+        return {status, nullptr};
+      }
+
+      status = builder.set_insertion_block(unrolled_continue_check);
+      if (!status.ok()) {
+        return {status, nullptr};
+      }
+      const std::vector<Value> unrolled_current_arguments =
+          block_arguments(unrolled_continue_check);
+      const std::vector<Value> unrolled_current_registers =
+          block_registers(unrolled_continue_check);
+      const Value checked_next_unrolled_index = builder.block_parameter(
+          unrolled_continue_check, carried_registers.size());
+      const Value checked_unrolled_limit = unrolled_current_registers[
+          static_cast<std::size_t>(state_base + 1)];
+      const Value continues_unrolled =
+          ascending
+              ? builder.less_equal(checked_next_unrolled_index,
+                                   checked_unrolled_limit)
+              : builder.less_equal(checked_unrolled_limit,
+                                   checked_next_unrolled_index);
+      std::vector<Value> unrolled_backedge = unrolled_current_arguments;
+      for (std::size_t index = 0; index < carried_registers.size(); ++index) {
+        if (carried_registers[index] ==
+            static_cast<std::size_t>(state_base + 2)) {
+          unrolled_backedge[index] = checked_next_unrolled_index;
+        }
+      }
+      status = builder.branch(continues_unrolled, dispatch,
+                              unrolled_backedge, exit,
+                              unrolled_current_arguments);
+      if (!status.ok()) {
+        return {status, nullptr};
+      }
     }
 
     status = builder.set_insertion_block(scalar_loop);
@@ -1104,19 +1205,14 @@ CompilationResult compile_numeric_for_prototype(
     }
     const Value scalar_index =
         scalar_registers[static_cast<std::size_t>(state_base + 2)];
-    const Value scalar_limit =
-        scalar_registers[static_cast<std::size_t>(state_base + 1)];
-    if (!scalar_index.valid() || !scalar_limit.valid()) {
+    if (!scalar_index.valid() ||
+        !scalar_registers[static_cast<std::size_t>(state_base + 1)].valid()) {
       return translation_error(static_cast<std::size_t>(loop_pc),
                                "numeric loop lost its scalar induction state");
     }
-    const Value continues_scalar =
-        builder.less_than(scalar_index, scalar_limit);
     const Value next_scalar_index = builder.add(
         scalar_index, registers[static_cast<std::size_t>(state_base + 2)]);
-    std::vector<Value> scalar_backedge;
     std::vector<Value> scalar_completed;
-    scalar_backedge.reserve(carried_registers.size());
     scalar_completed.reserve(carried_registers.size());
     for (const std::size_t lua_register : carried_registers) {
       const Value value = scalar_registers[lua_register];
@@ -1126,13 +1222,63 @@ CompilationResult compile_numeric_for_prototype(
             "numeric scalar tail has an undefined carried register");
       }
       scalar_completed.push_back(value);
-      scalar_backedge.push_back(
-          lua_register == static_cast<std::size_t>(state_base + 2)
-              ? next_scalar_index
-              : value);
     }
-    status = builder.branch(continues_scalar, scalar_loop, scalar_backedge,
-                            exit, scalar_completed);
+    if (has_unit_step) {
+      const Value scalar_limit =
+          scalar_registers[static_cast<std::size_t>(state_base + 1)];
+      const Value continues_scalar =
+          ascending ? builder.less_than(scalar_index, scalar_limit)
+                    : builder.less_than(scalar_limit, scalar_index);
+      std::vector<Value> scalar_backedge = scalar_completed;
+      for (std::size_t index = 0; index < carried_registers.size(); ++index) {
+        if (carried_registers[index] ==
+            static_cast<std::size_t>(state_base + 2)) {
+          scalar_backedge[index] = next_scalar_index;
+        }
+      }
+      status = builder.branch(continues_scalar, scalar_loop, scalar_backedge,
+                              exit, scalar_completed);
+    } else {
+      const Value scalar_advance_is_safe =
+          ascending ? builder.less_than(scalar_index, next_scalar_index)
+                    : builder.less_than(next_scalar_index, scalar_index);
+      std::vector<Value> scalar_continue_arguments = scalar_completed;
+      scalar_continue_arguments.push_back(next_scalar_index);
+      status = builder.branch(scalar_advance_is_safe, scalar_continue_check,
+                              scalar_continue_arguments, exit,
+                              scalar_completed);
+      if (!status.ok()) {
+        return {status, nullptr};
+      }
+
+      status = builder.set_insertion_block(scalar_continue_check);
+      if (!status.ok()) {
+        return {status, nullptr};
+      }
+      const std::vector<Value> scalar_current_arguments =
+          block_arguments(scalar_continue_check);
+      const std::vector<Value> scalar_current_registers =
+          block_registers(scalar_continue_check);
+      const Value checked_next_scalar_index = builder.block_parameter(
+          scalar_continue_check, carried_registers.size());
+      const Value checked_scalar_limit = scalar_current_registers[
+          static_cast<std::size_t>(state_base + 1)];
+      const Value continues_scalar =
+          ascending
+              ? builder.less_equal(checked_next_scalar_index,
+                                   checked_scalar_limit)
+              : builder.less_equal(checked_scalar_limit,
+                                   checked_next_scalar_index);
+      std::vector<Value> scalar_backedge = scalar_current_arguments;
+      for (std::size_t index = 0; index < carried_registers.size(); ++index) {
+        if (carried_registers[index] ==
+            static_cast<std::size_t>(state_base + 2)) {
+          scalar_backedge[index] = checked_next_scalar_index;
+        }
+      }
+      status = builder.branch(continues_scalar, scalar_loop, scalar_backedge,
+                              exit, scalar_current_arguments);
+    }
     if (!status.ok()) {
       return {status, nullptr};
     }
