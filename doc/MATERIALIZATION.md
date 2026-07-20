@@ -23,26 +23,33 @@ or more than 262,144 total fields. Execution also rejects a plan whose site or
 resume offset does not exactly match the reconstructed frame, a destination
 that overwrites a primitive slot, or a recovered field with the wrong type.
 
-## Two-phase transaction
+## Atomic object-and-frame transaction
 
 The frontend supplies a complete set of `noexcept` callbacks plus opaque
 state. Materialization follows one deterministic transaction:
 
 1. Validate the complete plan, frame, callbacks, and all recovered inputs
    before entering the runtime transaction.
-2. Call `begin` with the exact object count.
+2. Call `begin` with the semantic reason, exact site, resume offset, object
+   count, and total logical-frame slot count.
 3. Call `allocate` for every recipe before storing any field, producing opaque
    64-bit handles. This shell-allocation phase makes cyclic graphs possible.
 4. Populate fields in recipe and field order through `store_primitive` or
    `store_object`.
-5. Add every object handle to its logical destination slot and call `commit`.
+5. Install every primitive and object logical slot through
+   `store_frame_primitive` or `store_frame_object`.
+6. Call `commit` only after both the graph and complete logical frame have been
+   staged successfully.
 
-Any failure reported from `begin`, allocation, field population, or commit
-calls `rollback` exactly once and returns no partially materialized frame.
-UniJIT completes its own potentially allocating validation and staging before
-`begin`; callback code owns all runtime allocation and rooting performed while
-the transaction is active. A rollback callback must therefore be safe after a
-failed begin attempt and must discard every shell created by the transaction.
+Any failure reported from `begin`, allocation, field population, frame-slot
+installation, or commit calls `rollback` exactly once and returns no partially
+materialized frame. The callback transaction must publish the object graph and
+interpreter frame together at commit, so an installation failure cannot leave
+committed objects without a resumable frame. UniJIT completes its own
+potentially allocating validation and staging before `begin`; callback code
+owns all runtime allocation and rooting performed while the transaction is
+active. A rollback callback must therefore be safe after a failed begin attempt
+and must discard every shell and frame slot staged by the transaction.
 
 ## Result and ownership
 
@@ -59,9 +66,9 @@ after cache replacement, eviction, clearing, or destruction.
 
 ## Current boundary
 
-This contract provides bounded, cyclic, transactional object-graph recovery
-without exposing target registers or runtime object layouts. Frontend-specific
-recipes and callbacks still need to allocate concrete Lua tables/closures,
-QuickJS objects/environments, and PocketPy objects, then install the completed
-logical frame into the corresponding stock interpreter before resumable
-execution is claimed.
+This contract provides bounded, cyclic, transactional object-graph and logical
+frame recovery without exposing target registers or runtime object layouts.
+Frontend-specific recipes and callbacks still need to allocate concrete Lua
+tables/closures, QuickJS objects/environments, and PocketPy objects, map the
+logical slots into each stock interpreter's concrete frame representation, and
+perform the resumable transfer.

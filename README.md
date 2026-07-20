@@ -20,8 +20,9 @@ capacity, invalidation, telemetry, and concurrent lifetime guarantees.
 immutable recovery metadata, and ABI-boundary frame reconstruction.
 [doc/STACK_MAPS.md](doc/STACK_MAPS.md) defines canonical live SSA locations,
 native site metadata, and compiled-generation ownership.
-[doc/MATERIALIZATION.md](doc/MATERIALIZATION.md) defines bounded transactional
-object-graph recovery, cyclic references, rollback, and opaque frontend handles.
+[doc/MATERIALIZATION.md](doc/MATERIALIZATION.md) defines bounded atomic object
+graph and logical-frame recovery, cyclic references, rollback, and opaque
+frontend handles.
 [doc/ASSUMPTIONS.md](doc/ASSUMPTIONS.md) defines one-shot runtime dependencies,
 quiescent invalidation, and stale cache-generation retirement.
 [doc/TIERING.md](doc/TIERING.md) defines saturating hotness profiles, single

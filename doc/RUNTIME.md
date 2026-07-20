@@ -67,9 +67,9 @@ Before a diagnosed exit restores its frame, the backend also copies every live
 canonical stack-map value into the execution context. The matching compiled
 function or retained code lease validates and reconstructs those exact Word or
 Float64 bits after ABI return as defined in [STACK_MAPS.md](STACK_MAPS.md).
-Those primitive slots can then drive bounded two-phase object graph recovery
-through frontend-owned transactional callbacks, including cyclic references,
-as defined in [MATERIALIZATION.md](MATERIALIZATION.md).
+Those primitive slots can then drive bounded cyclic object-graph recovery and
+complete logical-frame installation through one frontend-owned atomic
+transaction, as defined in [MATERIALIZATION.md](MATERIALIZATION.md).
 Calling a raw native entry with a null context is only supported when
 `requires_context()` is false. Optimization proves guards over known nonzero
 constants cannot exit and removes both the guard and its reconstruction record,
