@@ -1,5 +1,8 @@
 ## 0.1.3
 
+- Added an isolated stock QuickJS build, strict numeric-function-to-Float64-SSA
+  translation, guarded native closures with GC-owned code lifetime, and a
+  checksum-verified stock-versus-UniJIT call benchmark.
 - Added an explicit execution-context ABI, lock-free cooperative interruption,
   diagnosed runtime exits, and effectful native safepoints for straight-line
   and CFG loop code on AArch64, x86-64, and RISC-V 64.

@@ -89,6 +89,39 @@ jobs:
           --warmup 10000 --iterations 100000 --samples 3
           > build/language/lua-float.json
 
+  quickjs-reference-baseline:
+    name: QuickJS frontend and baseline
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Configure stock QuickJS and UniJIT frontend
+        run: >-
+          cmake -S . -B build/quickjs -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DUNIJIT_BUILD_TESTS=ON
+          -DUNIJIT_BUILD_BENCHMARKS=ON
+          -DUNIJIT_WARNINGS_AS_ERRORS=ON
+          -DUNIJIT_BUILD_QUICKJS_REFERENCE=ON
+
+      - name: Build QuickJS frontend and benchmark
+        run: >-
+          cmake --build build/quickjs --parallel
+          --target unijit_quickjs_tests unijit_quickjs_benchmark
+
+      - name: Test QuickJS frontend
+        run: >-
+          ctest --test-dir build/quickjs --output-on-failure
+          -R unijit.quickjs_frontend
+
+      - name: Compare stock QuickJS and UniJIT calls
+        run: >-
+          build/quickjs/bin/unijit_quickjs_benchmark
+          --warmup 10000 --iterations 100000 --samples 3
+          > build/quickjs/quickjs-call.json
+
   build-and-test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
