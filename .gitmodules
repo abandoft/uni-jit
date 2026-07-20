@@ -7,3 +7,6 @@
 [submodule "third/sljit"]
 	path = third/sljit
 	url = https://github.com/zherczeg/sljit.git
+[submodule "third/quickjs"]
+	path = third/quickjs
+	url = https://github.com/bellard/quickjs.git
