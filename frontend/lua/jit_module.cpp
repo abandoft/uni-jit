@@ -1018,7 +1018,9 @@ CompilationResult compile_numeric_for_prototype(
     };
     note_register_reads(preparation_pc + 1, loop_pc);
     note_register_reads(loop_pc + 1, prototype.sizecode);
-    needed_registers[static_cast<std::size_t>(state_base + 1)] = true;
+    if (!has_parameter_step) {
+      needed_registers[static_cast<std::size_t>(state_base + 1)] = true;
+    }
     needed_registers[static_cast<std::size_t>(state_base + 2)] = true;
 
     std::vector<std::size_t> carried_registers;
