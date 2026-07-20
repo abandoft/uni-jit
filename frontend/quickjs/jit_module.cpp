@@ -26,6 +26,7 @@ using unijit::frontend::quickjs::ResultKind;
 using unijit::ir::Word;
 
 constexpr std::size_t kMaximumParameters = 64;
+constexpr std::size_t kMaximumSourceBytes = 1024U * 1024U;
 constexpr char kCompiledFunctionStateProperty[] =
     "__unijit_compiled_function_state__";
 constexpr std::uint64_t kQuickJsBaselineFingerprint =
@@ -331,6 +332,12 @@ JSValue compile_with_to_string(JSContext* context, JSValueConst function_value,
   JS_FreeValue(context, source_value);
   if (source == nullptr) {
     return JS_EXCEPTION;
+  }
+  if (source_size > kMaximumSourceBytes) {
+    JS_FreeCString(context, source);
+    return JS_ThrowRangeError(
+        context, "unijit.compile source exceeds %llu bytes",
+        static_cast<unsigned long long>(kMaximumSourceBytes));
   }
 
   std::string retained_source;

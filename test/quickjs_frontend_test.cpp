@@ -178,6 +178,20 @@ int main() {
     std::cerr << "unable to install the UniJIT QuickJS module\n";
     return EXIT_FAILURE;
   }
+  std::string oversized_function = "function oversized(){";
+  oversized_function.append(1024U * 1024U + 1U, ' ');
+  oversized_function.append("return 1;} unijit.compile(oversized);");
+  result = JS_Eval(context, oversized_function.data(),
+                   oversized_function.size(), "<unijit-quickjs-budget>",
+                   JS_EVAL_TYPE_GLOBAL);
+  if (!JS_IsException(result)) {
+    std::cerr << "QuickJS accepted source beyond the compilation budget\n";
+    JS_FreeValue(context, result);
+    return EXIT_FAILURE;
+  }
+  JS_FreeValue(context, result);
+  JSValue oversized_exception = JS_GetException(context);
+  JS_FreeValue(context, oversized_exception);
   constexpr char kNativeSource[] =
       "function sourceFunction(a, b) {"
       "  return (a + 2.5) * (b - -3) / 2;"

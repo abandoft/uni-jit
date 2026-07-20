@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <string>
 #include <string_view>
 
 #include <pocketpy.h>
@@ -299,6 +300,14 @@ int main() {
     py_finalize();
     return EXIT_FAILURE;
   }
+  const std::string oversized_source(1024U * 1024U + 1U, ' ');
+  if (unijit_pocketpy_compile(oversized_source.c_str()) ||
+      !py_matchexc(tp_ValueError)) {
+    std::cerr << "PocketPy accepted source beyond the compilation budget\n";
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  py_clearexc(nullptr);
   constexpr char kNativeSource[] =
       "import unijit\n"
       "native = unijit.compile(\"def affine(a, b): return (a + 2.5) * "

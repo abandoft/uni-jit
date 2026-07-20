@@ -30,6 +30,7 @@ using unijit::ir::Word;
 constexpr char kModuleName[] = "unijit";
 constexpr char kCompiledFunctionTypeName[] = "_CompiledFunction";
 constexpr std::size_t kMaximumParameters = 64;
+constexpr std::size_t kMaximumSourceBytes = 1024U * 1024U;
 constexpr std::uint64_t kPocketPyBaselineFingerprint =
     0x554A504B42415345ULL;
 constexpr std::uint64_t kPocketPyOptimizedFingerprint =
@@ -238,6 +239,10 @@ void schedule_if_hot(
 }
 
 bool create_compiled_function(std::string_view source) {
+  if (source.size() > kMaximumSourceBytes) {
+    return ValueError("unijit.compile source exceeds %d bytes",
+                      static_cast<int>(kMaximumSourceBytes));
+  }
   try {
     PocketPyService &service = pocketpy_service();
     const bool tierable =
