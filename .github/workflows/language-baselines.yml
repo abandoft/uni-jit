@@ -63,6 +63,14 @@ jobs:
           --warmup 100 --iterations 1000 --samples 3
           > build/language/lua-integer-loop.json
 
+      - name: Enforce Lua commercial performance floor
+        run: >-
+          python3 tool/performance_gate.py lua
+          build/language/lua-integer-loop.json
+          --minimum-stock-speedup 1.25
+          --minimum-luajit-speedup 1.10
+          > build/language/lua-integer-loop-performance-gate.json
+
       - name: Compare stock Lua, UniJIT, and LuaJIT Float64 execution
         run: >-
           python3 benchmark/lua/run_integer.py
@@ -81,6 +89,7 @@ jobs:
             build/language/lua-reference.json
             build/language/lua-integer.json
             build/language/lua-integer-loop.json
+            build/language/lua-integer-loop-performance-gate.json
             build/language/lua-float.json
           if-no-files-found: error
 
