@@ -6,6 +6,7 @@
 #include "unijit/ir/function.h"
 #include "unijit/jit/code_cache.h"
 #include "unijit/jit/compiler.h"
+#include "unijit/jit/tiering.h"
 #include "unijit/runtime/deoptimization.h"
 
 int main() {
@@ -126,9 +127,48 @@ int main() {
       assumed_publication.handle.reconstruct_deoptimization(
           19, assumed_arguments.data(), assumed_arguments.size(),
           invalidation_context);
-  return !assumed_invalid.ok() && assumed_frame.ok() &&
-                 assumed_frame.frame.find(0) != nullptr &&
-                 assumed_frame.frame.find(0)->value == 41
+  if (assumed_invalid.ok() || !assumed_frame.ok() ||
+      assumed_frame.frame.find(0) == nullptr ||
+      assumed_frame.frame.find(0)->value != 41) {
+    return 18;
+  }
+
+  unijit::jit::TieredCode tiered({1, 1, 1});
+  if (!tiered.publish_baseline(guarded_publication.handle).ok()) {
+    return 19;
+  }
+  const auto baseline_snapshot = tiered.snapshot();
+  const std::array<unijit::ir::Word, 1> tiered_arguments = {
+      unijit::ir::pack_float64(2.0)};
+  const auto baseline_result =
+      tiered.invoke(tiered_arguments.data(), tiered_arguments.size());
+  if (!baseline_result.ok() || !tiered.try_begin_optimization()) {
+    return 20;
+  }
+
+  unijit::ir::FunctionBuilder optimized_builder(
+      std::vector<unijit::ir::ValueType>{unijit::ir::ValueType::kFloat64});
+  if (!optimized_builder.set_return(optimized_builder.parameter(0)).ok()) {
+    return 21;
+  }
+  auto optimized_compilation = unijit::jit::Compiler::compile(
+      std::move(optimized_builder).build());
+  auto optimized_publication = cache.publish(
+      "package-consumer-tiered", 4,
+      std::move(optimized_compilation.function));
+  if (!optimized_compilation.status.ok() || !optimized_publication.ok() ||
+      !tiered
+           .publish_optimized(optimized_publication.handle,
+                              baseline_snapshot.generation)
+           .ok()) {
+    return 22;
+  }
+  const auto optimized_result =
+      tiered.invoke(tiered_arguments.data(), tiered_arguments.size());
+  return optimized_result.ok() &&
+                 optimized_result.attempted_tier ==
+                     unijit::jit::CodeTier::kOptimized &&
+                 optimized_result.result.value == tiered_arguments[0]
              ? 0
-             : 18;
+             : 23;
 }
