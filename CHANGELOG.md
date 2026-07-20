@@ -1,5 +1,6 @@
 ## 0.1.6
 
+- Fixed QuickJS adapter diagnostics to use format widths accepted consistently by Unix, MSVC, and MinGW x64 toolchains under warnings-as-errors builds.
 - Added a public thread-safe bounded LRU native-code cache with fingerprinted identities, generation tokens, executable-mapping byte budgets, lifecycle telemetry, precise invalidation, and copyable execution leases that remain safe across replacement, eviction, clearing, and cache destruction.
 - Integrated exact-source native-code reuse into the stock QuickJS and PocketPy adapters while retaining compiled mappings through runtime-owned callable leases.
 - Added safe Lua 5.5 numeric-prototype caching over the numeric mode, prototype shape, complete instruction stream, and exact numeric constant bits, with isolated integer and Float64 domains and an uncached fallback for unsupported prototype shapes.
