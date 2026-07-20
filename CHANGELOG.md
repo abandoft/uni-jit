@@ -1,5 +1,6 @@
 ## 0.1.5
 
+- Advanced the no-release LuaJIT reference to the latest upstream v2.1 commit while keeping all generated reference-build state under `build/`.
 - Eliminated provably passing Float64 nonzero guards so PocketPy division by a known nonzero constant retains the unchecked native-call fast path.
 
 ## 0.1.4
