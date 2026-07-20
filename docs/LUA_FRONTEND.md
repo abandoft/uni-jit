@@ -46,3 +46,10 @@ the broader Lua language.
 The compiled closure owns its executable allocation through a Lua userdata
 upvalue. Its finalizer is idempotent, so collection and adversarial repeated
 finalizer calls cannot double-free native code.
+
+The invocation fast path reads guarded arguments directly from Lua 5.5's
+current `CallInfo` and `TValue` frame, then writes the integer result to the
+reserved C-call stack space. This is intentionally coupled to the pinned Lua
+5.5 source revision and is verified on every supported native backend. It
+avoids treating Lua's public C API call overhead as part of the generated-code
+cost while retaining an integer tag check for every declared parameter.

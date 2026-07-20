@@ -41,3 +41,30 @@ python3 benchmark/lua/run_reference.py \
 
 Both engines execute the same source with identical warmup and sample policy.
 The runner rejects mismatched checksums and records the exact submodule commits.
+
+## Lua integer frontend comparison
+
+The integer-call workload compares stock Lua 5.5, a guarded UniJIT native
+closure, and LuaJIT using identical Lua source, inputs, warmup, and sample
+counts. The surrounding loop remains Lua code in all three engines, so the
+record includes both call-boundary and kernel execution costs.
+
+```sh
+cmake -S . -B build/language -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DUNIJIT_BUILD_TESTS=ON \
+  -DUNIJIT_BUILD_BENCHMARKS=ON \
+  -DUNIJIT_BUILD_LUA_REFERENCE=ON \
+  -DUNIJIT_BUILD_LUAJIT_REFERENCE=ON
+cmake --build build/language --parallel --target \
+  unijit_lua55 unijit_lua55_benchmark_runner unijit_luajit_reference
+python3 benchmark/lua/run_integer.py \
+  --lua build/language/bin/lua5.5-reference \
+  --unijit build/language/bin/lua5.5-unijit \
+  --luajit build/language/references/luajit/src/luajit \
+  > build/language/lua-integer.json
+```
+
+The runner requires exact checksums across all three engines and records the
+UniJIT, Lua, and LuaJIT revisions. Results describe this narrow integer
+workload only; they are not presented as whole-language performance.
