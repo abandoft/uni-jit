@@ -1,3 +1,7 @@
+## 0.1.5
+
+- Eliminated provably passing Float64 nonzero guards so PocketPy division by a known nonzero constant retains the unchecked native-call fast path.
+
 ## 0.1.4
 
 - Added IEEE-754 Float64 division to typed SSA and every native backend, with guarded Lua 5.5 and QuickJS frontend support.
