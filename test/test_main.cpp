@@ -2048,6 +2048,13 @@ void test_control_flow_runtime_helper_ir() {
   expect(function.call_arguments().size() == 2 &&
              unijit::ir::verify(function).ok(),
          "CFG runtime calls must retain verified flattened arguments");
+  const auto allocation =
+      unijit::jit::detail::allocate_control_flow_registers(
+          function, 4, 4, unijit::jit::detail::StackMapRequirements{});
+  expect(allocation.status.ok() &&
+             allocation.live_across_calls[called.id()].size() == 1 &&
+             allocation.live_across_calls[called.id()][0] == live,
+         "CFG allocation must identify only register values live after a call");
 
   const std::array<Word, 2> arguments = {
       unijit::ir::pack_float64(3.5),
