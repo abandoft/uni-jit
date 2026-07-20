@@ -171,7 +171,8 @@ public:
     }
 
     jit::CompilationResult compilation =
-        jit::Compiler::compile(std::move(*builder_).build());
+        jit::Compiler::compile(std::move(*builder_).build(),
+                               deoptimization_table_);
     if (!compilation.ok()) {
       return {compilation.status, parameter_names_.size(), nullptr};
     }
@@ -540,9 +541,8 @@ private:
     } else if (operation == '*') {
       destination->value = builder_->float64_multiply(previous, rhs);
     } else {
-      invalid_line(line,
-                   "checked division is not yet supported in PocketPy loops");
-      return false;
+      destination->value =
+          checked_divide(previous, rhs, line.offset + operation_site);
     }
     if (!destination->value.valid()) {
       invalid_line(line, "unable to lower a counted-loop assignment");
@@ -573,6 +573,30 @@ private:
   bool expression_finished() noexcept {
     skip_expression_space();
     return expression_position_ == expression_.size();
+  }
+
+  ir::Value checked_divide(ir::Value lhs, ir::Value rhs, std::size_t site) {
+    runtime::DeoptimizationRecord deoptimization;
+    deoptimization.site = site;
+    deoptimization.resume_offset = site;
+    deoptimization.reason = runtime::DeoptimizationReason::kDivisionByZero;
+    deoptimization.recovery.reserve(parameter_names_.size() + 1);
+    for (std::size_t index = 0; index < parameter_names_.size(); ++index) {
+      deoptimization.recovery.push_back(runtime::RecoveryOperation::argument(
+          index, ir::ValueType::kFloat64, index));
+    }
+    deoptimization.recovery.push_back(runtime::RecoveryOperation::exit_value(
+        parameter_names_.size(), ir::ValueType::kFloat64));
+    const Status metadata_status = deoptimization_table_.add(deoptimization);
+    if (!metadata_status.ok()) {
+      status_ = metadata_status;
+      return {};
+    }
+    if (!builder_->guard_float64_nonzero(rhs, site).valid()) {
+      invalid_at(site, "unable to create a checked loop division");
+      return {};
+    }
+    return builder_->float64_divide(lhs, rhs);
   }
 
   ir::Value parse_condition() {
@@ -638,17 +662,16 @@ private:
       if (operation != '*' && operation != '/') {
         break;
       }
-      if (operation == '/') {
-        invalid_expression(
-            "checked division is not yet supported in PocketPy loops");
-        return {};
-      }
+      const std::size_t operation_site =
+          expression_offset_ + expression_position_;
       ++expression_position_;
       const ir::Value rhs = parse_unary(depth + 1);
       if (!rhs.valid()) {
         return {};
       }
-      value = builder_->float64_multiply(value, rhs);
+      value = operation == '*'
+                  ? builder_->float64_multiply(value, rhs)
+                  : checked_divide(value, rhs, operation_site);
     }
     return value;
   }
@@ -767,6 +790,7 @@ private:
   std::string induction_name_;
   ir::Value count_value_;
   std::unique_ptr<ir::ControlFlowBuilder> builder_;
+  runtime::DeoptimizationTable deoptimization_table_;
   std::string_view expression_;
   std::size_t expression_offset_{0};
   std::size_t expression_position_{0};

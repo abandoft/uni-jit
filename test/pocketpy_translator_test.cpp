@@ -169,6 +169,66 @@ int main() {
     return EXIT_FAILURE;
   }
 
+  constexpr char kLoopDivisionSource[] =
+      "def divide_loop(count, divisor):\n"
+      "    quotient = 12.0\n"
+      "    for iteration in range(count):\n"
+      "        quotient = quotient / divisor\n"
+      "    return quotient\n";
+  const auto loop_division =
+      unijit::frontend::pocketpy::translate_numeric_function(
+          kLoopDivisionSource);
+  const std::size_t loop_division_site =
+      std::string_view(kLoopDivisionSource).find('/');
+  if (!loop_division.ok() || loop_division.parameter_count != 2 ||
+      !loop_division.function->requires_context() ||
+      loop_division.function->deoptimization_table().size() != 1) {
+    std::cerr << "PocketPy counted-loop division did not compile: "
+              << loop_division.status.message() << '\n';
+    return EXIT_FAILURE;
+  }
+  const std::array<unijit::ir::Word, 2> loop_division_arguments = {
+      unijit::ir::pack_float64(2.0), unijit::ir::pack_float64(2.0)};
+  const auto loop_quotient = loop_division.function->invoke(
+      loop_division_arguments.data(), loop_division_arguments.size());
+  if (!loop_quotient.ok() ||
+      loop_quotient.value != unijit::ir::pack_float64(3.0)) {
+    std::cerr << "PocketPy counted-loop division produced the wrong result\n";
+    return EXIT_FAILURE;
+  }
+  constexpr std::array<double, 2> kLoopZeroes = {0.0, -0.0};
+  for (double zero : kLoopZeroes) {
+    const std::array<unijit::ir::Word, 2> zero_arguments = {
+        unijit::ir::pack_float64(2.0), unijit::ir::pack_float64(zero)};
+    unijit::runtime::ExecutionContext context;
+    const auto exit = loop_division.function->invoke(
+        zero_arguments.data(), zero_arguments.size(), &context);
+    const auto reconstruction =
+        loop_division.function->reconstruct_deoptimization(
+            loop_division_site, zero_arguments.data(), zero_arguments.size(),
+            context);
+    const auto *divisor = reconstruction.frame.find(2);
+    if (exit.ok() ||
+        exit.status.code() != unijit::StatusCode::kRuntimeExit ||
+        exit.status.location() != loop_division_site ||
+        !reconstruction.ok() ||
+        reconstruction.frame.reason !=
+            unijit::runtime::DeoptimizationReason::kDivisionByZero ||
+        divisor == nullptr || divisor->value != zero_arguments[1]) {
+      std::cerr << "PocketPy loop division did not reconstruct signed zero\n";
+      return EXIT_FAILURE;
+    }
+  }
+  const std::array<unijit::ir::Word, 2> skipped_division_arguments = {
+      unijit::ir::pack_float64(0.0), unijit::ir::pack_float64(0.0)};
+  const auto skipped_division = loop_division.function->invoke(
+      skipped_division_arguments.data(), skipped_division_arguments.size());
+  if (!skipped_division.ok() ||
+      skipped_division.value != unijit::ir::pack_float64(12.0)) {
+    std::cerr << "zero-iteration PocketPy loop executed its division\n";
+    return EXIT_FAILURE;
+  }
+
   constexpr std::array<const char *, 6> kRejectedSources = {
       "lambda a: a + 1",
       "def f(a, a): return a",
@@ -254,6 +314,37 @@ int main() {
     py_printexc();
     py_finalize();
     return EXIT_FAILURE;
+  }
+  constexpr char kNativeLoopDivisionSource[] =
+      "native_loop_divide = unijit.compile('''def loop_divide(count, divisor):\n"
+      "    quotient = 12.0\n"
+      "    for iteration in range(count):\n"
+      "        quotient /= divisor\n"
+      "    return quotient\n''')\n"
+      "loop_quotient = native_loop_divide(2, 2)\n"
+      "skipped_quotient = native_loop_divide(0, 0)\n"
+      "loop_division_tier = unijit.stats(native_loop_divide)\n"
+      "assert loop_quotient == 3.0\n"
+      "assert skipped_quotient == 12.0\n"
+      "assert not loop_division_tier['tierable']\n";
+  if (!py_exec(kNativeLoopDivisionSource,
+               "<unijit-pocketpy-counted-loop-division>", EXEC_MODE,
+               nullptr)) {
+    py_printexc();
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  constexpr std::array<const char *, 2> kLoopZeroDivisions = {
+      "native_loop_divide(2, 0.0)", "native_loop_divide(2, -0.0)"};
+  for (const char *expression : kLoopZeroDivisions) {
+    if (py_exec(expression, "<unijit-pocketpy-loop-zero-division>",
+                EVAL_MODE, nullptr) ||
+        !py_matchexc(tp_ZeroDivisionError)) {
+      std::cerr << "PocketPy loop division did not raise ZeroDivisionError\n";
+      py_finalize();
+      return EXIT_FAILURE;
+    }
+    py_clearexc(nullptr);
   }
   (void)py_gc_collect();
   if (!py_exec("result = native(1.5, 4)", "<unijit-pocketpy-call>",
