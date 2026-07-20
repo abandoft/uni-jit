@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -8,7 +9,7 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tool"))
 
-from release import ReleaseError, Version  # noqa: E402
+from release import ReleaseError, Version, validate_changelog  # noqa: E402
 
 
 class VersionTest(unittest.TestCase):
@@ -24,6 +25,29 @@ class VersionTest(unittest.TestCase):
     def test_multi_digit_minor_is_rejected(self) -> None:
         with self.assertRaises(ReleaseError):
             Version.parse("1.10.0")
+
+
+class ChangelogTest(unittest.TestCase):
+    def validate(self, contents: str) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "CHANGELOG.md"
+            path.write_text(contents, encoding="utf-8")
+            validate_changelog(path)
+
+    def test_single_line_updates_are_accepted(self) -> None:
+        self.validate("## 0.1.2\n\n- First complete update.\n- Second update.\n")
+
+    def test_wrapped_update_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ReleaseError, "one physical line"):
+            self.validate("## 0.1.2\n\n- One update that was manually\n  wrapped.\n")
+
+    def test_non_bullet_release_text_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ReleaseError, "one complete '- ' update"):
+            self.validate("## 0.1.2\n\nRelease paragraph.\n")
+
+    def test_empty_bullet_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ReleaseError, "one complete '- ' update"):
+            self.validate("## 0.1.2\n\n- Complete update.\n- \n")
 
 
 if __name__ == "__main__":

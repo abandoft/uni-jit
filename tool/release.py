@@ -87,6 +87,14 @@ def changelog_sections(path: Path) -> list[ChangelogSection]:
 
 def validate_changelog(path: Path) -> list[ChangelogSection]:
     sections = changelog_sections(path)
+    for section in sections:
+        for line_number, line in enumerate(section.body.splitlines(), start=1):
+            if line and (not line.startswith("- ") or not line[2:].strip()):
+                raise ReleaseError(
+                    f"{path.name} section {section.version} release-note line "
+                    f"{line_number} must contain one complete '- ' update on one "
+                    "physical line"
+                )
     for newer, older in zip(sections, sections[1:]):
         expected = older.version.next()
         if newer.version != expected:
