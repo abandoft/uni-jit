@@ -63,15 +63,17 @@ JSValue invoke_compiled_function(JSContext* context, JSValueConst, int argc,
     return JS_ThrowTypeError(context, "invalid UniJIT compiled function");
   }
   if (argc < static_cast<int>(owned->parameter_count)) {
-    return JS_ThrowTypeError(context, "compiled function requires %zu arguments",
-                             owned->parameter_count);
+    return JS_ThrowTypeError(
+        context, "compiled function requires %llu arguments",
+        static_cast<unsigned long long>(owned->parameter_count));
   }
 
   std::array<Word, kMaximumParameters> native_arguments{};
   for (std::size_t index = 0; index < owned->parameter_count; ++index) {
     if (JS_IsNumber(arguments[index]) == 0) {
-      return JS_ThrowTypeError(context, "argument %zu must be a Number",
-                               index + 1);
+      return JS_ThrowTypeError(
+          context, "argument %llu must be a Number",
+          static_cast<unsigned long long>(index + 1));
     }
     double number = 0.0;
     if (JS_ToFloat64(context, &number, arguments[index]) != 0) {
@@ -86,8 +88,9 @@ JSValue invoke_compiled_function(JSContext* context, JSValueConst, int argc,
         native_arguments.data(), owned->parameter_count);
     if (!invocation.ok()) {
       return JS_ThrowInternalError(
-          context, "UniJIT invocation failed at site %zu: %s",
-          invocation.status.location(), invocation.status.message().c_str());
+          context, "UniJIT invocation failed at site %llu: %s",
+          static_cast<unsigned long long>(invocation.status.location()),
+          invocation.status.message().c_str());
     }
     result = invocation.value;
   } else {
@@ -153,8 +156,9 @@ JSValue compile_with_to_string(JSContext* context, JSValueConst function_value,
     if (!translation.ok()) {
       JS_FreeCString(context, source);
       return JS_ThrowTypeError(
-          context, "UniJIT rejected source at byte %zu: %s",
-          translation.status.location(), translation.status.message().c_str());
+          context, "UniJIT rejected source at byte %llu: %s",
+          static_cast<unsigned long long>(translation.status.location()),
+          translation.status.message().c_str());
     }
     parameter_count = translation.parameter_count;
     unijit::jit::CodeCachePublication publication =
