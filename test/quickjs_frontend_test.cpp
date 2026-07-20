@@ -250,6 +250,27 @@ int main() {
       return EXIT_FAILURE;
     }
   }
+  constexpr std::array<const char*, 2> kRejectedLoopSteps = {
+      "function zeroStep() {"
+      "  let sum = 0.0;"
+      "  for (let iteration = 0.0; iteration < 10.0; iteration += 0.0) {"
+      "    sum += iteration;"
+      "  }"
+      "  return sum;"
+      "}",
+      "function dynamicStep(step) {"
+      "  let sum = 0.0;"
+      "  for (let iteration = 0.0; iteration < 10.0; iteration += step) {"
+      "    sum += iteration;"
+      "  }"
+      "  return sum;"
+      "}"};
+  for (const char* source : kRejectedLoopSteps) {
+    if (unijit::frontend::quickjs::translate_numeric_function(source).ok()) {
+      std::cerr << "QuickJS accepted an unsupported induction step\n";
+      return EXIT_FAILURE;
+    }
+  }
 
   constexpr std::array<const char*, 4> kRejectedSources = {
       "function(a, a) { return a; }",
