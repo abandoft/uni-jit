@@ -35,6 +35,7 @@ struct ControlFlowRegisterAllocation final {
   std::vector<std::size_t> register_indices;
   std::vector<std::size_t> owner_blocks;
   std::vector<bool> requires_stack;
+  bool split_register_classes{false};
 };
 
 enum class ControlFlowMoveSource : std::uint8_t {
@@ -47,6 +48,7 @@ struct ControlFlowRegisterMove final {
   ControlFlowMoveSource source_kind{ControlFlowMoveSource::kRegister};
   std::size_t source_index{0};
   std::size_t destination_index{0};
+  ir::ValueType type{ir::ValueType::kWord};
 };
 
 struct ControlFlowEdgeMoves final {
@@ -64,6 +66,11 @@ RegisterAllocation allocate_linear_scan(const ir::Function& function,
                                         std::size_t maximum_spill_slots,
                                         const StackMapRequirements&
                                             requirements);
+
+ControlFlowRegisterAllocation allocate_control_flow_registers(
+    const ir::ControlFlowFunction& function, std::size_t word_register_count,
+    std::size_t float_register_count,
+    const StackMapRequirements& requirements);
 
 ControlFlowRegisterAllocation allocate_control_flow_registers(
     const ir::ControlFlowFunction& function, std::size_t register_count,

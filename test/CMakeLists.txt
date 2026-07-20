@@ -1,6 +1,7 @@
 add_executable(unijit_tests test_main.cpp)
 find_package(Threads REQUIRED)
 target_link_libraries(unijit_tests PRIVATE UniJIT::unijit Threads::Threads)
+target_include_directories(unijit_tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
 target_compile_features(unijit_tests PRIVATE cxx_std_17)
 
 if(MSVC)

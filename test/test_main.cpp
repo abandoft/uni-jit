@@ -24,6 +24,7 @@
 #include "unijit/jit/compilation_scheduler.h"
 #include "unijit/jit/compiler.h"
 #include "unijit/jit/tiering.h"
+#include "jit/register_allocator.h"
 
 namespace {
 
@@ -3296,6 +3297,74 @@ void test_control_flow_execution_budget() {
          "CFG interpreter must stop when its execution budget is exhausted");
 }
 
+void test_control_flow_split_register_classes() {
+  using unijit::ir::Block;
+  using unijit::ir::ControlFlowBuilder;
+  using unijit::ir::ValueType;
+  using unijit::jit::detail::ControlFlowMoveSource;
+
+  ControlFlowBuilder builder({ValueType::kWord, ValueType::kWord,
+                              ValueType::kFloat64, ValueType::kFloat64});
+  const Value word0 = builder.parameter(0);
+  const Value word1 = builder.parameter(1);
+  const Value float0 = builder.parameter(2);
+  const Value float1 = builder.parameter(3);
+  const Block merge = builder.create_block(
+      {ValueType::kWord, ValueType::kWord, ValueType::kFloat64,
+       ValueType::kFloat64});
+  expect(builder.jump(merge, {word1, word0, float1, float0}).ok(),
+         "mixed-class edge must accept independently permuted values");
+  expect(builder.set_insertion_block(merge).ok(),
+         "mixed-class merge block must exist");
+  const Value merged_word0 = builder.block_parameter(merge, 0);
+  const Value merged_word1 = builder.block_parameter(merge, 1);
+  const Value merged_float0 = builder.block_parameter(merge, 2);
+  const Value merged_float1 = builder.block_parameter(merge, 3);
+  const Value word_sum = builder.add(merged_word0, merged_word1);
+  const Value float_sum = builder.float64_add(merged_float0, merged_float1);
+  const Value float_positive =
+      builder.float64_less_than(builder.float64_constant(0.0), float_sum);
+  expect(builder.set_return(builder.add(word_sum, float_positive)).ok(),
+         "mixed-class merge must return a Word result");
+  const auto function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "mixed-class allocation fixture must verify");
+
+  const unijit::jit::detail::StackMapRequirements requirements;
+  const auto allocation =
+      unijit::jit::detail::allocate_control_flow_registers(
+          function, 2, 2, requirements);
+  expect(allocation.status.ok(),
+         "split allocation must provide independent register banks");
+  expect(allocation.register_indices[word0.id()] == 0 &&
+             allocation.register_indices[float0.id()] == 0,
+         "Word and Float64 values may occupy the same class-local index");
+
+  const auto moves = unijit::jit::detail::plan_control_flow_edge_moves(
+      function, function.blocks()[function.entry_block().id()]
+                    .terminator.true_edge,
+      allocation, function.entry_block().id());
+  expect(moves.uses_registers && moves.moves.size() == 6,
+         "two independent register cycles must use typed scratch moves");
+  std::size_t word_temporaries = 0;
+  std::size_t float_temporaries = 0;
+  for (const auto& move : moves.moves) {
+    if (move.destination_index !=
+        unijit::jit::detail::ValueLocation::kNone) {
+      continue;
+    }
+    expect(move.source_kind == ControlFlowMoveSource::kRegister,
+           "cycle scratch must save a live register");
+    if (move.type == ValueType::kFloat64) {
+      ++float_temporaries;
+    } else {
+      ++word_temporaries;
+    }
+  }
+  expect(word_temporaries == 1 && float_temporaries == 1,
+         "parallel copies must break one cycle in each register class");
+}
+
 void test_control_flow_builder_rejects_edge_arity() {
   unijit::ir::ControlFlowBuilder builder(0);
   const unijit::ir::Block target = builder.create_block(1);
@@ -3350,6 +3419,7 @@ int main() {
   test_assumption_invalidation();
   test_hotness_and_tiered_switching();
   test_compilation_scheduler();
+  test_control_flow_split_register_classes();
   test_control_flow_execution_budget();
   test_control_flow_builder_rejects_edge_arity();
 

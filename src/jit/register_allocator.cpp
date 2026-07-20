@@ -165,11 +165,13 @@ RegisterAllocation allocate_impl(const ir::Function& function,
 }
 
 ControlFlowRegisterAllocation allocate_control_flow_impl(
-    const ir::ControlFlowFunction& function, std::size_t register_count,
-    const StackMapRequirements& requirements) {
-  if (register_count == 0) {
+    const ir::ControlFlowFunction& function, std::size_t word_register_count,
+    std::size_t float_register_count,
+    const StackMapRequirements& requirements, bool split_register_classes) {
+  if (word_register_count == 0 ||
+      (split_register_classes && float_register_count == 0)) {
     return {{StatusCode::kInvalidArgument,
-             "control-flow allocation requires an allocatable register"},
+             "control-flow allocation requires Word and Float64 registers"},
             {}, {}, {}};
   }
 
@@ -262,13 +264,27 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
       note_edge(terminator.false_edge);
     }
 
-    std::vector<std::size_t> free_registers;
-    free_registers.reserve(register_count);
-    for (std::size_t index = register_count; index > 0; --index) {
-      free_registers.push_back(index - 1);
+    std::vector<std::size_t> free_word_registers;
+    free_word_registers.reserve(word_register_count);
+    for (std::size_t index = word_register_count; index > 0; --index) {
+      free_word_registers.push_back(index - 1);
     }
-    std::vector<std::size_t> active;
+    std::vector<std::size_t> free_float_registers;
+    free_float_registers.reserve(float_register_count);
+    for (std::size_t index = float_register_count; index > 0; --index) {
+      free_float_registers.push_back(index - 1);
+    }
+    std::vector<std::size_t> active_word;
+    std::vector<std::size_t> active_float;
     for (std::size_t index = 0; index < block.instructions.size(); ++index) {
+      const ir::Value value = block.instructions[index];
+      const bool is_float =
+          function.value_type(value) == ir::ValueType::kFloat64;
+      std::vector<std::size_t>& free_registers =
+          split_register_classes && is_float ? free_float_registers
+                                             : free_word_registers;
+      std::vector<std::size_t>& active =
+          split_register_classes && is_float ? active_float : active_word;
       auto active_iterator = active.begin();
       while (active_iterator != active.end()) {
         const std::size_t active_position = *active_iterator;
@@ -284,7 +300,6 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
       if (free_registers.empty()) {
         continue;
       }
-      const ir::Value value = block.instructions[index];
       register_indices[value.id()] = free_registers.back();
       free_registers.pop_back();
       active.push_back(index);
@@ -357,7 +372,8 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
   }
 
   return {Status::ok_status(), std::move(register_indices),
-          std::move(owners), std::move(requires_stack)};
+          std::move(owners), std::move(requires_stack),
+          split_register_classes};
 }
 
 ControlFlowEdgeMoves plan_control_flow_edge_impl(
@@ -367,17 +383,24 @@ ControlFlowEdgeMoves plan_control_flow_edge_impl(
   const ir::BasicBlock& target = function.blocks()[edge.target.id()];
   std::vector<ControlFlowRegisterMove> pending;
   pending.reserve(edge.arguments.size());
-  std::vector<std::size_t> destinations;
+  std::vector<ControlFlowRegisterMove> destinations;
   destinations.reserve(edge.arguments.size());
   for (std::size_t index = 0; index < edge.arguments.size(); ++index) {
     const ir::Value parameter = target.parameters[index];
+    const ir::ValueType type = function.value_type(parameter);
     const std::size_t destination = allocation.register_indices[parameter.id()];
-    if (destination == ValueLocation::kNone ||
-        std::find(destinations.begin(), destinations.end(), destination) !=
-            destinations.end()) {
+    const bool duplicate_destination = std::any_of(
+        destinations.begin(), destinations.end(),
+        [&](const ControlFlowRegisterMove& existing) {
+          return (!allocation.split_register_classes ||
+                  existing.type == type) &&
+                 existing.destination_index == destination;
+        });
+    if (destination == ValueLocation::kNone || duplicate_destination) {
       return {false, {}};
     }
-    destinations.push_back(destination);
+    destinations.push_back({ControlFlowMoveSource::kRegister, 0, destination,
+                            type});
 
     const ir::Value argument = edge.arguments[index];
     const bool source_in_register =
@@ -393,7 +416,7 @@ ControlFlowEdgeMoves plan_control_flow_edge_impl(
         source == destination) {
       continue;
     }
-    pending.push_back({source_kind, source, destination});
+    pending.push_back({source_kind, source, destination, type});
   }
 
   ControlFlowEdgeMoves result{true, {}};
@@ -404,7 +427,9 @@ ControlFlowEdgeMoves plan_control_flow_edge_impl(
          ++candidate) {
       bool destination_is_source = false;
       for (const ControlFlowRegisterMove& move : pending) {
-        if (move.source_kind == ControlFlowMoveSource::kRegister &&
+        if ((!allocation.split_register_classes ||
+             move.type == candidate->type) &&
+            move.source_kind == ControlFlowMoveSource::kRegister &&
             move.source_index == candidate->destination_index) {
           destination_is_source = true;
           break;
@@ -423,10 +448,12 @@ ControlFlowEdgeMoves plan_control_flow_edge_impl(
     }
 
     const std::size_t saved_register = pending.front().destination_index;
+    const ir::ValueType saved_type = pending.front().type;
     result.moves.push_back({ControlFlowMoveSource::kRegister, saved_register,
-                            ValueLocation::kNone});
+                            ValueLocation::kNone, saved_type});
     for (ControlFlowRegisterMove& move : pending) {
-      if (move.source_kind == ControlFlowMoveSource::kRegister &&
+      if ((!allocation.split_register_classes || move.type == saved_type) &&
+          move.source_kind == ControlFlowMoveSource::kRegister &&
           move.source_index == saved_register) {
         move.source_kind = ControlFlowMoveSource::kTemporary;
         move.source_index = 0;
@@ -656,10 +683,26 @@ RegisterAllocation allocate_linear_scan(const ir::Function& function,
 }
 
 ControlFlowRegisterAllocation allocate_control_flow_registers(
+    const ir::ControlFlowFunction& function, std::size_t word_register_count,
+    std::size_t float_register_count,
+    const StackMapRequirements& requirements) {
+  try {
+    return allocate_control_flow_impl(function, word_register_count,
+                                      float_register_count, requirements,
+                                      true);
+  } catch (const std::bad_alloc&) {
+    return {{StatusCode::kResourceExhausted,
+             "unable to allocate control-flow register state"},
+            {}, {}, {}};
+  }
+}
+
+ControlFlowRegisterAllocation allocate_control_flow_registers(
     const ir::ControlFlowFunction& function, std::size_t register_count,
     const StackMapRequirements& requirements) {
   try {
-    return allocate_control_flow_impl(function, register_count, requirements);
+    return allocate_control_flow_impl(function, register_count, 0,
+                                      requirements, false);
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate control-flow register state"},
