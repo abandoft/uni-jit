@@ -3,6 +3,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <new>
 #include <string_view>
 #include <utility>
 
@@ -21,8 +23,8 @@ constexpr char kCompiledFunctionTypeName[] = "_CompiledFunction";
 constexpr std::size_t kMaximumParameters = 64;
 
 struct OwnedFunction final {
-  std::size_t parameter_count;
-  unijit::jit::CompiledFunction *function;
+  std::size_t parameter_count{0};
+  std::unique_ptr<unijit::jit::CompiledFunction> function;
 };
 
 static_assert(alignof(OwnedFunction) <= alignof(std::uint64_t),
@@ -34,8 +36,7 @@ py_Type compiled_function_type() {
 
 void destroy_compiled_function(void *userdata) {
   auto *owned = static_cast<OwnedFunction *>(userdata);
-  delete owned->function;
-  owned->function = nullptr;
+  owned->~OwnedFunction();
 }
 
 bool reject_direct_construction(int, py_Ref) {
@@ -58,10 +59,10 @@ bool create_compiled_function(std::string_view source) {
   if (type == 0) {
     return RuntimeError("UniJIT is not installed in the current VM");
   }
-  auto *owned = static_cast<OwnedFunction *>(
-      py_newobject(py_retval(), type, 0, sizeof(OwnedFunction)));
-  owned->parameter_count = translation.parameter_count;
-  owned->function = translation.function.release();
+  void *storage =
+      py_newobject(py_retval(), type, 0, sizeof(OwnedFunction));
+  ::new (storage) OwnedFunction{translation.parameter_count,
+                                std::move(translation.function)};
   return true;
 }
 
