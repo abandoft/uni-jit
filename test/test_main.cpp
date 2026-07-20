@@ -665,6 +665,8 @@ void test_deoptimization_reconstruction() {
       std::vector<unijit::ir::ValueType>(2,
                                          unijit::ir::ValueType::kFloat64));
   const Value divisor = builder.parameter(1);
+  const Value snapshot = builder.float64_add(
+      builder.parameter(0), builder.float64_constant(1.5));
   expect(builder.guard_float64_nonzero(divisor, 113).valid(),
          "deoptimization fixture must create its guard");
   const Value quotient =
@@ -685,7 +687,9 @@ void test_deoptimization_reconstruction() {
       unijit::runtime::RecoveryOperation::constant_value(
           2, unijit::ir::ValueType::kWord, 41),
       unijit::runtime::RecoveryOperation::exit_value(
-          3, unijit::ir::ValueType::kFloat64)};
+          3, unijit::ir::ValueType::kFloat64),
+      unijit::runtime::RecoveryOperation::captured_value(
+          4, unijit::ir::ValueType::kFloat64, snapshot)};
   unijit::runtime::DeoptimizationTable metadata;
   expect(metadata.add(record).ok(),
          "valid deoptimization metadata must be accepted");
@@ -704,7 +708,8 @@ void test_deoptimization_reconstruction() {
              compiled_record != nullptr &&
              compiled_record->reason ==
                  unijit::runtime::DeoptimizationReason::kDivisionByZero &&
-             compiled_record->resume_offset == 29,
+             compiled_record->resume_offset == 29 &&
+             compiled_record->recovery.back().capture_resolved(),
          "compiled functions must retain immutable deoptimization records");
 
   const std::array<Word, 2> arguments = {
@@ -724,6 +729,7 @@ void test_deoptimization_reconstruction() {
   const auto* recovered_argument = reconstruction.frame.find(0);
   const auto* recovered_constant = reconstruction.frame.find(2);
   const auto* recovered_exit = reconstruction.frame.find(3);
+  const auto* recovered_snapshot = reconstruction.frame.find(4);
   expect(reconstruction.ok() && reconstruction.frame.site == 113 &&
              reconstruction.frame.resume_offset == 29 &&
              reconstruction.frame.reason ==
@@ -732,8 +738,29 @@ void test_deoptimization_reconstruction() {
              recovered_argument->value == arguments[0] &&
              recovered_constant != nullptr && recovered_constant->value == 41 &&
              recovered_exit != nullptr &&
-             recovered_exit->value == arguments[1],
-         "deoptimization must reconstruct arguments, constants, and exits");
+             recovered_exit->value == arguments[1] &&
+             recovered_snapshot != nullptr &&
+             recovered_snapshot->value == unijit::ir::pack_float64(10.5),
+         "deoptimization must reconstruct arguments, constants, exits, and metadata-only SSA values");
+
+  auto baseline = Compiler::compile(
+      function, metadata, unijit::runtime::AssumptionSet{},
+      unijit::jit::CompilationOptions{
+          unijit::jit::OptimizationLevel::kBaseline});
+  unijit::runtime::ExecutionContext baseline_context;
+  expect(baseline.ok(),
+         "baseline compilation must retain captured recovery values");
+  if (baseline.ok()) {
+    const auto baseline_exit = baseline.function->invoke(
+        arguments.data(), arguments.size(), &baseline_context);
+    const auto baseline_frame = baseline.function->reconstruct_deoptimization(
+        113, arguments.data(), arguments.size(), baseline_context);
+    expect(!baseline_exit.ok() && baseline_frame.ok() &&
+               baseline_frame.frame.find(4) != nullptr &&
+               baseline_frame.frame.find(4)->value ==
+                   unijit::ir::pack_float64(10.5),
+           "baseline guards must capture metadata-only SSA values exactly");
+  }
 
   unijit::runtime::ExecutionContext mismatched_context;
   mismatched_context.record_exit(unijit::runtime::ExitReason::kRuntime, 114);
@@ -762,8 +789,30 @@ void test_deoptimization_reconstruction() {
   expect(cached_reconstruction.ok() &&
              cached_reconstruction.frame.find(3) != nullptr &&
              cached_reconstruction.frame.find(3)->value == arguments[1] &&
-             cached_stack_map.ok() && cached_stack_map.capture.values.size() == 2,
+             cached_reconstruction.frame.find(4) != nullptr &&
+             cached_reconstruction.frame.find(4)->value ==
+                 unijit::ir::pack_float64(10.5) &&
+             cached_stack_map.ok() &&
+             cached_stack_map.capture.values.size() == 3,
          "cached execution leases must reconstruct diagnosed exits and live SSA values");
+
+  unijit::runtime::DeoptimizationRecord unavailable = record;
+  unavailable.recovery.back() =
+      unijit::runtime::RecoveryOperation::captured_value(
+          4, unijit::ir::ValueType::kFloat64, quotient);
+  unijit::runtime::DeoptimizationTable unavailable_metadata;
+  expect(unavailable_metadata.add(unavailable).ok() &&
+             !Compiler::compile(function, unavailable_metadata).ok(),
+         "captured recovery must reject SSA values defined after the guard");
+
+  unijit::runtime::DeoptimizationRecord wrong_type = record;
+  wrong_type.recovery.back() =
+      unijit::runtime::RecoveryOperation::captured_value(
+          4, unijit::ir::ValueType::kWord, snapshot);
+  unijit::runtime::DeoptimizationTable wrong_type_metadata;
+  expect(wrong_type_metadata.add(wrong_type).ok() &&
+             !Compiler::compile(function, wrong_type_metadata).ok(),
+         "captured recovery must reject types inconsistent with SSA");
 
   unijit::runtime::DeoptimizationRecord unknown_site = record;
   unknown_site.site = 999;
@@ -1374,6 +1423,8 @@ void test_control_flow_float64_guard_deoptimization() {
   unijit::ir::ControlFlowBuilder builder(
       std::vector<ValueType>{ValueType::kFloat64, ValueType::kFloat64});
   const Value divisor = builder.parameter(1);
+  const Value snapshot = builder.float64_add(
+      builder.parameter(0), builder.float64_constant(1.25));
   expect(builder.guard_float64_nonzero(divisor, kGuardSite).valid(),
          "CFG Float64 guard must produce an effect value");
   const Value quotient =
@@ -1394,7 +1445,9 @@ void test_control_flow_float64_guard_deoptimization() {
       unijit::runtime::RecoveryOperation::argument(
           1, ValueType::kFloat64, 1),
       unijit::runtime::RecoveryOperation::exit_value(
-          2, ValueType::kFloat64)};
+          2, ValueType::kFloat64),
+      unijit::runtime::RecoveryOperation::captured_value(
+          3, ValueType::kFloat64, snapshot)};
   unijit::runtime::DeoptimizationTable metadata;
   expect(metadata.add(record).ok(),
          "CFG guard reconstruction metadata must be accepted");
@@ -1411,7 +1464,8 @@ void test_control_flow_float64_guard_deoptimization() {
              compiled_record != nullptr &&
              compiled_record->resume_offset == 77 &&
              compiled_record->reason ==
-                 unijit::runtime::DeoptimizationReason::kDivisionByZero,
+                 unijit::runtime::DeoptimizationReason::kDivisionByZero &&
+             compiled_record->recovery.back().capture_resolved(),
          "compiled CFG guard must retain its diagnosed exit metadata");
 
   const std::array<Word, 2> valid = {
@@ -1449,6 +1503,7 @@ void test_control_flow_float64_guard_deoptimization() {
             kGuardSite, invalid.data(), invalid.size(), native_context);
     const auto* recovered_lhs = reconstruction.frame.find(0);
     const auto* recovered_divisor = reconstruction.frame.find(2);
+    const auto* recovered_snapshot = reconstruction.frame.find(3);
     expect(!native_exit.ok() &&
                native_exit.status.code() == unijit::StatusCode::kRuntimeExit &&
                native_exit.status.location() == kGuardSite &&
@@ -1457,8 +1512,11 @@ void test_control_flow_float64_guard_deoptimization() {
                reconstruction.frame.resume_offset == 77 &&
                recovered_lhs != nullptr && recovered_lhs->value == invalid[0] &&
                recovered_divisor != nullptr &&
-               recovered_divisor->value == invalid[1],
-           "native CFG guard must reconstruct exact arguments and exit bits");
+               recovered_divisor->value == invalid[1] &&
+               recovered_snapshot != nullptr &&
+               recovered_snapshot->value ==
+                   unijit::ir::pack_float64(10.25),
+           "native CFG guard must reconstruct exact arguments, exits, and metadata-only SSA values");
   }
 
   unijit::ir::ControlFlowBuilder malformed(1);
