@@ -9,8 +9,9 @@ allocation, native machine-code encoders, and hardened executable-memory
 management. Third-party JIT projects under `third/` are references and
 benchmark competitors; UniJIT does not link against them as its backend.
 
-The first backend targets AArch64. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-for the design and delivery gates.
+Native integer backends currently target AArch64, x86-64, and RISC-V 64.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and delivery
+gates and [docs/PORTABILITY.md](docs/PORTABILITY.md) for verified platforms.
 
 ## Build
 

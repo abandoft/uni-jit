@@ -54,7 +54,8 @@ throwaway assembler demo.
 - `include/unijit/jit`: compilation and invocation API.
 - `src/ir`: verification and the reference interpreter.
 - `src/jit`: lowering orchestration, code ownership, and executable memory.
-- `src/jit/backend/<arch>`: MIR constraints and native instruction encoding.
+- `src/jit/backend/<arch>`: MIR constraints and native instruction encoding
+  for AArch64, x86-64, and RISC-V 64.
 - `frontends/<language>`: bytecode decoding, runtime guards, and deoptimization.
 - `benchmark`: pinned workloads, runners, environment manifests, and reports.
 
@@ -86,10 +87,11 @@ language semantics permit, with semantic differences listed in the report.
 
 ## Delivery gates
 
-1. Bootstrap: integer SSA, verifier, interpreter oracle, AArch64 native code,
-   spill-capable register allocation, W^X memory, and differential tests.
-2. Portable baseline: x86-64 parity, calls, branches, floating point, code
-   cache metrics, sanitizers, and cross-platform CI.
+1. Bootstrap: integer SSA, verifier, interpreter oracle, AArch64/x86-64/RV64
+   native code, spill-capable register allocation, W^X memory, and differential
+   tests.
+2. Portable baseline: calls, branches, floating point, code-cache metrics,
+   sanitizers, mobile targets, and cross-platform CI.
 3. Lua tier: Lua bytecode frontend, guards/exits, benchmark corpus, and parity
    testing against the stock interpreter.
 4. Optimizing tier: profiles, CFG SSA, core optimization passes, stack maps,
