@@ -54,7 +54,9 @@ multiplication, division, register spills, and results use a uniform 64-bit
 value-bits calling convention suited to dynamic-language runtimes. Each backend
 keeps Float64 values in its native floating-point register bank and only
 transfers result bits to the shared return register at the compiled-function
-boundary.
+boundary. Ordered Float64 `<` and `<=` comparisons produce Word results with
+IEEE-754 unordered-false behavior, allowing frontends to materialize native
+language Boolean values without routing through a runtime helper.
 
 Effectful runtime helpers use one portable signature: a pointer to a flat
 value-bits argument area plus its element count, returning one value-bits word.

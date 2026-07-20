@@ -23,7 +23,8 @@ statistics.
 ## Publication and version safety
 
 The baseline must be a valid assumption-free code handle. Optimized code must
-have the same parameter count and cannot contain an already invalid assumption.
+have the same parameter count, every parameter type, and return type, and cannot
+contain an already invalid assumption.
 Every publication or withdrawal creates an immutable state with a new opaque
 generation. Readers acquire the current state through C++17 atomic shared
 ownership and execute without taking the publication mutex.

@@ -50,7 +50,10 @@ eviction, `clear`, moving the cache, or destroying the cache removes lookup
 visibility but does not revoke an existing handle. The executable mapping is
 reclaimed only after the last handle and resident cache reference are gone.
 Compiled deoptimization records share the same immutable lifetime and remain
-queryable through the handle. This guarantees that one thread may execute and
+queryable through the handle. Handles also retain the complete typed code
+signature: parameter count, every parameter type, and the return type. Tier
+publication compares all of these fields before switching an executable
+generation. This guarantees that one thread may execute and
 reconstruct an exit from a leased function while another thread replaces or
 invalidates its cache entry.
 

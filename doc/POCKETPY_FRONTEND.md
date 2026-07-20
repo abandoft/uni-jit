@@ -76,13 +76,17 @@ cannot be created from script.
 The first tier accepts one conventional `def` with zero to 64 unique ASCII
 parameter names and exactly one `return` expression. The expression may contain
 parameters, decimal numeric literals, parentheses, unary `+`/`-`, and binary
-`+`, `-`, `*`, and `/`. All accepted operations lower to Float64 SSA.
+`+`, `-`, `*`, and `/`, plus one top-level ordered `<`, `<=`, `>`, or `>=`
+comparison. Arithmetic lowers to Float64 SSA; ordered comparisons return an
+actual PocketPy `bool` from both baseline and optimized native tiers, with NaN
+remaining unordered and therefore false.
 
 Closures, annotations, default or variadic parameters, assignments, multiple
-statements, calls, attribute access, and non-ASCII identifiers are rejected with
-a source byte position. Python keywords are rejected as function or parameter
-names. Every division emits an inline Float64 nonzero guard at the `/` source
-site; both `+0.0` and `-0.0` exit through the execution context and become
+statements, calls, attribute access, chained comparisons, and non-ASCII
+identifiers are rejected with a source byte position. Python keywords are
+rejected as function or parameter names. Every division emits an inline
+Float64 nonzero guard at the `/` source site; both `+0.0` and `-0.0` exit
+through the execution context and become
 PocketPy's `ZeroDivisionError("float division by zero")`. The compiled record
 retains the source resume offset and reconstructs every entry parameter plus
 the exact guarded divisor bits. The adapter maps the exit only after validating

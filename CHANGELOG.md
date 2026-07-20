@@ -13,6 +13,10 @@
 - Added PocketPy compilation-task and scheduler telemetry plus timeout-bounded waiting and explicit cancellation through `unijit.stats`, `unijit.wait`, and `unijit.cancel`, with deterministic cold, asynchronous promotion, optimized checked-division, timeout validation, and foreign-object rejection coverage.
 - Added effectful CFG Float64 nonzero guards with dominance and type verification, exact signed-zero exits in the reference interpreter, immutable deoptimization metadata, managed-context provisioning, and independent native lowering on AArch64, x86-64, and RISC-V 64.
 - Enabled checked PocketPy counted-loop `/` and `/=` with exact source-site reconstruction and `ZeroDivisionError` mapping for both signed zeroes while preserving zero-iteration semantics where dormant division is not executed.
+- Added ordered Float64 `<` and `<=` to straight-line SSA with Word results, verifier and optimizer support, constant folding, IEEE-754 unordered-false interpreter semantics, register allocation, and independent AArch64, x86-64, and RISC-V 64 lowering.
+- Retained complete parameter and return types in compiled functions and cache leases, rejected inconsistent CFG return types, and strengthened tier publication to compare every signature type rather than parameter count alone.
+- Enabled one top-level QuickJS `<`, `<=`, `>`, or `>=` Number comparison with strict chained-comparison rejection and true JavaScript Boolean results that remain correctly typed after asynchronous optimized-tier promotion.
+- Enabled one top-level PocketPy `<`, `<=`, `>`, or `>=` numeric comparison with strict chained-comparison rejection and true PocketPy `bool` results that preserve NaN and asynchronous optimized-tier semantics.
 
 ## 0.1.6
 

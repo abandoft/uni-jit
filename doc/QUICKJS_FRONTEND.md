@@ -59,11 +59,15 @@ shared state remains valid until a running job observes cancellation and exits.
 The first tier accepts conventional `function` source with zero to 64 unique
 ASCII parameter names and a body containing exactly one `return` expression.
 The expression may contain parameters, decimal numeric literals, parentheses,
-unary `+`/`-`, and binary `+`, `-`, `*`, and `/`. These operations lower to
-Float64 SSA and preserve JavaScript Number arithmetic for the accepted subset.
+unary `+`/`-`, binary `+`, `-`, `*`, and `/`, and one top-level ordered `<`,
+`<=`, `>`, or `>=` comparison. Arithmetic lowers to Float64 SSA; comparisons
+lower to ordered Word results and the adapter returns an actual JavaScript
+Boolean in both baseline and optimized tiers. NaN comparisons are false as
+required by JavaScript Number semantics.
 
 Arrow functions, closures, default or rest parameters, property access, calls,
-statements, and coercive operands are rejected with a source byte position.
+statements, chained comparisons, and coercive operands are rejected with a
+source byte position.
 This strict boundary prevents silently compiling semantics that the current IR
 cannot represent.
 
