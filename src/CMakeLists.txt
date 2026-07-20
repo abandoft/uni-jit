@@ -3,7 +3,8 @@ add_library(unijit
   ir/interpreter.cpp
   ir/verifier.cpp
   jit/compiler.cpp
-  jit/executable_memory.cpp)
+  jit/executable_memory.cpp
+  jit/register_allocator.cpp)
 
 string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" UNIJIT_SYSTEM_PROCESSOR)
 if(UNIJIT_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")

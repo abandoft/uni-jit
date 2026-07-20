@@ -1,15 +1,13 @@
 #include "jit/backend/aarch64/lower.h"
 
-#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <new>
-#include <utility>
 #include <vector>
 
 #include "jit/code_buffer.h"
+#include "jit/register_allocator.h"
 
 namespace unijit::jit::detail::aarch64 {
 namespace {
@@ -21,91 +19,8 @@ constexpr int kScratch1 = 17;
 constexpr int kStackPointer = 31;
 constexpr std::array<int, 6> kAllocationRegisters = {10, 11, 12, 13, 14,
                                                      15};
-constexpr std::size_t kNoSpill = std::numeric_limits<std::size_t>::max();
 constexpr std::size_t kMaximumStackSize = 4080;
 constexpr std::size_t kMaximumAddressableParameters = 4096;
-
-struct Location final {
-  int reg{-1};
-  std::size_t spill_slot{kNoSpill};
-
-  bool in_register() const noexcept { return reg >= 0; }
-};
-
-struct Allocation final {
-  Status status;
-  std::vector<Location> locations;
-  std::size_t spill_slots{0};
-};
-
-void note_use(std::vector<std::size_t>* last_use, ir::Value value,
-              std::size_t use_index) {
-  auto& entry = (*last_use)[value.id()];
-  entry = std::max(entry, use_index);
-}
-
-Allocation allocate_registers(const ir::Function& function) {
-  const std::size_t value_count = function.nodes().size();
-  std::vector<std::size_t> last_use(value_count);
-  for (std::size_t index = 0; index < value_count; ++index) {
-    last_use[index] = index;
-    const ir::Node& node = function.nodes()[index];
-    if (node.opcode == ir::Opcode::kAdd ||
-        node.opcode == ir::Opcode::kSubtract ||
-        node.opcode == ir::Opcode::kMultiply) {
-      note_use(&last_use, node.lhs, index);
-      note_use(&last_use, node.rhs, index);
-    }
-  }
-  note_use(&last_use, function.return_value(), value_count);
-
-  std::vector<Location> locations(value_count);
-  std::vector<std::size_t> active;
-  std::vector<int> free_registers(kAllocationRegisters.rbegin(),
-                                  kAllocationRegisters.rend());
-  std::size_t spill_slots = 0;
-
-  for (std::size_t index = 0; index < value_count; ++index) {
-    auto active_it = active.begin();
-    while (active_it != active.end()) {
-      const std::size_t active_value = *active_it;
-      if (last_use[active_value] < index) {
-        free_registers.push_back(locations[active_value].reg);
-        active_it = active.erase(active_it);
-      } else {
-        ++active_it;
-      }
-    }
-
-    if (!free_registers.empty()) {
-      locations[index].reg = free_registers.back();
-      free_registers.pop_back();
-      active.push_back(index);
-      continue;
-    }
-
-    const auto victim_it = std::max_element(
-        active.begin(), active.end(), [&](std::size_t lhs, std::size_t rhs) {
-          return last_use[lhs] < last_use[rhs];
-        });
-    if (victim_it != active.end() && last_use[*victim_it] > last_use[index]) {
-      const std::size_t victim = *victim_it;
-      locations[index].reg = locations[victim].reg;
-      locations[victim].reg = -1;
-      locations[victim].spill_slot = spill_slots++;
-      *victim_it = index;
-    } else {
-      locations[index].spill_slot = spill_slots++;
-    }
-  }
-
-  if (spill_slots > kMaximumStackSize / sizeof(ir::Word)) {
-    return {{StatusCode::kResourceExhausted,
-             "AArch64 bootstrap allocator exceeded its spill-frame limit"},
-            {}, 0};
-  }
-  return {Status::ok_status(), std::move(locations), spill_slots};
-}
 
 class Assembler final {
  public:
@@ -189,14 +104,18 @@ class Assembler final {
   CodeBuffer buffer_;
 };
 
-std::size_t spill_offset(const Location& location) noexcept {
+int physical_register(const ValueLocation& location) noexcept {
+  return kAllocationRegisters[location.register_index];
+}
+
+std::size_t spill_offset(const ValueLocation& location) noexcept {
   return location.spill_slot * sizeof(ir::Word);
 }
 
-int load_operand(Assembler* assembler, const Location& location,
+int load_operand(Assembler* assembler, const ValueLocation& location,
                  int scratch) {
   if (location.in_register()) {
-    return location.reg;
+    return physical_register(location);
   }
   assembler->load(scratch, kStackPointer, spill_offset(location));
   return scratch;
@@ -214,7 +133,9 @@ LoweringResult lower_impl(const ir::Function& function) {
             {}, 0};
   }
 
-  Allocation allocation = allocate_registers(function);
+  RegisterAllocation allocation = allocate_linear_scan(
+      function, kAllocationRegisters.size(),
+      kMaximumStackSize / sizeof(ir::Word));
   if (!allocation.status.ok()) {
     return {allocation.status, {}, 0};
   }
@@ -230,11 +151,12 @@ LoweringResult lower_impl(const ir::Function& function) {
 
   for (std::size_t index = 0; index < function.nodes().size(); ++index) {
     const ir::Node& node = function.nodes()[index];
-    const Location& destination = allocation.locations[index];
+    const ValueLocation& destination = allocation.locations[index];
     switch (node.opcode) {
       case ir::Opcode::kParameter: {
         const int target =
-            destination.in_register() ? destination.reg : kScratch0;
+            destination.in_register() ? physical_register(destination)
+                                      : kScratch0;
         assembler.load(target, kArgumentBaseRegister,
                        static_cast<std::size_t>(node.immediate) *
                            sizeof(ir::Word));
@@ -245,7 +167,8 @@ LoweringResult lower_impl(const ir::Function& function) {
       }
       case ir::Opcode::kConstant: {
         const int target =
-            destination.in_register() ? destination.reg : kScratch0;
+            destination.in_register() ? physical_register(destination)
+                                      : kScratch0;
         assembler.move_immediate(target, node.immediate);
         if (!destination.in_register()) {
           assembler.store(target, kStackPointer, spill_offset(destination));
@@ -262,7 +185,8 @@ LoweringResult lower_impl(const ir::Function& function) {
                                      allocation.locations[node.rhs.id()],
                                      kScratch1);
         const int target =
-            destination.in_register() ? destination.reg : kScratch0;
+            destination.in_register() ? physical_register(destination)
+                                      : kScratch0;
         if (node.opcode == ir::Opcode::kAdd) {
           assembler.add(target, lhs, rhs);
         } else if (node.opcode == ir::Opcode::kSubtract) {
@@ -278,10 +202,10 @@ LoweringResult lower_impl(const ir::Function& function) {
     }
   }
 
-  const Location& returned =
+  const ValueLocation& returned =
       allocation.locations[function.return_value().id()];
   if (returned.in_register()) {
-    assembler.move_register(kReturnRegister, returned.reg);
+    assembler.move_register(kReturnRegister, physical_register(returned));
   } else {
     assembler.load(kReturnRegister, kStackPointer, spill_offset(returned));
   }
