@@ -1396,6 +1396,117 @@ void test_on_stack_replacement_entry() {
          "OSR exits must retain marshalled arguments for exact deoptimization");
 }
 
+void test_compilation_resource_limits() {
+  FunctionBuilder arithmetic_builder(2);
+  expect(arithmetic_builder
+             .set_return(arithmetic_builder.add(
+                 arithmetic_builder.parameter(0),
+                 arithmetic_builder.parameter(1)))
+             .ok(),
+         "resource-limit arithmetic fixture must be constructible");
+  const Function arithmetic = std::move(arithmetic_builder).build();
+
+  unijit::jit::CompilationOptions parameter_options;
+  parameter_options.limits.maximum_parameters = 1;
+  const auto parameter_limited =
+      Compiler::compile(arithmetic, parameter_options);
+  expect(!parameter_limited.ok() &&
+             parameter_limited.status.code() ==
+                 unijit::StatusCode::kResourceExhausted &&
+             parameter_limited.status.location() == 2,
+         "compilation must reject parameter counts before verification");
+
+  unijit::jit::CompilationOptions node_options;
+  node_options.limits.maximum_ir_nodes = 2;
+  const auto node_limited = Compiler::compile(arithmetic, node_options);
+  expect(!node_limited.ok() &&
+             node_limited.status.code() ==
+                 unijit::StatusCode::kResourceExhausted &&
+             node_limited.status.location() == 3,
+         "compilation must reject oversized IR before optimization");
+
+  unijit::jit::CompilationOptions code_options;
+  code_options.limits.maximum_code_bytes = 1;
+  const auto code_limited = Compiler::compile(arithmetic, code_options);
+  expect(!code_limited.ok() &&
+             code_limited.status.code() ==
+                 unijit::StatusCode::kResourceExhausted &&
+             code_limited.status.location() > 1,
+         "compilation must reject oversized machine code before W^X publication");
+
+  unijit::jit::CompilationOptions invalid_options;
+  invalid_options.limits.maximum_metadata_values = 0;
+  const auto invalid_limits = Compiler::compile(arithmetic, invalid_options);
+  expect(!invalid_limits.ok() &&
+             invalid_limits.status.code() ==
+                 unijit::StatusCode::kInvalidArgument,
+         "compilation must reject disabled resource limits");
+
+  FunctionBuilder safepoint_builder(0);
+  expect(safepoint_builder.safepoint(701).valid() &&
+             safepoint_builder.safepoint(702).valid() &&
+             safepoint_builder
+                 .set_return(safepoint_builder.constant(1))
+                 .ok(),
+         "resource-limit stack-map fixture must be constructible");
+  unijit::jit::CompilationOptions stack_map_options;
+  stack_map_options.limits.maximum_stack_maps = 1;
+  const auto stack_map_limited = Compiler::compile(
+      std::move(safepoint_builder).build(), stack_map_options);
+  expect(!stack_map_limited.ok() &&
+             stack_map_limited.status.code() ==
+                 unijit::StatusCode::kResourceExhausted,
+         "compilation must bound generated stack-map records");
+
+  FunctionBuilder recovery_builder(
+      std::vector<unijit::ir::ValueType>{
+          unijit::ir::ValueType::kFloat64,
+          unijit::ir::ValueType::kFloat64});
+  const Value recovery_divisor = recovery_builder.parameter(1);
+  expect(recovery_builder
+             .guard_float64_nonzero(recovery_divisor, 703)
+             .valid() &&
+             recovery_builder.set_return(recovery_builder.parameter(0)).ok(),
+         "resource-limit recovery fixture must be constructible");
+  unijit::runtime::DeoptimizationRecord recovery_record;
+  recovery_record.site = 703;
+  recovery_record.resume_offset = 45;
+  recovery_record.recovery = {
+      unijit::runtime::RecoveryOperation::argument(
+          0, unijit::ir::ValueType::kFloat64, 0),
+      unijit::runtime::RecoveryOperation::argument(
+          1, unijit::ir::ValueType::kFloat64, 1)};
+  unijit::runtime::DeoptimizationTable recovery_metadata;
+  expect(recovery_metadata.add(recovery_record).ok(),
+         "resource-limit recovery metadata must validate structurally");
+  unijit::jit::CompilationOptions recovery_options;
+  recovery_options.limits.maximum_metadata_values = 1;
+  const auto recovery_limited = Compiler::compile(
+      std::move(recovery_builder).build(), recovery_metadata,
+      unijit::runtime::AssumptionSet{}, recovery_options);
+  expect(!recovery_limited.ok() &&
+             recovery_limited.status.code() ==
+                 unijit::StatusCode::kResourceExhausted &&
+             recovery_limited.status.location() == 703,
+         "compilation must bound requested deoptimization values");
+
+  unijit::ir::ControlFlowBuilder cfg_builder(1);
+  const unijit::ir::Block body = cfg_builder.create_block(1);
+  expect(cfg_builder.jump(body, {cfg_builder.parameter(0)}).ok() &&
+             cfg_builder.set_insertion_block(body).ok() &&
+             cfg_builder.set_return(cfg_builder.block_parameter(body, 0)).ok(),
+         "resource-limit CFG fixture must be constructible");
+  unijit::jit::CompilationLimits cfg_limits;
+  cfg_limits.maximum_cfg_blocks = 1;
+  const auto cfg_limited =
+      Compiler::compile(std::move(cfg_builder).build(), cfg_limits);
+  expect(!cfg_limited.ok() &&
+             cfg_limited.status.code() ==
+                 unijit::StatusCode::kResourceExhausted &&
+             cfg_limited.status.location() == 2,
+         "compilation must reject oversized CFGs before dominance analysis");
+}
+
 void test_constant_float64_nonzero_guard_elimination() {
   FunctionBuilder builder(
       std::vector<unijit::ir::ValueType>{unijit::ir::ValueType::kFloat64});
@@ -3209,6 +3320,7 @@ int main() {
   test_deoptimization_reconstruction();
   test_transactional_object_materialization();
   test_on_stack_replacement_entry();
+  test_compilation_resource_limits();
   test_constant_float64_nonzero_guard_elimination();
   test_runtime_exit_site_identity();
   test_verifier_rejects_mixed_arithmetic();

@@ -130,6 +130,17 @@ int main() {
   if (!result.ok() || result.value != 42) {
     return 5;
   }
+  unijit::jit::CompilationLimits package_limits;
+  package_limits.maximum_ir_nodes = 2;
+  const auto limited_compilation = unijit::jit::Compiler::compile(
+      function,
+      unijit::jit::CompilationOptions{
+          unijit::jit::OptimizationLevel::kOptimized, package_limits});
+  if (limited_compilation.ok() ||
+      limited_compilation.status.code() !=
+          unijit::StatusCode::kResourceExhausted) {
+    return 33;
+  }
   unijit::runtime::OsrFrame osr_frame(31, 7);
   unijit::runtime::OsrEntryPlan osr_plan(31, 7);
   if (!osr_frame.add(8, unijit::ir::ValueType::kWord, 20).ok() ||
