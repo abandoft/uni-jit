@@ -24,6 +24,7 @@
 - Materialized PocketPy primitive division frames with the current straight-line left operand plus every counted-loop local and induction value while retaining stable parameter and signed-zero divisor slots for existing `ZeroDivisionError` mapping.
 - Added site-and-resume-bound transactional object materialization with primitive, constant, forward, backward, and cyclic recipe inputs, bounded graph validation, two-phase shell allocation and field population, opaque frontend handles, exactly-once rollback for every callback failure phase, explicit object-valued logical slots, and compiled-function plus generation-stable cache-lease APIs.
 - Made object materialization and logical interpreter-frame installation one atomic frontend transaction, passing exact exit metadata and slot counts at begin, staging typed primitive and object slots before commit, and rolling back both the graph and frame exactly once on installation failure.
+- Stabilized the hosted Lua commercial gate with three order-balanced seven-sample trials, median-of-trial comparison without lowering the 1.25x stock Lua or 1.10x LuaJIT floors, retained per-trial timing and execution-order evidence, and always-uploaded structured failure decisions for audit.
 
 ## 0.1.6
 
