@@ -1056,7 +1056,7 @@ CompilationResult compile_numeric_for_prototype(
           unroll_dynamic_loop ? builder.create_block(counted_parameter_count)
                               : unijit::ir::Block{};
       const unijit::ir::Block unrolled_loop =
-          builder.create_block(counted_parameter_count + 1);
+          builder.create_block(counted_parameter_count);
       const unijit::ir::Block scalar_loop =
           builder.create_block(counted_parameter_count);
       const unijit::ir::Block exit =
@@ -1167,17 +1167,13 @@ CompilationResult compile_numeric_for_prototype(
       const Value dispatch_remaining = builder.block_parameter(
           dispatch, carried_registers.size());
       if (unroll_dynamic_loop) {
-        std::vector<Value> large_unrolled_arguments = dispatch_arguments;
-        large_unrolled_arguments.push_back(builder.constant(1));
         status = builder.branch(
             builder.less_than(dispatch_remaining, builder.constant(0)),
-            unrolled_loop, large_unrolled_arguments, unroll_count_check,
+            unrolled_loop, dispatch_arguments, unroll_count_check,
             dispatch_arguments);
       } else {
-        std::vector<Value> baseline_unrolled_arguments = dispatch_arguments;
-        baseline_unrolled_arguments.push_back(dispatch_remaining);
         status = builder.branch(builder.constant(1), unrolled_loop,
-                                baseline_unrolled_arguments, scalar_loop,
+                                dispatch_arguments, scalar_loop,
                                 dispatch_arguments);
       }
       if (!status.ok()) {
@@ -1196,12 +1192,8 @@ CompilationResult compile_numeric_for_prototype(
         const Value seven = builder.constant(7);
         const Value has_full_group =
             builder.less_equal(seven, checked_remaining);
-        const Value continues_after_group =
-            builder.less_than(seven, checked_remaining);
-        std::vector<Value> checked_unrolled_arguments = checked_arguments;
-        checked_unrolled_arguments.push_back(continues_after_group);
         status = builder.branch(has_full_group, unrolled_loop,
-                                checked_unrolled_arguments, scalar_loop,
+                                checked_arguments, scalar_loop,
                                 checked_arguments);
         if (!status.ok()) {
           return {status, nullptr};
@@ -1237,8 +1229,8 @@ CompilationResult compile_numeric_for_prototype(
       }
       const Value unrolled_remaining = builder.block_parameter(
           unrolled_loop, carried_registers.size());
-      const Value continues_after_unrolled = builder.block_parameter(
-          unrolled_loop, counted_parameter_count);
+      const Value continues_after_unrolled = builder.subtract(
+          unrolled_remaining, builder.constant(loop_unroll_factor - 1));
       const Value next_unrolled_index = builder.add(unrolled_index, step);
       const Value next_unrolled_remaining = builder.subtract(
           unrolled_remaining, builder.constant(loop_unroll_factor));
