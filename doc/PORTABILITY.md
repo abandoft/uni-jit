@@ -3,12 +3,14 @@
 UniJIT's bootstrap native ABI is:
 
 ```cpp
-std::int64_t generated(const std::int64_t* arguments);
+std::int64_t generated(const std::int64_t* arguments,
+                       unijit::runtime::ExecutionContext* context);
 ```
 
 Generated code only uses caller-saved registers and restores its stack before
-returning. Integer operations have modulo-2^64 semantics in both the reference
-interpreter and native backends.
+returning. The optional context carries cooperative interruption and diagnosed
+runtime exits; null bypasses polling. Integer operations have modulo-2^64
+semantics in both the reference interpreter and native backends.
 
 ## Backend baselines
 
@@ -37,8 +39,9 @@ treated as errors for the library:
 
 The native test suite checks full-width constants, all bootstrap arithmetic
 operations, forced register spilling, invocation validation, and 5,000 seeded
-random comparisons against the interpreter oracle. Machine addresses and
-credentials are intentionally kept outside version control.
+random comparisons against the interpreter oracle. It also checks helper calls
+and interruptible safepoints in straight-line and loop CFG code. Machine
+addresses and credentials are intentionally kept outside version control.
 
 ## Executable-memory policy
 

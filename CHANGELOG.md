@@ -1,5 +1,8 @@
 ## 0.1.3
 
+- Added an explicit execution-context ABI, lock-free cooperative interruption,
+  diagnosed runtime exits, and effectful native safepoints for straight-line
+  and CFG loop code on AArch64, x86-64, and RISC-V 64.
 - Added effect-aware typed runtime-helper calls with flat value-bits arguments,
   cross-call liveness preservation, and native ABI lowering on all targets.
 - Added guarded stock Lua 5.5 Float64 bytecode compilation and a reproducible

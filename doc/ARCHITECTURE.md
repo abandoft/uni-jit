@@ -62,6 +62,14 @@ dead. Lowering saves caller-clobbered Word and Float64 values that remain live,
 materializes the per-call argument area, satisfies each platform's stack and
 shadow-space ABI, and preserves the link register on AArch64 and RISC-V 64.
 
+Native entries also accept an optional execution context. Explicit effectful
+safepoints poll its lock-free sticky interrupt flag, publish a stable exit site,
+restore the complete native frame, and return through the normal ABI boundary.
+The same semantics are implemented by both reference interpreters and by
+straight-line and CFG lowering on all three architectures. Null contexts bypass
+polling for bounded trusted code; see `doc/RUNTIME.md` for ownership and memory
+ordering rules.
+
 The optimizing tier adds a separate CFG SSA representation with explicit
 basic-block parameters. Predecessor edges supply every block argument, making
 phi semantics visible in construction, verification, interpretation, and
