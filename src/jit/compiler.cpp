@@ -728,6 +728,19 @@ runtime::ReconstructionResult CompiledFunction::reconstruct_deoptimization(
   return deoptimization_table_.reconstruct(site, args, arg_count, context);
 }
 
+runtime::MaterializationResult CompiledFunction::materialize_deoptimization(
+    std::size_t site, const ir::Word* args, std::size_t arg_count,
+    const runtime::ExecutionContext& context,
+    const runtime::MaterializationPlan& plan,
+    const runtime::MaterializationCallbacks& callbacks) const {
+  runtime::ReconstructionResult reconstruction =
+      reconstruct_deoptimization(site, args, arg_count, context);
+  if (!reconstruction.ok()) {
+    return {reconstruction.status, {}};
+  }
+  return runtime::materialize_frame(reconstruction.frame, plan, callbacks);
+}
+
 ir::EvaluationResult CompiledFunction::invoke(
     const ir::Word* args, std::size_t arg_count,
     runtime::ExecutionContext* context) const {

@@ -57,6 +57,11 @@ class CodeHandle final {
   runtime::ReconstructionResult reconstruct_deoptimization(
       std::size_t site, const ir::Word* args, std::size_t arg_count,
       const runtime::ExecutionContext& context) const;
+  runtime::MaterializationResult materialize_deoptimization(
+      std::size_t site, const ir::Word* args, std::size_t arg_count,
+      const runtime::ExecutionContext& context,
+      const runtime::MaterializationPlan& plan,
+      const runtime::MaterializationCallbacks& callbacks) const;
   NativeEntry native_entry() const noexcept;
 
   ir::EvaluationResult invoke(

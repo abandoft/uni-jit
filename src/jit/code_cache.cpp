@@ -79,6 +79,18 @@ runtime::ReconstructionResult CodeHandle::reconstruct_deoptimization(
                                                context);
 }
 
+runtime::MaterializationResult CodeHandle::materialize_deoptimization(
+    std::size_t site, const ir::Word* args, std::size_t arg_count,
+    const runtime::ExecutionContext& context,
+    const runtime::MaterializationPlan& plan,
+    const runtime::MaterializationCallbacks& callbacks) const {
+  if (function_ == nullptr) {
+    return {{StatusCode::kInvalidArgument, "code handle is not valid"}, {}};
+  }
+  return function_->materialize_deoptimization(
+      site, args, arg_count, context, plan, callbacks);
+}
+
 NativeEntry CodeHandle::native_entry() const noexcept {
   return function_ == nullptr ? nullptr : function_->native_entry();
 }

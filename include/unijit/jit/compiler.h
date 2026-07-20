@@ -13,6 +13,7 @@
 #include "unijit/runtime/assumption.h"
 #include "unijit/runtime/deoptimization.h"
 #include "unijit/runtime/execution_context.h"
+#include "unijit/runtime/materialization.h"
 #include "unijit/status.h"
 
 namespace unijit::jit {
@@ -85,6 +86,11 @@ class CompiledFunction final {
   runtime::ReconstructionResult reconstruct_deoptimization(
       std::size_t site, const ir::Word* args, std::size_t arg_count,
       const runtime::ExecutionContext& context) const;
+  runtime::MaterializationResult materialize_deoptimization(
+      std::size_t site, const ir::Word* args, std::size_t arg_count,
+      const runtime::ExecutionContext& context,
+      const runtime::MaterializationPlan& plan,
+      const runtime::MaterializationCallbacks& callbacks) const;
 
   const CompilationStats& stats() const noexcept { return stats_; }
 
