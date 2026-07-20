@@ -101,11 +101,17 @@ public:
     const std::vector<ir::Value> initial_values = loop_values();
     const std::vector<ir::ValueType> loop_types(
         initial_values.size(), ir::ValueType::kFloat64);
+    bool has_continue = false;
+    for (const Line &line : lines_) {
+      has_continue = has_continue || line.text == "continue";
+    }
     const ir::Block header = builder_->create_block(loop_types);
     const ir::Block body = builder_->create_block(0);
-    const ir::Block update = builder_->create_block(loop_types);
+    const ir::Block update =
+        has_continue ? builder_->create_block(loop_types) : ir::Block{};
     const ir::Block exit = builder_->create_block(loop_types);
-    if (!header.valid() || !body.valid() || !update.valid() || !exit.valid() ||
+    if (!header.valid() || !body.valid() ||
+        (has_continue && !update.valid()) || !exit.valid() ||
         !builder_->jump(header, initial_values).ok() ||
         !builder_->set_insertion_block(header).ok()) {
       return fail(invalid_at(safepoint_site,
@@ -133,12 +139,14 @@ public:
     if (!parse_body(8)) {
       return fail(status_);
     }
-    if (!builder_->jump(update, loop_values()).ok() ||
-        !builder_->set_insertion_block(update).ok()) {
-      return fail(invalid_at(safepoint_site,
-                             "unable to enter counted-loop update"));
+    if (has_continue) {
+      if (!builder_->jump(update, loop_values()).ok() ||
+          !builder_->set_insertion_block(update).ok()) {
+        return fail(invalid_at(safepoint_site,
+                               "unable to enter counted-loop update"));
+      }
+      install_loop_parameters(update);
     }
-    install_loop_parameters(update);
     induction = symbol(induction_name_);
     induction->value = builder_->float64_add(
         induction->value, builder_->float64_constant(1.0));

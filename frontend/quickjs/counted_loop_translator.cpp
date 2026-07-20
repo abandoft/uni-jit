@@ -94,11 +94,14 @@ class CountedLoopParser final {
     const std::vector<ir::Value> initial_values = loop_values();
     const std::vector<ir::ValueType> loop_types(
         initial_values.size(), ir::ValueType::kFloat64);
+    const bool has_continue = source_contains_keyword("continue");
     const ir::Block header = builder_->create_block(loop_types);
     const ir::Block body = builder_->create_block(0);
-    const ir::Block update = builder_->create_block(loop_types);
+    const ir::Block update =
+        has_continue ? builder_->create_block(loop_types) : ir::Block{};
     const ir::Block exit = builder_->create_block(loop_types);
-    if (!header.valid() || !body.valid() || !update.valid() || !exit.valid() ||
+    if (!header.valid() || !body.valid() ||
+        (has_continue && !update.valid()) || !exit.valid() ||
         !builder_->jump(header, initial_values).ok() ||
         !builder_->set_insertion_block(header).ok()) {
       return fail(invalid("unable to create counted-loop control flow"));
@@ -124,11 +127,13 @@ class CountedLoopParser final {
                                : status_);
     }
 
-    if (!builder_->jump(update, loop_values()).ok() ||
-        !builder_->set_insertion_block(update).ok()) {
-      return fail(invalid("unable to enter counted-loop update"));
+    if (has_continue) {
+      if (!builder_->jump(update, loop_values()).ok() ||
+          !builder_->set_insertion_block(update).ok()) {
+        return fail(invalid("unable to enter counted-loop update"));
+      }
+      install_loop_parameters(update);
     }
-    install_loop_parameters(update);
     Symbol& induction = symbols_[induction_symbol];
     induction.value = builder_->float64_add(
         induction.value, builder_->float64_constant(1.0));
@@ -196,6 +201,22 @@ class CountedLoopParser final {
     }
     const std::size_t end = position_ + keyword.size();
     return end >= source_.size() || !is_identifier_continue(source_[end]);
+  }
+
+  bool source_contains_keyword(std::string_view keyword) const noexcept {
+    std::size_t position = source_.find(keyword);
+    while (position != std::string_view::npos) {
+      const bool begins =
+          position == 0 || !is_identifier_continue(source_[position - 1]);
+      const std::size_t end = position + keyword.size();
+      const bool ends =
+          end >= source_.size() || !is_identifier_continue(source_[end]);
+      if (begins && ends) {
+        return true;
+      }
+      position = source_.find(keyword, position + 1);
+    }
+    return false;
   }
 
   bool consume(char expected) {
