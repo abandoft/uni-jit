@@ -75,7 +75,7 @@ public:
     if (!consume_keyword("return")) {
       return {status_, 0, nullptr};
     }
-    const ir::Value result = parse_expression(0);
+    const ir::Value result = parse_return_expression();
     if (!result.valid()) {
       return {status_, 0, nullptr};
     }
@@ -98,7 +98,7 @@ public:
       return {compilation.status, parameter_count, nullptr};
     }
     return {Status::ok_status(), parameter_count,
-            std::move(compilation.function)};
+            std::move(compilation.function), result_kind_};
   }
 
 private:
@@ -194,6 +194,42 @@ private:
       }
       ++position_;
     }
+  }
+
+  ir::Value parse_return_expression() {
+    const ir::Value lhs = parse_expression(0);
+    if (!lhs.valid()) {
+      return {};
+    }
+    skip_space();
+    std::string_view operation;
+    if (source_.substr(position_, 2) == "<=") {
+      operation = "<=";
+      position_ += 2;
+    } else if (source_.substr(position_, 2) == ">=") {
+      operation = ">=";
+      position_ += 2;
+    } else if (peek() == '<' || peek() == '>') {
+      operation = source_.substr(position_, 1);
+      ++position_;
+    } else {
+      return lhs;
+    }
+    const ir::Value rhs = parse_expression(0);
+    if (!rhs.valid()) {
+      return {};
+    }
+    result_kind_ = ResultKind::kBoolean;
+    if (operation == "<") {
+      return builder_->float64_less_than(lhs, rhs);
+    }
+    if (operation == "<=") {
+      return builder_->float64_less_equal(lhs, rhs);
+    }
+    if (operation == ">") {
+      return builder_->float64_less_than(rhs, lhs);
+    }
+    return builder_->float64_less_equal(rhs, lhs);
   }
 
   ir::Value parse_expression(std::size_t depth) {
@@ -376,6 +412,7 @@ private:
   std::vector<std::string> parameters_;
   std::unique_ptr<ir::FunctionBuilder> builder_;
   runtime::DeoptimizationTable deoptimization_table_;
+  ResultKind result_kind_{ResultKind::kFloat64};
 };
 
 } // namespace

@@ -24,6 +24,7 @@
 namespace {
 
 using unijit::frontend::pocketpy::TranslationResult;
+using unijit::frontend::pocketpy::ResultKind;
 using unijit::ir::Word;
 
 constexpr char kModuleName[] = "unijit";
@@ -39,8 +40,10 @@ constexpr std::size_t kPocketPySchedulerBytes = 8U * 1024U * 1024U;
 
 struct CompiledFunctionState final {
   CompiledFunctionState(std::uint64_t id, std::size_t parameters,
-                        std::string retained_source, bool supports_tiering)
-      : parameter_count(parameters), source(std::move(retained_source)),
+                        ResultKind result, std::string retained_source,
+                        bool supports_tiering)
+      : parameter_count(parameters), result_kind(result),
+        source(std::move(retained_source)),
         tierable(supports_tiering),
         scheduling_identity("pocketpy:" + std::to_string(id)),
         code(kPocketPyTieringThresholds) {}
@@ -56,6 +59,7 @@ struct CompiledFunctionState final {
   }
 
   std::size_t parameter_count;
+  ResultKind result_kind;
   std::string source;
   bool tierable;
   std::string scheduling_identity;
@@ -150,7 +154,8 @@ compile_optimized(PocketPyService *service,
     if (!translation.ok()) {
       return fail_optimization(state, std::move(translation.status));
     }
-    if (translation.parameter_count != state->parameter_count) {
+    if (translation.parameter_count != state->parameter_count ||
+        translation.result_kind != state->result_kind) {
       return fail_optimization(
           state, {unijit::StatusCode::kCodeGenerationFailed,
                   "PocketPy optimized signature differs from its baseline"});
@@ -168,7 +173,12 @@ compile_optimized(PocketPyService *service,
     optimized = std::move(publication.handle);
   }
 
-  if (optimized.parameter_count() != state->parameter_count) {
+  const unijit::ir::ValueType expected_return_type =
+      state->result_kind == ResultKind::kBoolean
+          ? unijit::ir::ValueType::kWord
+          : unijit::ir::ValueType::kFloat64;
+  if (optimized.parameter_count() != state->parameter_count ||
+      optimized.return_type() != expected_return_type) {
     return fail_optimization(
         state, {unijit::StatusCode::kCodeGenerationFailed,
                 "cached PocketPy optimized signature differs from baseline"});
@@ -235,6 +245,11 @@ bool create_compiled_function(std::string_view source) {
     unijit::jit::CodeHandle baseline =
         service.baseline_cache.find(source, kPocketPyBaselineFingerprint);
     std::size_t parameter_count = baseline.parameter_count();
+    ResultKind result_kind =
+        baseline.valid() &&
+                baseline.return_type() == unijit::ir::ValueType::kWord
+            ? ResultKind::kBoolean
+            : ResultKind::kFloat64;
     if (!baseline.valid()) {
       TranslationResult translation =
           unijit::frontend::pocketpy::translate_numeric_function(
@@ -246,6 +261,7 @@ bool create_compiled_function(std::string_view source) {
                           translation.status.message().c_str());
       }
       parameter_count = translation.parameter_count;
+      result_kind = translation.result_kind;
       unijit::jit::CodeCachePublication publication =
           service.baseline_cache.publish(source, kPocketPyBaselineFingerprint,
                                          std::move(translation.function));
@@ -260,8 +276,8 @@ bool create_compiled_function(std::string_view source) {
     }
 
     auto state = std::make_shared<CompiledFunctionState>(
-        service.allocate_identity(), parameter_count, std::string(source),
-        tierable);
+        service.allocate_identity(), parameter_count, result_kind,
+        std::string(source), tierable);
     const unijit::Status baseline_status =
         state->code.publish_baseline(std::move(baseline));
     if (!baseline_status.ok()) {
@@ -347,8 +363,12 @@ bool invoke_compiled_function(int argc, py_Ref argv) {
                         invocation.result.status.message().c_str());
   }
   schedule_if_hot(state);
-  py_newfloat(py_retval(),
-              unijit::ir::unpack_float64(invocation.result.value));
+  if (state->result_kind == ResultKind::kBoolean) {
+    py_newbool(py_retval(), invocation.result.value != 0);
+  } else {
+    py_newfloat(py_retval(),
+                unijit::ir::unpack_float64(invocation.result.value));
+  }
   return true;
 }
 

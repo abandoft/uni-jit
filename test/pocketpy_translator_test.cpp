@@ -1,6 +1,7 @@
 #include <array>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <string_view>
 
 #include <pocketpy.h>
@@ -27,6 +28,44 @@ int main() {
   if (!native.ok() || unijit::ir::unpack_float64(native.value) != 28.0) {
     std::cerr << "PocketPy numeric source produced the wrong native result\n";
     return EXIT_FAILURE;
+  }
+
+  constexpr std::array<const char *, 4> kComparisonSources = {
+      "def compare(a, b): return a < b",
+      "def compare(a, b): return a <= b",
+      "def compare(a, b): return a > b",
+      "def compare(a, b): return a >= b"};
+  constexpr std::array<unijit::ir::Word, 4> kEqualComparisonResults = {
+      0, 1, 0, 1};
+  const std::array<unijit::ir::Word, 2> equal_arguments = {
+      unijit::ir::pack_float64(2.0), unijit::ir::pack_float64(2.0)};
+  const std::array<unijit::ir::Word, 2> unordered_arguments = {
+      unijit::ir::pack_float64(
+          std::numeric_limits<double>::quiet_NaN()),
+      unijit::ir::pack_float64(2.0)};
+  for (std::size_t index = 0; index < kComparisonSources.size(); ++index) {
+    const auto comparison =
+        unijit::frontend::pocketpy::translate_numeric_function(
+            kComparisonSources[index]);
+    const auto equal = comparison.ok()
+                           ? comparison.function->invoke(
+                                 equal_arguments.data(), equal_arguments.size())
+                           : unijit::ir::EvaluationResult{};
+    const auto unordered =
+        comparison.ok()
+            ? comparison.function->invoke(unordered_arguments.data(),
+                                          unordered_arguments.size())
+            : unijit::ir::EvaluationResult{};
+    if (!comparison.ok() ||
+        comparison.result_kind !=
+            unijit::frontend::pocketpy::ResultKind::kBoolean ||
+        comparison.function->return_type() !=
+            unijit::ir::ValueType::kWord ||
+        !equal.ok() || equal.value != kEqualComparisonResults[index] ||
+        !unordered.ok() || unordered.value != 0) {
+      std::cerr << "PocketPy ordered comparison semantics were not preserved\n";
+      return EXIT_FAILURE;
+    }
   }
 
   constexpr char kDivisionSource[] =
@@ -229,13 +268,14 @@ int main() {
     return EXIT_FAILURE;
   }
 
-  constexpr std::array<const char *, 6> kRejectedSources = {
+  constexpr std::array<const char *, 7> kRejectedSources = {
       "lambda a: a + 1",
       "def f(a, a): return a",
       "def f(class): return class",
       "def f(a): return external + a",
       "def f(a):\n    b = a\n    return b",
-      "def f(a): return a; return 0"};
+      "def f(a): return a; return 0",
+      "def f(a, b, c): return a < b < c"};
   for (const char *source : kRejectedSources) {
     if (unijit::frontend::pocketpy::translate_numeric_function(source).ok()) {
       std::cerr << "unsupported PocketPy source was accepted: " << source
@@ -256,7 +296,8 @@ int main() {
       "(b - -3)\")\n"
       "native_cached = unijit.compile(\"def affine(a, b): return (a + 2.5) * "
       "(b - -3)\")\n"
-      "divide = unijit.compile(\"def divide(a, b): return a / b\")\n";
+      "divide = unijit.compile(\"def divide(a, b): return a / b\")\n"
+      "compare = unijit.compile(\"def compare(a, b): return (a + 1) >= b * 2\")\n";
   if (!py_exec(kNativeSource, "<unijit-pocketpy-native>", EXEC_MODE, nullptr)) {
     py_printexc();
     py_finalize();
@@ -274,6 +315,28 @@ int main() {
                "cold_tier['active_ir_nodes']\n",
                "<unijit-pocketpy-cold-tier>", EXEC_MODE, nullptr)) {
     py_printexc();
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  if (!py_exec("comparison = compare(3, 2)\n"
+               "for comparison_iteration in range(63):\n"
+               "    comparison = compare(3, 2)\n"
+               "assert unijit.wait(compare, 5000)\n"
+               "comparison_after = compare(2, 2)\n"
+               "comparison_tier = unijit.stats(compare)\n"
+               "assert comparison_tier['active_tier'] == 'optimized'\n"
+               "assert comparison_tier['promotions'] == 1\n",
+               "<unijit-pocketpy-boolean>", EXEC_MODE, nullptr)) {
+    py_printexc();
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  const py_Ref comparison_result = py_getglobal(py_name("comparison"));
+  const py_Ref comparison_after = py_getglobal(py_name("comparison_after"));
+  if (comparison_result == nullptr || !py_isbool(comparison_result) ||
+      !py_tobool(comparison_result) || comparison_after == nullptr ||
+      !py_isbool(comparison_after) || py_tobool(comparison_after)) {
+    std::cerr << "PocketPy did not retain bool results across tiering\n";
     py_finalize();
     return EXIT_FAILURE;
   }
