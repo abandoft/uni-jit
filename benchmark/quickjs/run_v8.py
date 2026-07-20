@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare one JavaScript numeric kernel across QuickJS, UniJIT, and V8."""
+"""Compare one JavaScript numeric loop across QuickJS, UniJIT, and V8."""
 
 from __future__ import annotations
 
@@ -83,7 +83,7 @@ def main() -> int:
         "system": platform.system().lower(),
         "machine": platform.machine().lower(),
         "workload_source": str(WORKLOAD.relative_to(ROOT)),
-        "measurement_boundary": "language_loop_kernel_call",
+        "measurement_boundary": "complete_numeric_loop",
         "unijit_revision": revision(ROOT),
         "quickjs_revision": revision(ROOT / "third/quickjs"),
         "quickjs_and_unijit": embedded,

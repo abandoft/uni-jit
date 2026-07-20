@@ -1,15 +1,11 @@
 "use strict";
 
-function numericKernel(a, b) {
-  return (a + b) * (a - 3.25) + b * 0.75;
-}
-
-function executeNumericKernel(kernel, count) {
+function numericWorkload(count) {
   let lhs = 1.25;
   let rhs = -7.5;
   let checksum = 0.0;
   for (let iteration = 0; iteration < count; ++iteration) {
-    checksum += kernel(lhs, rhs);
+    checksum += (lhs + rhs) * (lhs - 3.25) + rhs * 0.75;
     lhs += 0.125;
     rhs -= 0.0625;
     if (lhs > 4096.0) {
@@ -23,8 +19,7 @@ function executeNumericKernel(kernel, count) {
 }
 
 globalThis.unijitBenchmark = {
-  kernel: numericKernel,
-  execute: executeNumericKernel,
+  workload: numericWorkload,
 };
 
 function benchmarkMedian(values) {
@@ -57,12 +52,12 @@ function runNodeBenchmark() {
   );
   const sampleCount = parsePositiveInteger(process.argv[4] ?? "7", "samples");
 
-  executeNumericKernel(numericKernel, warmup);
+  numericWorkload(warmup);
   const timings = [];
   let checksum;
   for (let sample = 0; sample < sampleCount; ++sample) {
     const started = process.hrtime.bigint();
-    const current = executeNumericKernel(numericKernel, iterations);
+    const current = numericWorkload(iterations);
     const elapsed = process.hrtime.bigint() - started;
     if (checksum !== undefined && checksumBits(current) !== checksumBits(checksum)) {
       throw new Error("JavaScript benchmark samples produced different checksums");
@@ -73,7 +68,7 @@ function runNodeBenchmark() {
 
   const jitless = process.execArgv.includes("--jitless");
   process.stdout.write(`${JSON.stringify({
-    schema: "unijit.javascript-numeric-call.v1",
+    schema: "unijit.javascript-numeric-loop.v2",
     engine: "V8",
     mode: jitless ? "jitless" : "jit",
     node_version: process.version,

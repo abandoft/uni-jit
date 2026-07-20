@@ -100,13 +100,12 @@ std::uint64_t bits(double value) noexcept {
   return result;
 }
 
-Measurement measure(JSContext* context, JSValueConst execute,
-                    JSValueConst function, std::size_t iterations) {
-  std::array<JSValue, 2> arguments = {
-      JS_DupValue(context, function),
+Measurement measure(JSContext* context, JSValueConst function,
+                    std::size_t iterations) {
+  std::array<JSValue, 1> arguments = {
       JS_NewInt64(context, static_cast<std::int64_t>(iterations))};
   const auto started = Clock::now();
-  JSValue result = JS_Call(context, execute, JS_UNDEFINED,
+  JSValue result = JS_Call(context, function, JS_UNDEFINED,
                            static_cast<int>(arguments.size()),
                            arguments.data());
   const auto elapsed = Clock::now() - started;
@@ -170,37 +169,32 @@ int main(int argc, char** argv) {
   JSValue setup = JS_Eval(context, source.data(), source.size(),
                           options.script.c_str(), JS_EVAL_TYPE_GLOBAL);
   constexpr char kCompile[] =
-      "unijit.compile(globalThis.unijitBenchmark.kernel)";
+      "unijit.compile(globalThis.unijitBenchmark.workload)";
   JSValue native = JS_Eval(context, kCompile, std::strlen(kCompile),
                            "<unijit-quickjs-compile>", JS_EVAL_TYPE_GLOBAL);
   JSValue global = JS_GetGlobalObject(context);
   JSValue benchmark = JS_GetPropertyStr(context, global, "unijitBenchmark");
-  JSValue stock = JS_GetPropertyStr(context, benchmark, "kernel");
-  JSValue execute = JS_GetPropertyStr(context, benchmark, "execute");
+  JSValue stock = JS_GetPropertyStr(context, benchmark, "workload");
   JS_FreeValue(context, benchmark);
   JS_FreeValue(context, global);
   if (JS_IsException(setup) || JS_IsFunction(context, stock) == 0 ||
-      JS_IsFunction(context, native) == 0 ||
-      JS_IsFunction(context, execute) == 0) {
+      JS_IsFunction(context, native) == 0) {
     std::cerr << "unable to compile the QuickJS benchmark functions\n";
     JS_FreeValue(context, setup);
     JS_FreeValue(context, stock);
     JS_FreeValue(context, native);
-    JS_FreeValue(context, execute);
     JS_FreeContext(context);
     JS_FreeRuntime(runtime);
     return EXIT_FAILURE;
   }
   JS_FreeValue(context, setup);
 
-  if (measure(context, execute, stock, options.warmup)
-              .nanoseconds_per_iteration < 0.0 ||
-      measure(context, execute, native, options.warmup)
-              .nanoseconds_per_iteration < 0.0) {
+  if (measure(context, stock, options.warmup).nanoseconds_per_iteration < 0.0 ||
+      measure(context, native, options.warmup).nanoseconds_per_iteration <
+          0.0) {
     std::cerr << "QuickJS benchmark warmup failed\n";
     JS_FreeValue(context, stock);
     JS_FreeValue(context, native);
-    JS_FreeValue(context, execute);
     JS_FreeContext(context);
     JS_FreeRuntime(runtime);
     return EXIT_FAILURE;
@@ -214,9 +208,9 @@ int main(int argc, char** argv) {
   bool has_checksum = false;
   for (std::size_t sample = 0; sample < options.samples; ++sample) {
     const Measurement stock_measurement =
-        measure(context, execute, stock, options.iterations);
+        measure(context, stock, options.iterations);
     const Measurement native_measurement =
-        measure(context, execute, native, options.iterations);
+        measure(context, native, options.iterations);
     if (stock_measurement.nanoseconds_per_iteration < 0.0 ||
         native_measurement.nanoseconds_per_iteration < 0.0 ||
         stock_measurement.checksum != native_measurement.checksum ||
@@ -225,7 +219,6 @@ int main(int argc, char** argv) {
                    "results\n";
       JS_FreeValue(context, stock);
       JS_FreeValue(context, native);
-      JS_FreeValue(context, execute);
       JS_FreeContext(context);
       JS_FreeRuntime(runtime);
       return EXIT_FAILURE;
@@ -240,7 +233,7 @@ int main(int argc, char** argv) {
   const double native_median = median(std::move(native_samples));
   std::cout << std::fixed << std::setprecision(3)
             << "{\n"
-            << "  \"schema\": \"unijit.quickjs-numeric-call.v2\",\n"
+            << "  \"schema\": \"unijit.quickjs-numeric-loop.v3\",\n"
             << "  \"quickjs_version\": \""
             << UNIJIT_QUICKJS_BENCHMARK_VERSION << "\",\n"
             << "  \"warmup_iterations\": " << options.warmup << ",\n"
@@ -256,7 +249,6 @@ int main(int argc, char** argv) {
 
   JS_FreeValue(context, stock);
   JS_FreeValue(context, native);
-  JS_FreeValue(context, execute);
   JS_FreeContext(context);
   JS_FreeRuntime(runtime);
   return EXIT_SUCCESS;
