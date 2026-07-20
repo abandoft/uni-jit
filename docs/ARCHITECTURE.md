@@ -56,6 +56,13 @@ use whose definition does not dominate it. Its reference interpreter applies
 edge arguments in parallel and has a configurable block-execution budget so
 fuzzed infinite loops fail deterministically.
 
+The first native CFG lowering assigns every SSA definition a canonical spill
+slot and reserves a separate temporary area for parallel edge copies. This is
+deliberately conservative but makes backedges and block-parameter swaps
+correct on AArch64, x86-64, and RISC-V 64 before regional liveness and
+loop-aware register allocation are enabled. Branch fixups are range-checked by
+each target encoder before executable code is published.
+
 ## Stable subsystem boundaries
 
 - `include/unijit/ir`: target-independent SSA values and construction API.

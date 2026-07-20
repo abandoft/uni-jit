@@ -1,5 +1,7 @@
 ## 0.1.2
 
+- Added range-checked native CFG lowering on AArch64, x86-64, and RISC-V 64,
+  including parallel block-argument copies for loop backedges.
 - Added CFG SSA with explicit block parameters, dominance verification, and a
   budgeted reference interpreter for branches and loops.
 - Added a three-engine Lua integer benchmark and a pinned-ABI invocation fast
