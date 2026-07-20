@@ -1,4 +1,5 @@
 add_library(unijit
+  ir/control_flow.cpp
   ir/function.cpp
   ir/interpreter.cpp
   ir/optimizer.cpp

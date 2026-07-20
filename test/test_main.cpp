@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "unijit/ir/control_flow.h"
 #include "unijit/ir/function.h"
 #include "unijit/ir/interpreter.h"
 #include "unijit/ir/optimizer.h"
@@ -24,7 +25,7 @@ using unijit::jit::Compiler;
 
 int failures = 0;
 
-void expect(bool condition, const std::string& message) {
+void expect(bool condition, const std::string &message) {
   if (!condition) {
     std::cerr << "FAIL: " << message << '\n';
     ++failures;
@@ -80,8 +81,8 @@ void test_differential_arithmetic() {
 
   std::mt19937_64 random(0x554E494A4954ULL);
   for (std::size_t iteration = 0; iteration < 5000; ++iteration) {
-    const std::array<Word, 2> args = {
-        static_cast<Word>(random()), static_cast<Word>(random())};
+    const std::array<Word, 2> args = {static_cast<Word>(random()),
+                                      static_cast<Word>(random())};
     const auto interpreted =
         Interpreter::evaluate(function, args.data(), args.size());
     const auto native = compilation.function->invoke(args.data(), args.size());
@@ -113,7 +114,8 @@ void test_spill_path() {
     }
     values = std::move(reduced);
   }
-  expect(builder.set_return(values.front()).ok(), "spill return must be accepted");
+  expect(builder.set_return(values.front()).ok(),
+         "spill return must be accepted");
   const Function function = std::move(builder).build();
 
   auto compilation = Compiler::compile(function);
@@ -175,8 +177,8 @@ void test_optimization_pipeline() {
          "optimizer must exercise algebraic simplification");
 
   const std::array<Word, 1> args = {std::numeric_limits<Word>::max()};
-  const auto interpreted = Interpreter::evaluate(optimization.function, args.data(),
-                                                 args.size());
+  const auto interpreted =
+      Interpreter::evaluate(optimization.function, args.data(), args.size());
   expect(interpreted.ok() && interpreted.value == 42,
          "optimized SSA must preserve observable semantics");
 
@@ -194,7 +196,135 @@ void test_optimization_pipeline() {
          "optimized native code must preserve observable semantics");
 }
 
-}  // namespace
+void test_control_flow_counted_loop() {
+  unijit::ir::ControlFlowBuilder builder(1);
+  const unijit::ir::Block loop = builder.create_block(2);
+  const unijit::ir::Block exit = builder.create_block(1);
+
+  const Value zero = builder.constant(0);
+  const Value one = builder.constant(1);
+  expect(builder.jump(loop, {one, zero}).ok(),
+         "entry must jump to the loop header");
+
+  expect(builder.set_insertion_block(loop).ok(),
+         "loop block must accept insertion");
+  const Value index = builder.block_parameter(loop, 0);
+  const Value sum = builder.block_parameter(loop, 1);
+  const Value next_sum = builder.add(sum, index);
+  const Value next_index = builder.add(index, one);
+  const Value continue_loop =
+      builder.less_equal(next_index, builder.parameter(0));
+  expect(
+      builder
+          .branch(continue_loop, loop, {next_index, next_sum}, exit, {next_sum})
+          .ok(),
+      "loop latch must branch with explicit block arguments");
+
+  expect(builder.set_insertion_block(exit).ok(),
+         "exit block must accept insertion");
+  expect(builder.set_return(builder.block_parameter(exit, 0)).ok(),
+         "exit block must return its block parameter");
+
+  const unijit::ir::ControlFlowFunction function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "counted-loop CFG must satisfy dominance and edge invariants");
+  const std::array<Word, 1> args = {100};
+  const auto result = unijit::ir::ControlFlowInterpreter::evaluate(
+      function, args.data(), args.size());
+  expect(result.ok() && result.value == 5050,
+         "CFG interpreter must execute loop-carried block parameters");
+}
+
+void test_control_flow_merge() {
+  unijit::ir::ControlFlowBuilder builder(2);
+  const unijit::ir::Block take_lhs = builder.create_block(0);
+  const unijit::ir::Block take_rhs = builder.create_block(0);
+  const unijit::ir::Block merge = builder.create_block(1);
+  const Value condition =
+      builder.less_than(builder.parameter(0), builder.parameter(1));
+  expect(builder.branch(condition, take_rhs, {}, take_lhs, {}).ok(),
+         "entry comparison must branch to both arms");
+
+  expect(builder.set_insertion_block(take_lhs).ok(),
+         "left arm must accept insertion");
+  expect(builder.jump(merge, {builder.parameter(0)}).ok(),
+         "left arm must pass its result to the merge");
+  expect(builder.set_insertion_block(take_rhs).ok(),
+         "right arm must accept insertion");
+  expect(builder.jump(merge, {builder.parameter(1)}).ok(),
+         "right arm must pass its result to the merge");
+  expect(builder.set_insertion_block(merge).ok(),
+         "merge block must accept insertion");
+  expect(builder.set_return(builder.block_parameter(merge, 0)).ok(),
+         "merge must return its explicit SSA parameter");
+
+  const unijit::ir::ControlFlowFunction function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "diamond CFG must pass the dominance verifier");
+  expect(
+      unijit::ir::ControlFlowInterpreter::evaluate(function, {17, 91}).value ==
+          91,
+      "true branch must select the right operand");
+  expect(
+      unijit::ir::ControlFlowInterpreter::evaluate(function, {117, -4}).value ==
+          117,
+      "false branch must select the left operand");
+}
+
+void test_control_flow_rejects_non_dominating_value() {
+  unijit::ir::ControlFlowBuilder builder(0);
+  const unijit::ir::Block left = builder.create_block(0);
+  const unijit::ir::Block right = builder.create_block(0);
+  const unijit::ir::Block merge = builder.create_block(1);
+  const Value condition = builder.constant(1);
+  expect(builder.branch(condition, left, {}, right, {}).ok(),
+         "invalid-dominance fixture entry must be terminated");
+
+  expect(builder.set_insertion_block(left).ok(),
+         "invalid-dominance left block must exist");
+  const Value leaked = builder.constant(7);
+  expect(builder.jump(merge, {leaked}).ok(), "left block must reach the merge");
+
+  expect(builder.set_insertion_block(right).ok(),
+         "invalid-dominance right block must exist");
+  const Value invalid = builder.add(leaked, builder.constant(1));
+  expect(builder.jump(merge, {invalid}).ok(),
+         "right block must reach the merge");
+
+  expect(builder.set_insertion_block(merge).ok(),
+         "invalid-dominance merge block must exist");
+  expect(builder.set_return(builder.block_parameter(merge, 0)).ok(),
+         "invalid-dominance merge must be terminated");
+  const unijit::ir::ControlFlowFunction function = std::move(builder).build();
+  expect(!unijit::ir::verify(function).ok(),
+         "CFG verifier must reject a sibling-block SSA use");
+}
+
+void test_control_flow_execution_budget() {
+  unijit::ir::ControlFlowBuilder builder(0);
+  const unijit::ir::Block loop = builder.create_block(0);
+  expect(builder.jump(loop, {}).ok(), "entry must reach the infinite loop");
+  expect(builder.set_insertion_block(loop).ok(),
+         "infinite-loop block must exist");
+  expect(builder.jump(loop, {}).ok(), "loop must jump to itself");
+  const unijit::ir::ControlFlowFunction function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "self-loop must be a valid control-flow graph");
+  const auto result =
+      unijit::ir::ControlFlowInterpreter::evaluate(function, nullptr, 0, 10);
+  expect(!result.ok() &&
+             result.status.code() == unijit::StatusCode::kResourceExhausted,
+         "CFG interpreter must stop when its execution budget is exhausted");
+}
+
+void test_control_flow_builder_rejects_edge_arity() {
+  unijit::ir::ControlFlowBuilder builder(0);
+  const unijit::ir::Block target = builder.create_block(1);
+  expect(!builder.jump(target, {}).ok(),
+         "builder must reject an edge with missing block arguments");
+}
+
+} // namespace
 
 int main() {
   test_verifier_rejects_forward_reference();
@@ -203,6 +333,11 @@ int main() {
   test_spill_path();
   test_argument_validation();
   test_optimization_pipeline();
+  test_control_flow_counted_loop();
+  test_control_flow_merge();
+  test_control_flow_rejects_non_dominating_value();
+  test_control_flow_execution_budget();
+  test_control_flow_builder_rejects_edge_arity();
 
   if (failures != 0) {
     std::cerr << failures << " test assertion(s) failed\n";
