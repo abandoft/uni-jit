@@ -2757,6 +2757,94 @@ int cancel_compiled_function(lua_State *state) {
   return 1;
 }
 
+// Lua reports errors with longjmp. Keep C++ objects with non-trivial
+// destructors in a non-inlined helper so no C++ unwind state is active when
+// the API bridge calls lua_error, which is required for optimized MSVC builds.
+#if defined(_MSC_VER)
+#define UNIJIT_LUA_NOINLINE __declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+#define UNIJIT_LUA_NOINLINE __attribute__((noinline))
+#else
+#define UNIJIT_LUA_NOINLINE
+#endif
+
+UNIJIT_LUA_NOINLINE bool
+prepare_compiled_function(const LClosure &closure, NumericMode mode,
+                          OwnedFunction *owned, char *error,
+                          std::size_t error_capacity) noexcept {
+  bool compiled = false;
+  try {
+    std::string cache_key;
+    const bool cacheable = prototype_cache_key(*closure.p, mode, &cache_key);
+    std::shared_ptr<const PrototypeSnapshot> snapshot =
+        capture_prototype(*closure.p);
+    const bool tierable = cacheable && snapshot != nullptr;
+    const unijit::jit::OptimizationLevel initial_level =
+        tierable ? unijit::jit::OptimizationLevel::kBaseline
+                 : unijit::jit::OptimizationLevel::kOptimized;
+    const std::uint64_t fingerprint = cache_fingerprint(mode, initial_level);
+    LuaService &service = lua_service();
+    CodeHandle code =
+        cacheable
+            ? service.cache(mode, initial_level).find(cache_key, fingerprint)
+            : CodeHandle{};
+    if (!code.valid()) {
+      CompilationResult result =
+          compile_numeric_mode(*closure.p, mode, initial_level);
+      if (result.ok()) {
+        unijit::jit::CodeCachePublication publication =
+            cacheable
+                ? service.cache(mode, initial_level)
+                      .publish(cache_key, fingerprint,
+                               std::move(result.function))
+                : service.uncached_cache.publish("uncached-lua-prototype",
+                                                 fingerprint,
+                                                 std::move(result.function));
+        if (publication.ok()) {
+          code = std::move(publication.handle);
+        } else {
+          std::snprintf(error, error_capacity,
+                        "unable to publish Lua native code: %s",
+                        publication.status.message().c_str());
+        }
+      } else {
+        std::snprintf(error, error_capacity, "Lua bytecode at pc %zu: %s",
+                      result.status.location(), result.status.message().c_str());
+      }
+    }
+    if (code.valid()) {
+      LoopHotnessPlan loop_hotness = analyze_loop_hotness(*closure.p);
+      auto compiled_state = std::make_shared<CompiledFunctionState>(
+          service.allocate_identity(), closure.p->numparams, mode,
+          std::move(snapshot), std::move(cache_key), loop_hotness, tierable);
+      const Status baseline_status =
+          compiled_state->code.publish_baseline(std::move(code));
+      if (!baseline_status.ok()) {
+        std::snprintf(error, error_capacity,
+                      "unable to publish Lua baseline: %s",
+                      baseline_status.message().c_str());
+      } else {
+        owned->state = new (std::nothrow)
+            std::shared_ptr<CompiledFunctionState>(std::move(compiled_state));
+        if (owned->state == nullptr) {
+          std::snprintf(error, error_capacity,
+                        "unable to allocate a Lua native-code lease");
+        } else {
+          compiled = true;
+        }
+      }
+    }
+  } catch (const std::bad_alloc &) {
+    std::snprintf(error, error_capacity,
+                  "unable to allocate Lua compilation state");
+  } catch (...) {
+    std::snprintf(error, error_capacity, "unexpected Lua compilation failure");
+  }
+  return compiled;
+}
+
+#undef UNIJIT_LUA_NOINLINE
+
 int compile_lua_function_mode(lua_State *state, NumericMode mode,
                               const char *api_name) {
   if (lua_type(state, 1) != LUA_TFUNCTION || lua_iscfunction(state, 1) != 0) {
@@ -2773,79 +2861,11 @@ int compile_lua_function_mode(lua_State *state, NumericMode mode,
     return luaL_error(state, "unable to inspect the Lua function prototype");
   }
   char error[512] = {};
-  bool compiled = false;
-  {
-    try {
-      std::string cache_key;
-      const bool cacheable = prototype_cache_key(*closure->p, mode, &cache_key);
-      std::shared_ptr<const PrototypeSnapshot> snapshot =
-          capture_prototype(*closure->p);
-      const bool tierable = cacheable && snapshot != nullptr;
-      const unijit::jit::OptimizationLevel initial_level =
-          tierable ? unijit::jit::OptimizationLevel::kBaseline
-                   : unijit::jit::OptimizationLevel::kOptimized;
-      const std::uint64_t fingerprint = cache_fingerprint(mode, initial_level);
-      LuaService &service = lua_service();
-      CodeHandle code =
-          cacheable
-              ? service.cache(mode, initial_level).find(cache_key, fingerprint)
-              : CodeHandle{};
-      if (!code.valid()) {
-        CompilationResult result =
-            compile_numeric_mode(*closure->p, mode, initial_level);
-        if (result.ok()) {
-          unijit::jit::CodeCachePublication publication =
-              cacheable
-                  ? service.cache(mode, initial_level)
-                        .publish(cache_key, fingerprint,
-                                 std::move(result.function))
-                  : service.uncached_cache.publish("uncached-lua-prototype",
-                                                   fingerprint,
-                                                   std::move(result.function));
-          if (publication.ok()) {
-            code = std::move(publication.handle);
-          } else {
-            std::snprintf(error, sizeof(error),
-                          "unable to publish Lua native code: %s",
-                          publication.status.message().c_str());
-          }
-        } else {
-          std::snprintf(error, sizeof(error), "Lua bytecode at pc %zu: %s",
-                        result.status.location(),
-                        result.status.message().c_str());
-        }
-      }
-      if (code.valid()) {
-        LoopHotnessPlan loop_hotness = analyze_loop_hotness(*closure->p);
-        auto compiled_state = std::make_shared<CompiledFunctionState>(
-            service.allocate_identity(), closure->p->numparams, mode,
-            std::move(snapshot), std::move(cache_key), loop_hotness, tierable);
-        const Status baseline_status =
-            compiled_state->code.publish_baseline(std::move(code));
-        if (!baseline_status.ok()) {
-          std::snprintf(error, sizeof(error),
-                        "unable to publish Lua baseline: %s",
-                        baseline_status.message().c_str());
-        } else {
-          owned->state = new (std::nothrow)
-              std::shared_ptr<CompiledFunctionState>(std::move(compiled_state));
-          if (owned->state == nullptr) {
-            std::snprintf(error, sizeof(error),
-                          "unable to allocate a Lua native-code lease");
-          } else {
-            compiled = true;
-          }
-        }
-      }
-    } catch (const std::bad_alloc &) {
-      std::snprintf(error, sizeof(error),
-                    "unable to allocate Lua compilation state");
-    } catch (...) {
-      std::snprintf(error, sizeof(error), "unexpected Lua compilation failure");
-    }
-  }
+  const bool compiled = prepare_compiled_function(
+      *closure, mode, owned, error, sizeof(error));
   if (!compiled) {
-    return luaL_error(state, "%s", error);
+    lua_pushstring(state, error);
+    return lua_error(state);
   }
 
   lua_pushcclosure(state, invoke_compiled_function, 1);

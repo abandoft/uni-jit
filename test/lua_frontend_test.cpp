@@ -18,6 +18,8 @@ local function checkpoint(name)
   io.stderr:flush()
 end
 
+checkpoint("loaded")
+
 local function compare(original, arguments)
   local native = unijit.compile(original)
   for _, values in ipairs(arguments) do
@@ -47,6 +49,7 @@ end
 cases[#cases + 1] = {math.maxinteger, -1, 1}
 cases[#cases + 1] = {math.mininteger, 1, -1}
 local native_recurrence = compare(recurrence, cases)
+checkpoint("integer recurrence")
 assert(unijit.wait(native_recurrence, 5000))
 local recurrence_stats = unijit.stats(native_recurrence)
 assert(recurrence_stats.tierable)
@@ -68,6 +71,7 @@ assert(recurrence_stats.code_size > 0)
 assert(not unijit.cancel(native_recurrence))
 local cached_recurrence = unijit.compile(recurrence)
 assert(cached_recurrence(9, 3, 5) == 48)
+checkpoint("integer tiering")
 
 local function compare_float(original, arguments)
   local native = unijit.compile_float(original)
@@ -92,6 +96,7 @@ local float_cases = {
   {0.0, -0.0, 7.5},
 }
 local native_float_recurrence = compare_float(float_recurrence, float_cases)
+checkpoint("float recurrence")
 for _ = 1, 64 do
   assert(native_float_recurrence(9.0, 3.0, 5.0) == 48.0)
 end
@@ -102,6 +107,7 @@ assert(float_stats.compilation_attempts == 1)
 assert(float_stats.successful_compilations == 1)
 local cached_float_recurrence = unijit.compile_float(float_recurrence)
 assert(cached_float_recurrence(9.0, 3.0, 5.0) == 48.0)
+checkpoint("float tiering")
 
 compare_float(function(value)
   return (value + 7) * 0.5 - 3.0
@@ -118,27 +124,33 @@ end, {{}})
 compare_float(function()
   return 17 / 2
 end, {{}})
+checkpoint("float arithmetic")
 
 local float_ok, float_message = pcall(native_float_recurrence, 1.0, 2, 3.0)
 assert(not float_ok and tostring(float_message):find("Float64"))
+checkpoint("float invocation rejection")
 
 float_ok, float_message = pcall(unijit.compile_float, function()
   return 17
 end)
 assert(not float_ok and tostring(float_message):find("not Float64"))
+checkpoint("float rejections")
 
 local immediate = compare(function(value)
   return value + 7
 end, {{0}, {-100}, {math.maxinteger}})
+checkpoint("integer addition")
 
 compare(function(value)
   return value * 400 - 900
 end, {{0}, {17}, {-9123456}, {math.maxinteger}})
+checkpoint("integer multiplication")
 
 compare(function(value)
   local large = 9223372036854770000
   return value + large
 end, {{0}, {807}, {-123456789}})
+checkpoint("integer large constant")
 
 compare(function()
   return 17
@@ -340,6 +352,9 @@ assert(unijit.stats(native_parameter_step_sum).invocations ==
        invocations_before_zero_step)
 
 checkpoint("numeric loops")
+
+)lua"
+R"lua(
 
 local guarded_body_sum = function(start, limit, step, threshold)
   local sum = 7
