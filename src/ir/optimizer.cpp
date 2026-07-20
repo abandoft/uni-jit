@@ -41,9 +41,30 @@ Word fold_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
   return from_bits(lhs_bits * rhs_bits);
 }
 
+Word fold_float_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
+  const double lhs_value = unpack_float64(lhs);
+  const double rhs_value = unpack_float64(rhs);
+  if (opcode == Opcode::kFloatAdd) {
+    return pack_float64(lhs_value + rhs_value);
+  }
+  if (opcode == Opcode::kFloatSubtract) {
+    return pack_float64(lhs_value - rhs_value);
+  }
+  if (opcode == Opcode::kFloatMultiply) {
+    return pack_float64(lhs_value * rhs_value);
+  }
+  return pack_float64(lhs_value / rhs_value);
+}
+
 bool is_binary(Opcode opcode) noexcept {
   return opcode == Opcode::kAdd || opcode == Opcode::kSubtract ||
          opcode == Opcode::kMultiply || opcode == Opcode::kFloatAdd ||
+         opcode == Opcode::kFloatSubtract ||
+         opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide;
+}
+
+bool is_float_binary(Opcode opcode) noexcept {
+  return opcode == Opcode::kFloatAdd ||
          opcode == Opcode::kFloatSubtract ||
          opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide;
 }
@@ -105,9 +126,9 @@ PassResult transform_once(const Function& input) {
         mapped[index] = builder.float64_constant_bits(node.immediate);
       } else {
         mapped[index] = builder.constant(node.immediate);
-        known_constant[index] = true;
-        constant_value[index] = node.immediate;
       }
+      known_constant[index] = true;
+      constant_value[index] = node.immediate;
       continue;
     }
 
@@ -133,23 +154,26 @@ PassResult transform_once(const Function& input) {
 
     const std::size_t lhs_id = node.lhs.id();
     const std::size_t rhs_id = node.rhs.id();
-    if (node.opcode == Opcode::kFloatAdd) {
-      mapped[index] = builder.float64_add(mapped[lhs_id], mapped[rhs_id]);
-      continue;
-    }
-    if (node.opcode == Opcode::kFloatSubtract) {
-      mapped[index] =
-          builder.float64_subtract(mapped[lhs_id], mapped[rhs_id]);
-      continue;
-    }
-    if (node.opcode == Opcode::kFloatMultiply) {
-      mapped[index] =
-          builder.float64_multiply(mapped[lhs_id], mapped[rhs_id]);
-      continue;
-    }
-    if (node.opcode == Opcode::kFloatDivide) {
-      mapped[index] =
-          builder.float64_divide(mapped[lhs_id], mapped[rhs_id]);
+    if (is_float_binary(node.opcode)) {
+      if (known_constant[lhs_id] && known_constant[rhs_id]) {
+        constant_value[index] = fold_float_binary(
+            node.opcode, constant_value[lhs_id], constant_value[rhs_id]);
+        mapped[index] = builder.float64_constant_bits(constant_value[index]);
+        known_constant[index] = true;
+        ++folded;
+        changed = true;
+      } else if (node.opcode == Opcode::kFloatAdd) {
+        mapped[index] = builder.float64_add(mapped[lhs_id], mapped[rhs_id]);
+      } else if (node.opcode == Opcode::kFloatSubtract) {
+        mapped[index] =
+            builder.float64_subtract(mapped[lhs_id], mapped[rhs_id]);
+      } else if (node.opcode == Opcode::kFloatMultiply) {
+        mapped[index] =
+            builder.float64_multiply(mapped[lhs_id], mapped[rhs_id]);
+      } else {
+        mapped[index] =
+            builder.float64_divide(mapped[lhs_id], mapped[rhs_id]);
+      }
       continue;
     }
     if (known_constant[lhs_id] && known_constant[rhs_id]) {
