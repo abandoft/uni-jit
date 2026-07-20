@@ -59,6 +59,22 @@ jobs:
           cmake --build build/sanitize --config Debug --parallel
           --target unijit_lua55_tests
 
+      - name: Expose MSVC AddressSanitizer runtime
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio/Installer/vswhere.exe"
+          $installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $installation) {
+            throw "unable to locate the MSVC installation"
+          }
+          $versionFile = Join-Path $installation "VC/Auxiliary/Build/Microsoft.VCToolsVersion.default.txt"
+          $toolVersion = (Get-Content $versionFile -Raw).Trim()
+          $runtime = Join-Path $installation "VC/Tools/MSVC/$toolVersion/bin/Hostx64/x64"
+          $asan = Join-Path $runtime "clang_rt.asan_dbg_dynamic-x86_64.dll"
+          if (-not (Test-Path $asan)) {
+            throw "unable to locate the MSVC x86-64 AddressSanitizer runtime"
+          }
+          $runtime | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: Test Lua frontend
         timeout-minutes: 3
         run: |
