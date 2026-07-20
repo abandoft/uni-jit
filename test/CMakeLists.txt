@@ -84,4 +84,8 @@ if(Python3_Interpreter_FOUND)
     NAME unijit.performance_gate_tool
     COMMAND "${Python3_EXECUTABLE}"
             "${PROJECT_SOURCE_DIR}/test/performance_gate_test.py")
+  add_test(
+    NAME unijit.lua_benchmark_tool
+    COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/test/lua_benchmark_test.py")
 endif()

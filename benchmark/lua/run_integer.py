@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import platform
+import statistics
 import subprocess
 from pathlib import Path
 
@@ -46,6 +47,46 @@ def run_engine(
     return json.loads(lines[-1])
 
 
+def aggregate_records(
+    records: list[dict[str, object]], engine: str
+) -> dict[str, object]:
+    if not records:
+        raise RuntimeError(f"{engine} produced no benchmark trials")
+    invariant_fields = (
+        "schema",
+        "workload",
+        "engine",
+        "warmup_iterations",
+        "measurement_iterations",
+        "inner_loop_iterations",
+        "samples",
+        "checksum",
+    )
+    first = records[0]
+    for record in records[1:]:
+        for field in invariant_fields:
+            if record.get(field) != first.get(field):
+                raise RuntimeError(
+                    f"{engine} benchmark trials disagree on {field}"
+                )
+    medians = [float(record["median_ns"]) for record in records]
+    if any(value <= 0 for value in medians):
+        raise RuntimeError(f"{engine} benchmark trial is not positive")
+    aggregate = dict(first)
+    aggregate["median_ns"] = statistics.median(medians)
+    aggregate["trials"] = len(records)
+    aggregate["samples_per_trial"] = first["samples"]
+    aggregate["trial_median_ns"] = medians
+    return aggregate
+
+
+def rotated_order(
+    engines: list[tuple[str, Path, str]], trial: int
+) -> list[tuple[str, Path, str]]:
+    rotation = trial % len(engines)
+    return engines[rotation:] + engines[:rotation]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--lua", type=Path, required=True)
@@ -57,6 +98,7 @@ def main() -> int:
     parser.add_argument("--warmup", type=int, default=100000)
     parser.add_argument("--iterations", type=int, default=1000000)
     parser.add_argument("--samples", type=int, default=7)
+    parser.add_argument("--trials", type=int, default=1)
     arguments = parser.parse_args()
 
     for executable in (arguments.lua, arguments.unijit, arguments.luajit):
@@ -65,33 +107,43 @@ def main() -> int:
     script = arguments.script.resolve()
     if not script.is_file():
         parser.error(f"workload not found: {script}")
-    if min(arguments.warmup, arguments.iterations, arguments.samples) <= 0:
-        parser.error("iteration and sample counts must be positive")
+    if min(
+        arguments.warmup,
+        arguments.iterations,
+        arguments.samples,
+        arguments.trials,
+    ) <= 0:
+        parser.error("iteration, sample, and trial counts must be positive")
+    if arguments.trials != 1 and arguments.trials % 3 != 0:
+        parser.error("multiple benchmark trials must form complete groups of three")
 
-    stock = run_engine(
-        arguments.lua,
-        script,
-        arguments.warmup,
-        arguments.iterations,
-        arguments.samples,
-        "reference",
-    )
-    unijit = run_engine(
-        arguments.unijit,
-        script,
-        arguments.warmup,
-        arguments.iterations,
-        arguments.samples,
-        "unijit",
-    )
-    luajit = run_engine(
-        arguments.luajit,
-        script,
-        arguments.warmup,
-        arguments.iterations,
-        arguments.samples,
-        "reference",
-    )
+    engines = [
+        ("stock_lua", arguments.lua, "reference"),
+        ("unijit", arguments.unijit, "unijit"),
+        ("luajit", arguments.luajit, "reference"),
+    ]
+    trial_records: dict[str, list[dict[str, object]]] = {
+        name: [] for name, _, _ in engines
+    }
+    trial_orders: list[list[str]] = []
+    for trial in range(arguments.trials):
+        order = rotated_order(engines, trial)
+        trial_orders.append([name for name, _, _ in order])
+        for name, executable, mode in order:
+            trial_records[name].append(
+                run_engine(
+                    executable,
+                    script,
+                    arguments.warmup,
+                    arguments.iterations,
+                    arguments.samples,
+                    mode,
+                )
+            )
+
+    stock = aggregate_records(trial_records["stock_lua"], "stock Lua")
+    unijit = aggregate_records(trial_records["unijit"], "UniJIT")
+    luajit = aggregate_records(trial_records["luajit"], "LuaJIT")
 
     checksums = {result["checksum"] for result in (stock, unijit, luajit)}
     if len(checksums) != 1:
@@ -114,6 +166,8 @@ def main() -> int:
         "unijit_revision": revision(ROOT),
         "lua_revision": revision(ROOT / "third/lua"),
         "luajit_revision": revision(ROOT / "third/luajit"),
+        "balanced_trials": arguments.trials,
+        "trial_orders": trial_orders,
         "stock_lua": stock,
         "unijit": unijit,
         "luajit": luajit,
