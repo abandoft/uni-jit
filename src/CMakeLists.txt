@@ -11,7 +11,8 @@ add_library(unijit
   jit/register_allocator.cpp
   jit/tiering.cpp
   runtime/assumption.cpp
-  runtime/deoptimization.cpp)
+  runtime/deoptimization.cpp
+  runtime/materialization.cpp)
 
 set(UNIJIT_PROCESSOR "${CMAKE_SYSTEM_PROCESSOR}")
 if(APPLE AND CMAKE_OSX_ARCHITECTURES)
