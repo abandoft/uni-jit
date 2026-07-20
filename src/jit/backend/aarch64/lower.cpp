@@ -112,6 +112,14 @@ class Assembler final {
                      reg(destination));
   }
 
+  void compare_float(int destination, int lhs, int rhs, bool or_equal) {
+    buffer_.emit_u32(0x1E602000U | (reg(rhs) << 16U) | (reg(lhs) << 5U));
+    const std::uint32_t inverse_condition = or_equal ? 0x8U : 0x5U;
+    buffer_.emit_u32(0x9A800400U | (reg(31) << 16U) |
+                     (inverse_condition << 12U) | (reg(31) << 5U) |
+                     reg(destination));
+  }
+
   void add(int destination, int lhs, int rhs) {
     buffer_.emit_u32(0x8B000000U | (reg(rhs) << 16U) | (reg(lhs) << 5U) |
                      reg(destination));
@@ -898,6 +906,22 @@ LoweringResult lower_control_flow_impl(
                                    kFloatScratch1);
           }
           assembler.move_float_to_word(destination, kFloatScratch0);
+          if (allocated < 0 || allocation.requires_stack[value.id()]) {
+            assembler.store(destination, kStackPointer, destination_offset);
+          }
+          break;
+        }
+        case ir::ControlOpcode::kFloatLessThan:
+        case ir::ControlOpcode::kFloatLessEqual: {
+          const int lhs = load_control_value(
+              &assembler, allocation, node.lhs, block_index, kScratch0);
+          const int rhs = load_control_value(
+              &assembler, allocation, node.rhs, block_index, kScratch1);
+          assembler.move_word_to_float(kFloatScratch0, lhs);
+          assembler.move_word_to_float(kFloatScratch1, rhs);
+          assembler.compare_float(
+              destination, kFloatScratch0, kFloatScratch1,
+              node.opcode == ir::ControlOpcode::kFloatLessEqual);
           if (allocated < 0 || allocation.requires_stack[value.id()]) {
             assembler.store(destination, kStackPointer, destination_offset);
           }

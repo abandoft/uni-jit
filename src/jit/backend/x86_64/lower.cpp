@@ -134,6 +134,22 @@ class Assembler final {
     emit_float_binary(0x5EU, destination, rhs);
   }
 
+  void compare_float(int destination, int lhs, int rhs, bool or_equal) {
+    buffer_.emit_u8(0x66U);
+    emit_float_rex(rhs, lhs);
+    buffer_.emit_u8(0x0FU);
+    buffer_.emit_u8(0x2EU);
+    emit_modrm(3, rhs, lhs);
+    emit_rex(0, destination);
+    buffer_.emit_u8(0x0FU);
+    buffer_.emit_u8(or_equal ? 0x93U : 0x97U);
+    emit_modrm(3, 0, destination);
+    emit_rex(destination, destination);
+    buffer_.emit_u8(0x0FU);
+    buffer_.emit_u8(0xB6U);
+    emit_modrm(3, destination, destination);
+  }
+
   void add(int destination, int lhs, int rhs) {
     prepare_binary(destination, lhs);
     emit_rex(rhs, destination);
@@ -924,6 +940,22 @@ LoweringResult lower_control_flow_impl(
                                    kFloatScratch1);
           }
           assembler.move_float_to_word(destination, kFloatScratch0);
+          if (allocated < 0 || allocation.requires_stack[value.id()]) {
+            assembler.store(destination, kRsp, destination_offset);
+          }
+          break;
+        }
+        case ir::ControlOpcode::kFloatLessThan:
+        case ir::ControlOpcode::kFloatLessEqual: {
+          const int lhs = load_control_value(
+              &assembler, allocation, node.lhs, block_index, kScratch0);
+          const int rhs = load_control_value(
+              &assembler, allocation, node.rhs, block_index, kScratch1);
+          assembler.move_word_to_float(kFloatScratch0, lhs);
+          assembler.move_word_to_float(kFloatScratch1, rhs);
+          assembler.compare_float(
+              destination, kFloatScratch0, kFloatScratch1,
+              node.opcode == ir::ControlOpcode::kFloatLessEqual);
           if (allocated < 0 || allocation.requires_stack[value.id()]) {
             assembler.store(destination, kRsp, destination_offset);
           }

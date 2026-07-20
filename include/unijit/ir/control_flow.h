@@ -46,6 +46,8 @@ enum class ControlOpcode : std::uint8_t {
   kFloatSubtract,
   kFloatMultiply,
   kFloatDivide,
+  kFloatLessThan,
+  kFloatLessEqual,
   kLessThan,
   kLessEqual,
   kSafepoint,
@@ -136,6 +138,8 @@ public:
   Value float64_subtract(Value lhs, Value rhs);
   Value float64_multiply(Value lhs, Value rhs);
   Value float64_divide(Value lhs, Value rhs);
+  Value float64_less_than(Value lhs, Value rhs);
+  Value float64_less_equal(Value lhs, Value rhs);
   Value less_than(Value lhs, Value rhs);
   Value less_equal(Value lhs, Value rhs);
   Value safepoint(std::size_t site);

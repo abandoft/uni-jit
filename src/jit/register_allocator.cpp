@@ -165,6 +165,8 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kFloatSubtract:
         case ir::ControlOpcode::kFloatMultiply:
         case ir::ControlOpcode::kFloatDivide:
+        case ir::ControlOpcode::kFloatLessThan:
+        case ir::ControlOpcode::kFloatLessEqual:
         case ir::ControlOpcode::kLessThan:
         case ir::ControlOpcode::kLessEqual:
           note_local_use(node.lhs);
@@ -250,6 +252,8 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kFloatSubtract:
         case ir::ControlOpcode::kFloatMultiply:
         case ir::ControlOpcode::kFloatDivide:
+        case ir::ControlOpcode::kFloatLessThan:
+        case ir::ControlOpcode::kFloatLessEqual:
         case ir::ControlOpcode::kLessThan:
         case ir::ControlOpcode::kLessEqual:
           note_nonlocal_use(block_index, node.lhs);

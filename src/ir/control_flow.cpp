@@ -30,6 +30,8 @@ bool is_binary(ControlOpcode opcode) {
   case ControlOpcode::kFloatSubtract:
   case ControlOpcode::kFloatMultiply:
   case ControlOpcode::kFloatDivide:
+  case ControlOpcode::kFloatLessThan:
+  case ControlOpcode::kFloatLessEqual:
   case ControlOpcode::kLessThan:
   case ControlOpcode::kLessEqual:
     return true;
@@ -251,6 +253,14 @@ Status verify_impl(const ControlFlowFunction &function) {
           return invalid_control_flow(
               value.id(), "Float64 CFG arithmetic has incompatible types");
         }
+      } else if (node.opcode == ControlOpcode::kFloatLessThan ||
+                 node.opcode == ControlOpcode::kFloatLessEqual) {
+        if (node.type != ValueType::kWord ||
+            lhs_type != ValueType::kFloat64 ||
+            rhs_type != ValueType::kFloat64) {
+          return invalid_control_flow(
+              value.id(), "Float64 CFG comparison has incompatible types");
+        }
       } else if (node.type != ValueType::kWord ||
                  lhs_type != ValueType::kWord ||
                  rhs_type != ValueType::kWord) {
@@ -327,6 +337,12 @@ Word evaluate_node(ControlOpcode opcode, Word lhs, Word rhs) noexcept {
   }
   if (opcode == ControlOpcode::kFloatDivide) {
     return pack_float64(unpack_float64(lhs) / unpack_float64(rhs));
+  }
+  if (opcode == ControlOpcode::kFloatLessThan) {
+    return unpack_float64(lhs) < unpack_float64(rhs) ? 1 : 0;
+  }
+  if (opcode == ControlOpcode::kFloatLessEqual) {
+    return unpack_float64(lhs) <= unpack_float64(rhs) ? 1 : 0;
   }
   if (opcode == ControlOpcode::kLessThan) {
     return lhs < rhs ? 1 : 0;
@@ -473,6 +489,16 @@ Value ControlFlowBuilder::float64_multiply(Value lhs, Value rhs) {
 Value ControlFlowBuilder::float64_divide(Value lhs, Value rhs) {
   return append_binary(ControlOpcode::kFloatDivide, lhs, rhs,
                        ValueType::kFloat64);
+}
+
+Value ControlFlowBuilder::float64_less_than(Value lhs, Value rhs) {
+  return append_binary(ControlOpcode::kFloatLessThan, lhs, rhs,
+                       ValueType::kWord);
+}
+
+Value ControlFlowBuilder::float64_less_equal(Value lhs, Value rhs) {
+  return append_binary(ControlOpcode::kFloatLessEqual, lhs, rhs,
+                       ValueType::kWord);
 }
 
 Value ControlFlowBuilder::less_than(Value lhs, Value rhs) {
