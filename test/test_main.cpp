@@ -556,10 +556,11 @@ void test_float64_nonzero_guard() {
   FunctionBuilder builder(
       std::vector<unijit::ir::ValueType>(2,
                                          unijit::ir::ValueType::kFloat64));
-  const Value guard = builder.guard_float64_nonzero(builder.parameter(1), 77);
+  const Value numerator = builder.parameter(0);
+  const Value divisor = builder.parameter(1);
+  const Value guard = builder.guard_float64_nonzero(divisor, 77);
   expect(guard.valid(), "Float64 nonzero guard must produce an effect value");
-  const Value quotient =
-      builder.float64_divide(builder.parameter(0), builder.parameter(1));
+  const Value quotient = builder.float64_divide(numerator, divisor);
   expect(builder.set_return(quotient).ok(),
          "guarded Float64 division fixture must record its result");
   const Function function = std::move(builder).build();
@@ -641,12 +642,21 @@ void test_float64_nonzero_guard() {
     unijit::runtime::ExecutionContext native_context;
     const auto rejected_by_native = compilation.function->invoke(
         invalid.data(), invalid.size(), &native_context);
+    const auto captured =
+        compilation.function->reconstruct_stack_map(native_context);
+    const auto* captured_numerator = captured.capture.find(numerator);
+    const auto* captured_divisor = captured.capture.find(divisor);
     expect(!rejected_by_native.ok() &&
                native_context.exit_reason() ==
                    unijit::runtime::ExitReason::kRuntime &&
                native_context.exit_site() == 77 &&
-               native_context.exit_value() == invalid[1],
-           "native guard must publish its stable exit site and value bits");
+               native_context.exit_value() == invalid[1] && captured.ok() &&
+               captured.capture.kind == unijit::jit::StackMapKind::kGuard &&
+               captured_numerator != nullptr &&
+               captured_numerator->value_bits == invalid[0] &&
+               captured_divisor != nullptr &&
+               captured_divisor->value_bits == invalid[1],
+           "native guards must publish their exit and captured live Float64 bits");
   }
 }
 
@@ -743,13 +753,17 @@ void test_deoptimization_reconstruction() {
              publication.handle.stack_maps()->size() == 1 &&
              publication.handle.stack_map(113) != nullptr,
          "code-cache leases must retain deoptimization and stack-map metadata");
+  cache.clear();
   const auto cached_reconstruction =
       publication.handle.reconstruct_deoptimization(
           113, arguments.data(), arguments.size(), context);
+  const auto cached_stack_map =
+      publication.handle.reconstruct_stack_map(context);
   expect(cached_reconstruction.ok() &&
              cached_reconstruction.frame.find(3) != nullptr &&
-             cached_reconstruction.frame.find(3)->value == arguments[1],
-         "cached execution leases must reconstruct diagnosed exits");
+             cached_reconstruction.frame.find(3)->value == arguments[1] &&
+             cached_stack_map.ok() && cached_stack_map.capture.values.size() == 2,
+         "cached execution leases must reconstruct diagnosed exits and live SSA values");
 
   unijit::runtime::DeoptimizationRecord unknown_site = record;
   unknown_site.site = 999;
@@ -835,6 +849,26 @@ void test_runtime_exit_site_identity() {
              !Compiler::compile(std::move(assumed_builder).build(), assumptions)
                   .ok(),
          "assumptions and explicit runtime exits must not share a site");
+
+  constexpr std::size_t kOverCapacity =
+      unijit::runtime::ExecutionContext::kMaximumCapturedValues + 1;
+  FunctionBuilder oversized_builder(kOverCapacity);
+  expect(oversized_builder.safepoint(94).valid(),
+         "capture-capacity fixture must contain a safepoint");
+  Value sum = oversized_builder.parameter(0);
+  for (std::size_t index = 1; index < kOverCapacity; ++index) {
+    sum = oversized_builder.add(sum, oversized_builder.parameter(index));
+  }
+  expect(oversized_builder.set_return(sum).ok(),
+         "capture-capacity fixture must return all live parameters");
+  const auto oversized = Compiler::compile(
+      std::move(oversized_builder).build(),
+      unijit::jit::CompilationOptions{
+          unijit::jit::OptimizationLevel::kBaseline});
+  expect(!oversized.ok() &&
+             oversized.status.code() ==
+                 unijit::StatusCode::kResourceExhausted,
+         "compilation must reject a stack map larger than its fixed capture area");
 }
 
 void test_verifier_rejects_mixed_arithmetic() {
@@ -1704,18 +1738,31 @@ void test_control_flow_safepoint() {
     context.request_interrupt();
     const auto interrupted =
         compilation.function->invoke(args.data(), args.size(), &context);
+    const auto captured =
+        compilation.function->reconstruct_stack_map(context);
+    const auto* captured_remaining = captured.capture.find(remaining);
+    const auto* captured_sum = captured.capture.find(sum);
+    const auto* captured_zero = captured.capture.find(zero);
+    const auto* captured_one = captured.capture.find(one);
     expect(!interrupted.ok() &&
                interrupted.status.code() ==
                    unijit::StatusCode::kExecutionInterrupted &&
                interrupted.status.location() == 314 &&
-               context.exit_site() == 314,
-           "native CFG loop must exit at the requested safepoint");
+               context.exit_site() == 314 && captured.ok() &&
+               captured_remaining != nullptr &&
+               captured_remaining->value_bits == 4 &&
+               captured_sum != nullptr && captured_sum->value_bits == 0 &&
+               captured_zero != nullptr && captured_zero->value_bits == 0 &&
+               captured_one != nullptr && captured_one->value_bits == 1,
+           "native CFG loop must exit with its complete live iteration state");
 
     context.clear_interrupt();
     const auto completed =
         compilation.function->invoke(args.data(), args.size(), &context);
-    expect(completed.ok() && completed.value == 10,
-           "native CFG loop must continue when interruption is clear");
+    expect(completed.ok() && completed.value == 10 &&
+               context.captured_value_count() == 0 &&
+               !compilation.function->reconstruct_stack_map(context).ok(),
+           "successful invocation must clear stale captured stack-map state");
     const auto completed_with_local_context =
         compilation.function->invoke(args.data(), args.size());
     expect(completed_with_local_context.ok() &&
@@ -1753,6 +1800,19 @@ void test_control_flow_stack_map_edge_liveness() {
              stack_map->find(parameter) != nullptr &&
              stack_map->find(result) == nullptr,
          "CFG stack maps must translate live successor parameters to edge arguments");
+
+  const std::array<Word, 1> arguments = {27};
+  unijit::runtime::ExecutionContext context;
+  context.request_interrupt();
+  const auto interrupted = compilation.function->invoke(
+      arguments.data(), arguments.size(), &context);
+  const auto captured =
+      compilation.function->reconstruct_stack_map(context);
+  const auto* captured_parameter = captured.capture.find(parameter);
+  expect(!interrupted.ok() && captured.ok() &&
+             captured_parameter != nullptr &&
+             captured_parameter->value_bits == arguments[0],
+         "captured CFG edge state must survive native frame restoration");
 }
 
 void test_assumption_invalidation() {

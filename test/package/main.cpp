@@ -90,9 +90,13 @@ int main() {
   const auto reconstructed =
       guarded_publication.handle.reconstruct_deoptimization(
           17, zero.data(), zero.size(), context);
+  const auto captured =
+      guarded_publication.handle.reconstruct_stack_map(context);
   const auto *recovered = reconstructed.frame.find(0);
   if (guarded_result.ok() || !reconstructed.ok() || recovered == nullptr ||
-      recovered->value != zero[0]) {
+      recovered->value != zero[0] || !captured.ok() ||
+      captured.capture.values.size() != 1 ||
+      captured.capture.values[0].value_bits != zero[0]) {
     return 12;
   }
 
