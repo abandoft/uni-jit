@@ -1,6 +1,7 @@
 ## 0.1.4
 
 - Added IEEE-754 Float64 division to typed SSA and every native backend, with guarded Lua 5.5 and QuickJS frontend support.
+- Added chained Float64 constant folding for addition, subtraction, multiplication, and division.
 
 ## 0.1.3
 
