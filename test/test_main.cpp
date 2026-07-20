@@ -2363,6 +2363,120 @@ void test_control_flow_parallel_edge_copy() {
   }
 }
 
+void test_control_flow_float64_parallel_edge_copy() {
+  using unijit::ir::Block;
+  using unijit::ir::ControlFlowBuilder;
+  using unijit::ir::ValueType;
+
+  ControlFlowBuilder builder(
+      {ValueType::kWord, ValueType::kFloat64, ValueType::kFloat64});
+  const Block loop = builder.create_block(
+      {ValueType::kWord, ValueType::kFloat64, ValueType::kFloat64});
+  const Block exit =
+      builder.create_block({ValueType::kFloat64, ValueType::kFloat64});
+  expect(builder
+             .jump(loop, {builder.parameter(0), builder.parameter(1),
+                          builder.parameter(2)})
+             .ok(),
+         "Float64 parallel-copy fixture must enter its loop");
+
+  expect(builder.set_insertion_block(loop).ok(),
+         "Float64 parallel-copy loop must exist");
+  const Value remaining = builder.block_parameter(loop, 0);
+  const Value lhs = builder.block_parameter(loop, 1);
+  const Value rhs = builder.block_parameter(loop, 2);
+  const Value next_remaining =
+      builder.subtract(remaining, builder.constant(1));
+  const Value continues =
+      builder.less_than(builder.constant(0), next_remaining);
+  expect(builder
+             .branch(continues, loop, {next_remaining, rhs, lhs}, exit,
+                     {rhs, lhs})
+             .ok(),
+         "Float64 backedge must swap native register values in parallel");
+
+  expect(builder.set_insertion_block(exit).ok(),
+         "Float64 parallel-copy exit must exist");
+  const Value encoded = builder.float64_add(
+      builder.float64_multiply(builder.block_parameter(exit, 0),
+                               builder.float64_constant(100.0)),
+      builder.block_parameter(exit, 1));
+  expect(builder.set_return(encoded).ok(),
+         "Float64 parallel-copy exit must encode both values");
+  const auto function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "Float64 parallel-copy CFG must verify");
+
+  const std::array<Word, 3> arguments = {
+      3, unijit::ir::pack_float64(3.25),
+      unijit::ir::pack_float64(7.5)};
+  const auto interpreted = unijit::ir::ControlFlowInterpreter::evaluate(
+      function, arguments.data(), arguments.size());
+  auto compilation = Compiler::compile(function);
+  expect(interpreted.ok() &&
+             interpreted.value == unijit::ir::pack_float64(753.25) &&
+             compilation.ok(),
+         "Float64 register-cycle fixture must interpret and compile");
+  if (compilation.ok()) {
+    const auto native =
+        compilation.function->invoke(arguments.data(), arguments.size());
+    expect(native.ok() && native.value == interpreted.value,
+           "native Float64 edge cycles must preserve parallel semantics");
+  }
+}
+
+void test_control_flow_float64_edge_spill_copy() {
+  using unijit::ir::Block;
+  using unijit::ir::ControlFlowBuilder;
+  using unijit::ir::ValueType;
+
+  constexpr std::size_t kValueCount = 10;
+  const std::vector<ValueType> types(kValueCount, ValueType::kFloat64);
+  ControlFlowBuilder builder(types);
+  const Block merge = builder.create_block(types);
+  std::vector<Value> reversed;
+  reversed.reserve(kValueCount);
+  for (std::size_t index = kValueCount; index > 0; --index) {
+    reversed.push_back(builder.parameter(index - 1));
+  }
+  expect(builder.jump(merge, reversed).ok(),
+         "oversubscribed Float64 edge must accept all values");
+  expect(builder.set_insertion_block(merge).ok(),
+         "oversubscribed Float64 merge must exist");
+  Value encoded = builder.float64_constant(0.0);
+  double expected = 0.0;
+  std::array<Word, kValueCount> arguments{};
+  for (std::size_t index = 0; index < kValueCount; ++index) {
+    const double input = static_cast<double>(index + 1);
+    arguments[index] = unijit::ir::pack_float64(input);
+    const double weight = static_cast<double>(index + 1);
+    encoded = builder.float64_add(
+        encoded,
+        builder.float64_multiply(builder.block_parameter(merge, index),
+                                 builder.float64_constant(weight)));
+    expected += static_cast<double>(kValueCount - index) * weight;
+  }
+  expect(builder.set_return(encoded).ok(),
+         "oversubscribed Float64 merge must return its weighted state");
+  const auto function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "oversubscribed Float64 edge CFG must verify");
+
+  const auto interpreted = unijit::ir::ControlFlowInterpreter::evaluate(
+      function, arguments.data(), arguments.size());
+  auto compilation = Compiler::compile(function);
+  expect(interpreted.ok() &&
+             interpreted.value == unijit::ir::pack_float64(expected) &&
+             compilation.ok(),
+         "Float64 spill-copy fixture must interpret and compile");
+  if (compilation.ok()) {
+    const auto native =
+        compilation.function->invoke(arguments.data(), arguments.size());
+    expect(native.ok() && native.value == interpreted.value,
+           "native Float64 spill copies must preserve every edge value");
+  }
+}
+
 void test_control_flow_preserves_nonlocal_merge_state() {
   using unijit::ir::ValueType;
   const std::vector<ValueType> state_types(4, ValueType::kFloat64);
@@ -3412,6 +3526,8 @@ int main() {
   test_control_flow_float64_comparisons();
   test_control_flow_merge();
   test_control_flow_parallel_edge_copy();
+  test_control_flow_float64_parallel_edge_copy();
+  test_control_flow_float64_edge_spill_copy();
   test_control_flow_preserves_nonlocal_merge_state();
   test_control_flow_rejects_non_dominating_value();
   test_control_flow_safepoint();
