@@ -61,4 +61,8 @@ if(Python3_Interpreter_FOUND)
   add_test(
     NAME unijit.release_tool
     COMMAND "${Python3_EXECUTABLE}" "${PROJECT_SOURCE_DIR}/test/release_tool_test.py")
+  add_test(
+    NAME unijit.performance_gate_tool
+    COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/test/performance_gate_test.py")
 endif()
