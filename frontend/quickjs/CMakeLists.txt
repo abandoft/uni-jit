@@ -39,13 +39,35 @@ set_target_properties(unijit_quickjs_reference PROPERTIES
   C_VISIBILITY_PRESET hidden
   POSITION_INDEPENDENT_CODE ON)
 
+add_library(unijit_quickjs_frontend STATIC source_translator.cpp)
+target_include_directories(unijit_quickjs_frontend
+  PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_compile_features(unijit_quickjs_frontend PRIVATE cxx_std_17)
+target_link_libraries(unijit_quickjs_frontend
+  PUBLIC UniJIT::unijit unijit_quickjs_reference)
+set_target_properties(unijit_quickjs_frontend PROPERTIES
+  ARCHIVE_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/lib")
+
+if(MSVC)
+  target_compile_options(unijit_quickjs_frontend PRIVATE /W4 /permissive-)
+  if(UNIJIT_WARNINGS_AS_ERRORS)
+    target_compile_options(unijit_quickjs_frontend PRIVATE /WX)
+  endif()
+else()
+  target_compile_options(unijit_quickjs_frontend PRIVATE
+    -Wall -Wextra -Wpedantic)
+  if(UNIJIT_WARNINGS_AS_ERRORS)
+    target_compile_options(unijit_quickjs_frontend PRIVATE -Werror)
+  endif()
+endif()
+
 if(UNIJIT_BUILD_TESTS)
   add_executable(unijit_quickjs_tests
     "${PROJECT_SOURCE_DIR}/test/quickjs_frontend_test.cpp")
   target_compile_features(unijit_quickjs_tests PRIVATE cxx_std_17)
   target_include_directories(unijit_quickjs_tests SYSTEM
     PRIVATE "${UNIJIT_QUICKJS_INCLUDE_DIR}")
-  target_link_libraries(unijit_quickjs_tests PRIVATE unijit_quickjs_reference)
+  target_link_libraries(unijit_quickjs_tests PRIVATE unijit_quickjs_frontend)
   set_target_properties(unijit_quickjs_tests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin")
 
