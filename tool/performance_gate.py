@@ -91,6 +91,7 @@ def evaluate(
     return {
         "schema": "unijit.performance-gate.v1",
         "target": target,
+        "passed": True,
         "source_schema": expected_schema,
         "measurement_boundary": "complete_numeric_loop",
         "requirements": requirements,
@@ -152,6 +153,18 @@ def main() -> int:
             }
         result = evaluate(arguments.target, document, thresholds)
     except GateError as error:
+        print(
+            json.dumps(
+                {
+                    "schema": "unijit.performance-gate.v1",
+                    "target": arguments.target,
+                    "passed": False,
+                    "error": str(error),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
         print(f"performance gate failed: {error}", file=sys.stderr)
         return 1
     print(json.dumps(result, indent=2, sort_keys=True))

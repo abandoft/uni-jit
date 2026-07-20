@@ -25,6 +25,7 @@ class PerformanceGateTest(unittest.TestCase):
             {"stock_lua": 1.25, "luajit": 1.10},
         )
         self.assertEqual(result["target"], "lua")
+        self.assertTrue(result["passed"])
 
     def test_lua_target_fails_below_luajit(self) -> None:
         with self.assertRaisesRegex(GateError, "luajit ratio"):
