@@ -198,7 +198,8 @@ class Parser final {
     ir::Value value = parse_unary(depth + 1);
     while (value.valid()) {
       skip_space();
-      if (peek() != '*') {
+      const char operation = peek();
+      if (operation != '*' && operation != '/') {
         break;
       }
       ++position_;
@@ -206,7 +207,8 @@ class Parser final {
       if (!rhs.valid()) {
         return {};
       }
-      value = builder_->float64_multiply(value, rhs);
+      value = operation == '*' ? builder_->float64_multiply(value, rhs)
+                               : builder_->float64_divide(value, rhs);
     }
     return value;
   }
