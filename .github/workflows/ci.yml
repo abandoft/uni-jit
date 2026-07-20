@@ -122,6 +122,40 @@ jobs:
           --warmup 10000 --iterations 100000 --samples 3
           > build/quickjs/quickjs-call.json
 
+  pocketpy-reference-baseline:
+    name: PocketPy 2.1.8 frontend and baseline
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Configure stock PocketPy and UniJIT frontend
+        run: >-
+          cmake -S . -B build/pocketpy -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DUNIJIT_BUILD_TESTS=ON
+          -DUNIJIT_BUILD_BENCHMARKS=ON
+          -DUNIJIT_WARNINGS_AS_ERRORS=ON
+          -DUNIJIT_BUILD_POCKETPY_REFERENCE=ON
+
+      - name: Build PocketPy frontend and benchmark
+        run: >-
+          cmake --build build/pocketpy --parallel
+          --target unijit_pocketpy_reference_tests
+          unijit_pocketpy_translator_tests unijit_pocketpy_benchmark
+
+      - name: Test PocketPy frontend
+        run: >-
+          ctest --test-dir build/pocketpy --output-on-failure
+          -R unijit.pocketpy_
+
+      - name: Compare stock PocketPy and UniJIT calls
+        run: >-
+          build/pocketpy/bin/unijit_pocketpy_benchmark
+          --warmup 10000 --iterations 100000 --samples 3
+          > build/pocketpy/pocketpy-call.json
+
   build-and-test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -151,6 +185,8 @@ jobs:
             cxx: cl
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       - name: Configure Unix
         if: runner.os != 'Windows'
@@ -160,12 +196,14 @@ jobs:
         run: >-
           cmake -S . -B build/ci -G Ninja
           -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DUNIJIT_BUILD_POCKETPY_REFERENCE=ON
           -DUNIJIT_WARNINGS_AS_ERRORS=ON
 
       - name: Configure Windows
         if: runner.os == 'Windows'
         run: >-
           cmake -S . -B build/ci -A x64
+          -DUNIJIT_BUILD_POCKETPY_REFERENCE=ON
           -DUNIJIT_WARNINGS_AS_ERRORS=ON
 
       - name: Build
@@ -211,11 +249,14 @@ jobs:
       CXX: clang++
     steps:
       - uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       - name: Configure
         run: >-
           cmake -S . -B build/sanitize -G Ninja
           -DCMAKE_BUILD_TYPE=Debug
+          -DUNIJIT_BUILD_POCKETPY_REFERENCE=ON
           -DUNIJIT_WARNINGS_AS_ERRORS=ON
           -DCMAKE_C_FLAGS=-fsanitize=address,undefined
           -DCMAKE_CXX_FLAGS=-fsanitize=address,undefined
