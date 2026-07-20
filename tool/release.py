@@ -105,6 +105,24 @@ def validate_changelog(path: Path) -> list[ChangelogSection]:
     return sections
 
 
+def validate_bilingual_alignment(
+    english: list[ChangelogSection], chinese: list[ChangelogSection]
+) -> None:
+    if [section.version for section in english] != [
+        section.version for section in chinese
+    ]:
+        raise ReleaseError("English and Chinese changelog versions do not match")
+    for english_section, chinese_section in zip(english, chinese):
+        english_updates = len(english_section.body.splitlines())
+        chinese_updates = len(chinese_section.body.splitlines())
+        if english_updates != chinese_updates:
+            raise ReleaseError(
+                f"English and Chinese changelog section "
+                f"{english_section.version} update counts differ: "
+                f"{english_updates} != {chinese_updates}"
+            )
+
+
 def check(tag: str | None) -> tuple[Version, list[ChangelogSection]]:
     current = project_version()
     english = validate_changelog(ROOT / "CHANGELOG.md")
@@ -115,10 +133,7 @@ def check(tag: str | None) -> tuple[Version, list[ChangelogSection]]:
             f"CHANGELOG.md newest version {english[0].version} "
             f"does not match project version {current}"
         )
-    if [section.version for section in english] != [
-        section.version for section in chinese
-    ]:
-        raise ReleaseError("English and Chinese changelog versions do not match")
+    validate_bilingual_alignment(english, chinese)
     if tag is not None and tag != f"v{current}":
         raise ReleaseError(f"tag {tag!r} does not match project version v{current}")
     return current, english

@@ -9,7 +9,12 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tool"))
 
-from release import ReleaseError, Version, validate_changelog  # noqa: E402
+from release import (  # noqa: E402
+    ReleaseError,
+    Version,
+    validate_bilingual_alignment,
+    validate_changelog,
+)
 
 
 class VersionTest(unittest.TestCase):
@@ -48,6 +53,24 @@ class ChangelogTest(unittest.TestCase):
     def test_empty_bullet_is_rejected(self) -> None:
         with self.assertRaisesRegex(ReleaseError, "one complete '- ' update"):
             self.validate("## 0.1.2\n\n- Complete update.\n- \n")
+
+    def test_bilingual_update_count_mismatch_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            english_path = root / "CHANGELOG.md"
+            chinese_path = root / "CHANGELOG-ZH.md"
+            english_path.write_text(
+                "## 0.1.2\n\n- First update.\n- Second update.\n",
+                encoding="utf-8",
+            )
+            chinese_path.write_text(
+                "## 0.1.2\n\n- 第一条更新。\n", encoding="utf-8"
+            )
+            with self.assertRaisesRegex(ReleaseError, "update counts differ"):
+                validate_bilingual_alignment(
+                    validate_changelog(english_path),
+                    validate_changelog(chinese_path),
+                )
 
 
 if __name__ == "__main__":
