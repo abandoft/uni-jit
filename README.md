@@ -9,7 +9,8 @@ allocation, native machine-code encoders, and hardened executable-memory
 management. Third-party JIT projects under `third/` are references and
 benchmark competitors; UniJIT does not link against them as its backend.
 
-Native integer backends currently target AArch64, x86-64, and RISC-V 64.
+Native Word and Float64 backends currently target AArch64, x86-64, and
+RISC-V 64.
 See [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) for the design and delivery
 gates, [doc/PORTABILITY.md](doc/PORTABILITY.md) for verified platforms, and
 [doc/LUA_FRONTEND.md](doc/LUA_FRONTEND.md) for the first stock Lua 5.5

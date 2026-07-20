@@ -1,5 +1,7 @@
 ## 0.1.2
 
+- Added typed Float64 SSA constants and arithmetic, an IEEE-754 interpreter
+  oracle, optimized spill handling, and native encoding on all three targets.
 - Added block-local CFG register allocation and cycle-safe parallel register
   copies on every native backend, removing hot-loop stack traffic.
 - Renamed the project-owned frontend, tool, and documentation directories to

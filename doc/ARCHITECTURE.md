@@ -48,6 +48,13 @@ allocation, native encoder, and executable-memory boundary that later tiers
 will use. This makes the bootstrap implementation extensible instead of a
 throwaway assembler demo.
 
+The straight-line IR is type checked for 64-bit words and IEEE-754 Float64
+values. Floating-point parameters, constants, arithmetic, register spills,
+and results use a uniform 64-bit value-bits calling convention suited to
+dynamic-language runtimes. Each backend keeps Float64 values in its native
+floating-point register bank and only transfers result bits to the shared
+return register at the compiled-function boundary.
+
 The optimizing tier adds a separate CFG SSA representation with explicit
 basic-block parameters. Predecessor edges supply every block argument, making
 phi semantics visible in construction, verification, interpretation, and
