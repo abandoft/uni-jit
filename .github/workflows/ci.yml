@@ -271,6 +271,8 @@ jobs:
       - name: Diagnose PocketPy sanitizer failure
         if: failure()
         run: |
+          sudo apt-get update
+          sudo apt-get install --yes gdb
           ASAN_OPTIONS=handle_segv=0:detect_leaks=0 gdb --batch \
             -ex 'break frontend/pocketpy/jit_module.cpp:100' \
             -ex run \
