@@ -1,4 +1,5 @@
 #include <array>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -81,8 +82,53 @@ int main() {
       guarded_publication.handle.reconstruct_deoptimization(
           17, zero.data(), zero.size(), context);
   const auto *recovered = reconstructed.frame.find(0);
-  return !guarded_result.ok() && reconstructed.ok() && recovered != nullptr &&
-                 recovered->value == zero[0]
+  if (guarded_result.ok() || !reconstructed.ok() || recovered == nullptr ||
+      recovered->value != zero[0]) {
+    return 12;
+  }
+
+  unijit::ir::FunctionBuilder assumed_builder(1);
+  if (!assumed_builder
+           .set_return(assumed_builder.add(assumed_builder.parameter(0),
+                                           assumed_builder.constant(1)))
+           .ok()) {
+    return 13;
+  }
+  auto assumption = std::make_shared<unijit::runtime::Assumption>();
+  unijit::runtime::AssumptionSet assumptions;
+  if (!assumptions.add(assumption, 19, 11).ok()) {
+    return 14;
+  }
+  auto assumed_compilation = unijit::jit::Compiler::compile(
+      std::move(assumed_builder).build(), assumptions);
+  if (!assumed_compilation.ok()) {
+    return 15;
+  }
+  auto assumed_publication = cache.publish(
+      "package-consumer-assumption", 3,
+      std::move(assumed_compilation.function));
+  const std::array<unijit::ir::Word, 1> assumed_arguments = {41};
+  const auto assumed_valid = assumed_publication.handle.invoke(
+      assumed_arguments.data(), assumed_arguments.size());
+  if (!assumed_publication.ok() ||
+      assumed_publication.handle.assumption_count() != 1 ||
+      !assumed_valid.ok() || assumed_valid.value != 42) {
+    return 16;
+  }
+  if (!assumption->invalidate()) {
+    return 17;
+  }
+  unijit::runtime::ExecutionContext invalidation_context;
+  const auto assumed_invalid = assumed_publication.handle.invoke(
+      assumed_arguments.data(), assumed_arguments.size(),
+      &invalidation_context);
+  const auto assumed_frame =
+      assumed_publication.handle.reconstruct_deoptimization(
+          19, assumed_arguments.data(), assumed_arguments.size(),
+          invalidation_context);
+  return !assumed_invalid.ok() && assumed_frame.ok() &&
+                 assumed_frame.frame.find(0) != nullptr &&
+                 assumed_frame.frame.find(0)->value == 41
              ? 0
-             : 12;
+             : 18;
 }

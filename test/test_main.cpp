@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <random>
 #include <string>
 #include <thread>
@@ -648,6 +649,14 @@ void test_deoptimization_reconstruction() {
   expect(invalid_metadata.add(unknown_site).ok() &&
              !Compiler::compile(function, invalid_metadata).ok(),
          "compilation must reject metadata for a nonexistent guard site");
+
+  auto colliding_assumption =
+      std::make_shared<unijit::runtime::Assumption>();
+  unijit::runtime::AssumptionSet colliding_assumptions;
+  expect(colliding_assumptions.add(colliding_assumption, 113, 29).ok() &&
+             !Compiler::compile(function, metadata, colliding_assumptions)
+                  .ok(),
+         "runtime guards and assumptions must not share an exit site");
 }
 
 void test_constant_float64_nonzero_guard_elimination() {
@@ -1408,6 +1417,145 @@ void test_control_flow_safepoint() {
   }
 }
 
+void test_assumption_invalidation() {
+  unijit::ir::ControlFlowBuilder builder(1);
+  const unijit::ir::Block loop = builder.create_block(1);
+  const unijit::ir::Block exit = builder.create_block(1);
+  const Value zero = builder.constant(0);
+  const Value one = builder.constant(1);
+  expect(builder.jump(loop, {builder.parameter(0)}).ok(),
+         "assumption fixture must enter its loop");
+
+  expect(builder.set_insertion_block(loop).ok(),
+         "assumption fixture loop must exist");
+  const Value remaining = builder.block_parameter(loop, 0);
+  expect(builder.safepoint(401).valid(),
+         "assumption fixture must contain a safepoint");
+  const Value next = builder.subtract(remaining, one);
+  const Value continues = builder.less_than(zero, next);
+  expect(builder.branch(continues, loop, {next}, exit, {next}).ok(),
+         "assumption fixture must branch to its backedge and exit");
+  expect(builder.set_insertion_block(exit).ok(),
+         "assumption fixture exit must exist");
+  expect(builder.set_return(builder.block_parameter(exit, 0)).ok(),
+         "assumption fixture must return its loop state");
+  const unijit::ir::ControlFlowFunction function = std::move(builder).build();
+
+  auto assumption = std::make_shared<unijit::runtime::Assumption>();
+  unijit::runtime::AssumptionSet assumptions;
+  expect(assumptions.add(assumption, 2718, 73).ok(),
+         "a valid runtime assumption must be attachable");
+  expect(!assumptions.add(assumption, 2719, 74).ok(),
+         "an assumption token must not be registered twice");
+
+  unijit::runtime::DeoptimizationRecord wrong_reason;
+  wrong_reason.site = 2718;
+  wrong_reason.resume_offset = 73;
+  wrong_reason.reason = unijit::runtime::DeoptimizationReason::kGuardFailed;
+  unijit::runtime::DeoptimizationTable wrong_metadata;
+  expect(wrong_metadata.add(wrong_reason).ok() &&
+             !Compiler::compile(function, wrong_metadata, assumptions).ok(),
+         "assumption metadata must use the invalidation semantic reason");
+
+  auto compilation = Compiler::compile(function, assumptions);
+  expect(compilation.ok(), "CFG compilation must accept valid assumptions");
+  if (!compilation.ok()) {
+    return;
+  }
+  const auto* record = compilation.function->deoptimization_record(2718);
+  expect(compilation.function->requires_context() &&
+             compilation.function->assumptions().size() == 1 &&
+             record != nullptr && record->resume_offset == 73 &&
+             record->reason ==
+                 unijit::runtime::DeoptimizationReason::kAssumptionInvalidated &&
+             record->recovery.size() == 1,
+         "assumption compilation must publish entry recovery metadata");
+
+  unijit::jit::CodeCache cache;
+  const auto publication = cache.publish(
+      "assumption-fixture", 1, std::move(compilation.function));
+  expect(publication.ok() && publication.handle.assumption_count() == 1,
+         "cached code leases must retain their assumption dependencies");
+  if (!publication.ok()) {
+    return;
+  }
+
+  const std::array<Word, 1> arguments = {1000000000};
+  unijit::runtime::ExecutionContext context;
+  unijit::ir::EvaluationResult outcome;
+  std::thread execution([&] {
+    outcome = publication.handle.invoke(arguments.data(), arguments.size(),
+                                        &context);
+  });
+  bool observed_active = false;
+  for (std::size_t spin = 0; spin < 1000000; ++spin) {
+    if (assumption->active_invocations() != 0) {
+      observed_active = true;
+      break;
+    }
+    std::this_thread::yield();
+  }
+  const bool invalidated = assumption->invalidate();
+  execution.join();
+  expect(observed_active && invalidated && !assumption->valid() &&
+             assumption->active_invocations() == 0,
+         "assumption invalidation must wait for active code to quiesce");
+  expect(!outcome.ok() &&
+             outcome.status.code() == unijit::StatusCode::kRuntimeExit &&
+             outcome.status.location() == 2718 &&
+             context.exit_reason() ==
+                 unijit::runtime::ExitReason::kRuntime &&
+             context.exit_site() == 2718 && !context.exit_poll_requested(),
+         "invalidation must wake native safepoints and report its exit site");
+
+  const auto reconstruction =
+      publication.handle.reconstruct_deoptimization(
+          2718, arguments.data(), arguments.size(), context);
+  const auto* recovered_argument = reconstruction.frame.find(0);
+  expect(reconstruction.ok() && reconstruction.frame.resume_offset == 73 &&
+             recovered_argument != nullptr &&
+             recovered_argument->value == arguments[0],
+         "assumption exits must reconstruct the original entry frame");
+
+  auto replacement_assumption =
+      std::make_shared<unijit::runtime::Assumption>();
+  unijit::runtime::AssumptionSet replacement_assumptions;
+  expect(replacement_assumptions.add(replacement_assumption, 2718, 73).ok(),
+         "replacement code must bind a fresh assumption token");
+  auto replacement_compilation =
+      Compiler::compile(function, replacement_assumptions);
+  const auto replacement = cache.publish(
+      "assumption-fixture", 1, std::move(replacement_compilation.function));
+  const std::array<Word, 1> short_arguments = {4};
+  const auto replacement_result = replacement.handle.invoke(
+      short_arguments.data(), short_arguments.size());
+  expect(replacement_compilation.status.ok() && replacement.ok() &&
+             !replacement.reused &&
+             replacement.handle.generation() != publication.handle.generation() &&
+             replacement_result.ok() && replacement_result.value == 0 &&
+             cache.stats().assumption_invalidations == 1,
+         "cache publication must replace an assumption-invalid generation");
+  expect(replacement_assumption->invalidate() &&
+             !cache.find("assumption-fixture", 1).valid() &&
+             cache.stats().assumption_invalidations == 2,
+         "cache lookup must retire an assumption-invalid generation");
+
+  context.request_interrupt();
+  const auto rejected_again = publication.handle.invoke(
+      arguments.data(), arguments.size(), &context);
+  expect(!rejected_again.ok() &&
+             rejected_again.status.code() ==
+                 unijit::StatusCode::kRuntimeExit &&
+             rejected_again.status.location() == 2718 &&
+             context.interrupt_requested(),
+         "entry invalidation must preserve an independent sticky interrupt");
+  context.clear_interrupt();
+  expect(!assumption->invalidate(),
+         "repeated assumption invalidation must be idempotent");
+  expect(!Compiler::compile(function, assumptions).ok(),
+         "compilation must reject an already invalidated assumption");
+}
+
 void test_control_flow_execution_budget() {
   unijit::ir::ControlFlowBuilder builder(0);
   const unijit::ir::Block loop = builder.create_block(0);
@@ -1467,6 +1615,7 @@ int main() {
   test_control_flow_preserves_nonlocal_merge_state();
   test_control_flow_rejects_non_dominating_value();
   test_control_flow_safepoint();
+  test_assumption_invalidation();
   test_control_flow_execution_budget();
   test_control_flow_builder_rejects_edge_arity();
 

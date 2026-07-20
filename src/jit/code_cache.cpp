@@ -24,6 +24,10 @@ bool CodeHandle::requires_context() const noexcept {
   return function_ != nullptr && function_->requires_context();
 }
 
+std::size_t CodeHandle::assumption_count() const noexcept {
+  return function_ == nullptr ? 0 : function_->assumptions().size();
+}
+
 const CompilationStats* CodeHandle::compilation_stats() const noexcept {
   return function_ == nullptr ? nullptr : &function_->stats();
 }
@@ -131,6 +135,12 @@ CodeHandle CodeCache::find(std::string_view key, std::uint64_t fingerprint) {
       ++impl_->statistics.misses;
       return {};
     }
+    if (entry->second.function->assumptions().first_invalid() != nullptr) {
+      impl_->erase(entry);
+      ++impl_->statistics.misses;
+      ++impl_->statistics.assumption_invalidations;
+      return {};
+    }
     ++impl_->statistics.hits;
     entry->second.last_access = impl_->next_stamp();
     return {entry->second.function, entry->second.generation};
@@ -166,16 +176,22 @@ CodeCachePublication CodeCache::publish(
     auto existing = impl_->entries.find(owned_key);
     if (existing != impl_->entries.end() &&
         existing->second.fingerprint == fingerprint) {
-      ++impl_->statistics.publication_reuses;
-      existing->second.last_access = impl_->next_stamp();
-      return {Status::ok_status(),
-              {existing->second.function, existing->second.generation}, true,
-              true};
+      if (existing->second.function->assumptions().first_invalid() == nullptr) {
+        ++impl_->statistics.publication_reuses;
+        existing->second.last_access = impl_->next_stamp();
+        return {Status::ok_status(),
+                {existing->second.function, existing->second.generation}, true,
+                true};
+      }
+      impl_->erase(existing);
+      ++impl_->statistics.assumption_invalidations;
+      existing = impl_->entries.end();
     }
 
     const std::uint64_t code_generation = impl_->next_code_generation();
     CodeHandle uncached(shared, code_generation);
-    if (impl_->limits.maximum_entries == 0 ||
+    if (shared->assumptions().first_invalid() != nullptr ||
+        impl_->limits.maximum_entries == 0 ||
         code_bytes > impl_->limits.maximum_code_bytes) {
       ++impl_->statistics.uncached_publications;
       return {Status::ok_status(), std::move(uncached), false, false};

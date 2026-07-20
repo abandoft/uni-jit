@@ -26,6 +26,7 @@ struct CodeCacheStats final {
   std::uint64_t uncached_publications{0};
   std::uint64_t replacements{0};
   std::uint64_t invalidations{0};
+  std::uint64_t assumption_invalidations{0};
   std::uint64_t evictions{0};
   std::uint64_t clears{0};
   std::size_t resident_entries{0};
@@ -42,6 +43,7 @@ class CodeHandle final {
   std::uint64_t generation() const noexcept { return generation_; }
   std::size_t parameter_count() const noexcept;
   bool requires_context() const noexcept;
+  std::size_t assumption_count() const noexcept;
   const CompilationStats* compilation_stats() const noexcept;
   const runtime::DeoptimizationRecord* deoptimization_record(
       std::size_t site) const noexcept;

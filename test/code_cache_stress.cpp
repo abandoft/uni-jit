@@ -264,6 +264,8 @@ int main(int argc, char** argv) {
             << ",\"publications\":" << before_clear.publications
             << ",\"replacements\":" << before_clear.replacements
             << ",\"invalidations\":" << before_clear.invalidations
+            << ",\"assumption_invalidations\":"
+            << before_clear.assumption_invalidations
             << ",\"evictions\":" << before_clear.evictions << "}\n";
   return EXIT_SUCCESS;
 }
