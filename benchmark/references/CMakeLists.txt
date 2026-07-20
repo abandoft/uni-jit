@@ -1,0 +1,74 @@
+find_program(UNIJIT_MAKE_EXECUTABLE NAMES gmake make mingw32-make REQUIRED)
+
+execute_process(
+  COMMAND git -C "${PROJECT_SOURCE_DIR}/third/luajit"
+          show -s --format=%ct
+  OUTPUT_VARIABLE UNIJIT_LUAJIT_RELEASE_ID
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  RESULT_VARIABLE UNIJIT_LUAJIT_RELEASE_RESULT)
+if(NOT UNIJIT_LUAJIT_RELEASE_RESULT EQUAL 0 OR
+   NOT UNIJIT_LUAJIT_RELEASE_ID MATCHES "^[0-9]+$")
+  message(FATAL_ERROR "Unable to derive the pinned LuaJIT release identifier")
+endif()
+set(UNIJIT_LUAJIT_RELEASE_FILE
+  "${PROJECT_BINARY_DIR}/references/luajit-relver.txt")
+file(WRITE "${UNIJIT_LUAJIT_RELEASE_FILE}"
+  "${UNIJIT_LUAJIT_RELEASE_ID}\n")
+
+set(UNIJIT_LUAJIT_BUILD_DIR "${PROJECT_BINARY_DIR}/references/luajit")
+if(WIN32)
+  set(UNIJIT_LUAJIT_EXECUTABLE "${UNIJIT_LUAJIT_BUILD_DIR}/src/luajit.exe")
+else()
+  set(UNIJIT_LUAJIT_EXECUTABLE "${UNIJIT_LUAJIT_BUILD_DIR}/src/luajit")
+endif()
+
+set(UNIJIT_LUAJIT_MAKE_ARGUMENTS
+  -C "${UNIJIT_LUAJIT_BUILD_DIR}/src"
+  BUILDMODE=static)
+if(APPLE)
+  set(UNIJIT_LUAJIT_MACOS_TARGET "${CMAKE_OSX_DEPLOYMENT_TARGET}")
+  if(NOT UNIJIT_LUAJIT_MACOS_TARGET)
+    execute_process(
+      COMMAND sw_vers -productVersion
+      OUTPUT_VARIABLE UNIJIT_LUAJIT_MACOS_TARGET
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      COMMAND_ERROR_IS_FATAL ANY)
+    string(REGEX MATCH "^[0-9]+\\.[0-9]+"
+      UNIJIT_LUAJIT_MACOS_TARGET "${UNIJIT_LUAJIT_MACOS_TARGET}")
+  endif()
+  list(APPEND UNIJIT_LUAJIT_MAKE_ARGUMENTS
+    "MACOSX_DEPLOYMENT_TARGET=${UNIJIT_LUAJIT_MACOS_TARGET}")
+endif()
+
+set(UNIJIT_LUAJIT_SOURCE_STAMP
+  "${UNIJIT_LUAJIT_BUILD_DIR}/.unijit-source-ready")
+
+add_custom_command(
+  OUTPUT "${UNIJIT_LUAJIT_SOURCE_STAMP}"
+  COMMAND "${CMAKE_COMMAND}" -E make_directory
+          "${UNIJIT_LUAJIT_BUILD_DIR}"
+  COMMAND "${CMAKE_COMMAND}" -E copy_directory
+          "${PROJECT_SOURCE_DIR}/third/luajit"
+          "${UNIJIT_LUAJIT_BUILD_DIR}"
+  COMMAND "${CMAKE_COMMAND}" -E rm -f
+          "${UNIJIT_LUAJIT_BUILD_DIR}/.git"
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+          "${UNIJIT_LUAJIT_RELEASE_FILE}"
+          "${UNIJIT_LUAJIT_BUILD_DIR}/.relver"
+  COMMAND "${CMAKE_COMMAND}" -E touch
+          "${UNIJIT_LUAJIT_SOURCE_STAMP}"
+  DEPENDS
+    "${PROJECT_SOURCE_DIR}/.gitmodules"
+    "${PROJECT_SOURCE_DIR}/third/luajit/src/Makefile"
+  COMMENT "Preparing the pinned LuaJIT source inside build/"
+  VERBATIM)
+
+add_custom_command(
+  OUTPUT "${UNIJIT_LUAJIT_EXECUTABLE}"
+  COMMAND "${UNIJIT_MAKE_EXECUTABLE}" ${UNIJIT_LUAJIT_MAKE_ARGUMENTS}
+  DEPENDS "${UNIJIT_LUAJIT_SOURCE_STAMP}"
+  COMMENT "Building the pinned LuaJIT reference inside build/"
+  VERBATIM)
+
+add_custom_target(unijit_luajit_reference ALL
+  DEPENDS "${UNIJIT_LUAJIT_EXECUTABLE}")
