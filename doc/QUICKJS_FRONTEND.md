@@ -22,7 +22,7 @@ JavaScript can then create a specialized native closure:
 
 ```js
 const native = unijit.compile(function(a, b) {
-  return (a + 2.5) * (b - -3);
+  return (a + 2.5) * (b - -3) / 2;
 });
 ```
 
@@ -35,13 +35,13 @@ fixed-parameter behavior and are ignored. Results are returned as Numbers.
 The first tier accepts conventional `function` source with zero to 64 unique
 ASCII parameter names and a body containing exactly one `return` expression.
 The expression may contain parameters, decimal numeric literals, parentheses,
-unary `+`/`-`, and binary `+`, `-`, and `*`. These operations lower to Float64
-SSA and preserve JavaScript Number arithmetic for the accepted subset.
+unary `+`/`-`, and binary `+`, `-`, `*`, and `/`. These operations lower to
+Float64 SSA and preserve JavaScript Number arithmetic for the accepted subset.
 
 Arrow functions, closures, default or rest parameters, property access, calls,
-statements, division, and coercive operands are rejected with a source byte
-position. This strict boundary prevents silently compiling semantics that the
-current IR cannot represent.
+statements, and coercive operands are rejected with a source byte position.
+This strict boundary prevents silently compiling semantics that the current IR
+cannot represent.
 
 At installation, the module captures the original
 `Function.prototype.toString` callable. Per-function `toString` overrides and

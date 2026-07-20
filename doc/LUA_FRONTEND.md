@@ -44,10 +44,11 @@ fallback instruction is structurally present. Runtime integer guards make
 that fallback unreachable in the specialized closure.
 
 The Float64 tier accepts the corresponding straight-line numeric loads,
-constant arithmetic, binary `ADD`/`SUB`/`MUL`, and one-value returns. Integer
-literals are converted exactly as Lua does when paired with a Float64 operand;
-integer-only arithmetic and non-Float64 results are rejected rather than
-changing Lua's numeric tag semantics.
+constant arithmetic, binary `ADD`/`SUB`/`MUL`/`DIV`, and one-value returns.
+Integer literals are converted exactly as Lua does when paired with a Float64
+operand. `DIV` always produces Float64 and therefore also accepts two integer
+literals; other integer-only arithmetic and non-Float64 results are rejected
+rather than changing Lua's numeric tag semantics.
 
 Varargs, general branches, calls, tables, floating-point values, upvalue
 access, and all other opcodes are rejected at compile time with the bytecode

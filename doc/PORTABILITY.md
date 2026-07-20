@@ -18,11 +18,12 @@ semantics in both the reference interpreter and native backends.
 |---|---|---|---|
 | AArch64 | little-endian A64 integer | AAPCS64 | `MOVZ`/`MOVK` sequence |
 | x86-64 | x86-64 integer | System V and Windows x64 | 64-bit immediate move |
-| RISC-V 64 | little-endian RV64IM | ELF psABI | PC-relative literal pool |
+| RISC-V 64 | little-endian RV64IMD | ELF psABI | PC-relative literal pool |
 
 The RISC-V backend requires the `M` extension for native integer multiply. The
-assembler, ABI selection, register allocator, and executable-memory publisher
-are owned by UniJIT and do not link against SLJIT or another JIT library.
+Float64 tier requires the `D` extension. The assembler, ABI selection, register
+allocator, and executable-memory publisher are owned by UniJIT and do not link
+against SLJIT or another JIT library.
 
 ## Verified systems
 
@@ -48,4 +49,6 @@ addresses and credentials are intentionally kept outside version control.
 Windows uses `VirtualAlloc` as read/write followed by `VirtualProtect` to
 read/execute. POSIX systems use `mmap` as read/write followed by instruction
 cache synchronization and `mprotect` to read/execute. Published mappings are
-never writable and executable at the same time.
+never writable and executable at the same time. A zero-filled aligned prefix
+keeps Clang's indirect-function sanitizer probe inside the mapping while
+identifying generated entries as intentionally uninstrumented dynamic code.

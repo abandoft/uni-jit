@@ -49,11 +49,12 @@ will use. This makes the bootstrap implementation extensible instead of a
 throwaway assembler demo.
 
 The straight-line IR is type checked for 64-bit words and IEEE-754 Float64
-values. Floating-point parameters, constants, arithmetic, register spills,
-and results use a uniform 64-bit value-bits calling convention suited to
-dynamic-language runtimes. Each backend keeps Float64 values in its native
-floating-point register bank and only transfers result bits to the shared
-return register at the compiled-function boundary.
+values. Floating-point parameters, constants, addition, subtraction,
+multiplication, division, register spills, and results use a uniform 64-bit
+value-bits calling convention suited to dynamic-language runtimes. Each backend
+keeps Float64 values in its native floating-point register bank and only
+transfers result bits to the shared return register at the compiled-function
+boundary.
 
 Effectful runtime helpers use one portable signature: a pointer to a flat
 value-bits argument area plus its element count, returning one value-bits word.

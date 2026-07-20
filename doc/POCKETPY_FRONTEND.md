@@ -54,8 +54,10 @@ parameters, decimal numeric literals, parentheses, unary `+`/`-`, and binary
 Closures, annotations, default or variadic parameters, assignments, multiple
 statements, calls, attribute access, division, and non-ASCII identifiers are
 rejected with a source byte position. Python keywords are rejected as function
-or parameter names. This narrow contract prevents fallback-free native code
-from silently changing unsupported Python behavior.
+or parameter names. Division remains excluded until native guards can preserve
+PocketPy's `ZeroDivisionError` instead of exposing the hardware IEEE-754 result.
+This narrow contract prevents fallback-free native code from silently changing
+unsupported Python behavior.
 
 ## Reproducible call benchmark
 
