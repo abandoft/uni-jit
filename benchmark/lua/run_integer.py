@@ -98,19 +98,28 @@ def main() -> int:
         raise RuntimeError("stock Lua, UniJIT, and LuaJIT checksums differ")
 
     stock_median = float(stock["median_ns"])
+    unijit_median = float(unijit["median_ns"])
+    luajit_median = float(luajit["median_ns"])
+    measurement_boundary = (
+        "complete_numeric_loop"
+        if stock.get("workload") == "integer_loop"
+        else "language_call"
+    )
     record = {
         "schema": "unijit.lua-integer-comparison.v1",
         "system": platform.system().lower(),
         "machine": platform.machine().lower(),
         "workload_source": str(script.relative_to(ROOT)),
+        "measurement_boundary": measurement_boundary,
         "unijit_revision": revision(ROOT),
         "lua_revision": revision(ROOT / "third/lua"),
         "luajit_revision": revision(ROOT / "third/luajit"),
         "stock_lua": stock,
         "unijit": unijit,
         "luajit": luajit,
-        "unijit_speedup_over_stock": stock_median / float(unijit["median_ns"]),
-        "luajit_speedup_over_stock": stock_median / float(luajit["median_ns"]),
+        "unijit_speedup_over_stock": stock_median / unijit_median,
+        "luajit_speedup_over_stock": stock_median / luajit_median,
+        "unijit_speedup_over_luajit": luajit_median / unijit_median,
     }
     print(json.dumps(record, indent=2, sort_keys=True))
     return 0
