@@ -1,5 +1,6 @@
 ## 0.1.6
 
+- Added ordered Float64 CFG comparisons with IEEE-754 unordered-false semantics and native encodings on all three architectures.
 - Added typed Float64 CFG parameters, constants, arithmetic, loop-carried edge validation, interpreter execution, and native lowering on AArch64, x86-64, and RISC-V 64.
 
 ## 0.1.5
