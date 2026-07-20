@@ -17,6 +17,7 @@ option(UNIJIT_BUILD_TESTS "Build UniJIT tests" ON)
 option(UNIJIT_WARNINGS_AS_ERRORS "Treat UniJIT warnings as errors" OFF)
 
 include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
 
 add_subdirectory(src)
 
@@ -33,4 +34,20 @@ install(
   EXPORT UniJITTargets
   FILE UniJITTargets.cmake
   NAMESPACE UniJIT::
+  DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/UniJIT")
+
+configure_package_config_file(
+  "${PROJECT_SOURCE_DIR}/cmake/UniJITConfig.cmake.in"
+  "${PROJECT_BINARY_DIR}/UniJITConfig.cmake"
+  INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/UniJIT")
+
+write_basic_package_version_file(
+  "${PROJECT_BINARY_DIR}/UniJITConfigVersion.cmake"
+  VERSION "${PROJECT_VERSION}"
+  COMPATIBILITY SameMajorVersion)
+
+install(
+  FILES
+    "${PROJECT_BINARY_DIR}/UniJITConfig.cmake"
+    "${PROJECT_BINARY_DIR}/UniJITConfigVersion.cmake"
   DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/UniJIT")
