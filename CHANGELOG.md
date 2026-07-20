@@ -20,6 +20,8 @@
 - Added canonical stack maps for every compiled guard and safepoint, with precise straight-line liveness, fixed-point CFG loop liveness, successor-parameter edge translation, stable typed frame slots, bounded metadata growth, and independent AArch64, x86-64, and RISC-V 64 publication.
 - Exposed immutable native offsets, frame sizes, exit kinds, live SSA locations, and map telemetry through compiled functions and cache leases, enforced unique runtime exit sites, pruned maps with eliminated guards, and verified metadata lifetime through the installed package API.
 - Added allocation-free diagnosed-exit capture for up to 64 live values per site, with exact Word and Float64 bits copied before native frame restoration, validated reconstruction through compiled functions and generation-stable cache leases, stale-state clearing, and compile-time rejection beyond the fixed capacity.
+- Added arbitrary Word and Float64 SSA inputs to deoptimization recovery, with guard-scoped optimizer preservation and Value-ID remapping, straight-line availability and CFG dominance validation, forced allocator and data-flow liveness on all three backends, resolved canonical capture indices, and exact baseline, optimized, cached-lease, and installed-package reconstruction.
+- Materialized PocketPy primitive division frames with the current straight-line left operand plus every counted-loop local and induction value while retaining stable parameter and signed-zero divisor slots for existing `ZeroDivisionError` mapping.
 
 ## 0.1.6
 
