@@ -73,6 +73,17 @@ jobs:
           --warmup 10000 --iterations 100000 --samples 3
           > build/language/lua-float.json
 
+      - name: Retain Lua target baselines
+        uses: actions/upload-artifact@v7
+        with:
+          name: lua-target-baselines
+          path: |
+            build/language/lua-reference.json
+            build/language/lua-integer.json
+            build/language/lua-integer-loop.json
+            build/language/lua-float.json
+          if-no-files-found: error
+
   quickjs-reference-baseline:
     name: QuickJS frontend and baseline
     runs-on: ubuntu-24.04
