@@ -130,6 +130,19 @@ int main() {
   if (!result.ok() || result.value != 42) {
     return 5;
   }
+  unijit::runtime::OsrFrame osr_frame(31, 7);
+  unijit::runtime::OsrEntryPlan osr_plan(31, 7);
+  if (!osr_frame.add(8, unijit::ir::ValueType::kWord, 20).ok() ||
+      !osr_frame.add(3, unijit::ir::ValueType::kWord, 22).ok() ||
+      !osr_plan.add_argument(8, unijit::ir::ValueType::kWord).ok() ||
+      !osr_plan.add_argument(3, unijit::ir::ValueType::kWord).ok()) {
+    return 29;
+  }
+  const auto osr = cached.enter_osr(osr_frame, osr_plan);
+  if (!osr.ok() || osr.result.value != 42 || osr.arguments.count != 2 ||
+      osr.arguments.values[0] != 20 || osr.arguments.values[1] != 22) {
+    return 30;
+  }
   if (!cache.invalidate("package-consumer-sum", 1) ||
       cache.find("package-consumer-sum", 1)) {
     return 6;

@@ -1234,6 +1234,168 @@ void test_transactional_object_materialization() {
          "object plans must be bound to the exact deoptimization site and resume offset");
 }
 
+void test_on_stack_replacement_entry() {
+  FunctionBuilder sum_builder(
+      std::vector<unijit::ir::ValueType>{
+          unijit::ir::ValueType::kFloat64,
+          unijit::ir::ValueType::kFloat64});
+  expect(sum_builder
+             .set_return(sum_builder.float64_add(sum_builder.parameter(0),
+                                                 sum_builder.parameter(1)))
+             .ok(),
+         "OSR sum fixture must be constructible");
+  auto sum_compilation =
+      Compiler::compile(std::move(sum_builder).build());
+  expect(sum_compilation.ok(), "OSR sum fixture must compile");
+  if (!sum_compilation.ok()) {
+    return;
+  }
+
+  unijit::jit::CodeHandle retained;
+  {
+    unijit::jit::CodeCache cache;
+    auto publication = cache.publish(
+        "osr/sum", 1, std::move(sum_compilation.function));
+    expect(publication.ok(), "OSR fixture must publish through the code cache");
+    retained = publication.handle;
+  }
+
+  unijit::runtime::OsrFrame frame(501, 33);
+  expect(frame
+             .add(9, unijit::ir::ValueType::kFloat64,
+                  unijit::ir::pack_float64(1.25))
+             .ok() &&
+             frame
+                 .add(4, unijit::ir::ValueType::kFloat64,
+                      unijit::ir::pack_float64(2.75))
+                 .ok() &&
+             frame.add(99, unijit::ir::ValueType::kWord, 123).ok() &&
+             !frame.add(9, unijit::ir::ValueType::kWord, 0).ok(),
+         "OSR frames must retain typed values and reject duplicate slots");
+  unijit::runtime::OsrEntryPlan plan(501, 33);
+  expect(plan.add_argument(9, unijit::ir::ValueType::kFloat64).ok() &&
+             plan.add_argument(4, unijit::ir::ValueType::kFloat64).ok() &&
+             !plan.add_argument(9, unijit::ir::ValueType::kFloat64).ok(),
+         "OSR plans must define one typed source slot per native argument");
+  const auto entry = retained.enter_osr(frame, plan);
+  expect(entry.ok() && entry.arguments.entry_site == 501 &&
+             entry.arguments.resume_offset == 33 &&
+             entry.arguments.count == 2 &&
+             entry.arguments.values[0] ==
+                 unijit::ir::pack_float64(1.25) &&
+             entry.arguments.values[1] ==
+                 unijit::ir::pack_float64(2.75) &&
+             unijit::ir::unpack_float64(entry.result.value) == 4.0,
+         "OSR must enter a retained native generation with exact typed frame bits");
+
+  unijit::runtime::OsrFrame wrong_site(502, 33);
+  expect(wrong_site
+             .add(9, unijit::ir::ValueType::kFloat64,
+                  unijit::ir::pack_float64(1.0))
+             .ok() &&
+             !retained.enter_osr(wrong_site, plan).entered(),
+         "OSR must reject a frame from a different interpreter site");
+  unijit::runtime::OsrFrame missing_value(501, 33);
+  expect(missing_value
+             .add(9, unijit::ir::ValueType::kFloat64,
+                  unijit::ir::pack_float64(1.0))
+             .ok() &&
+             !retained.enter_osr(missing_value, plan).entered(),
+         "OSR must reject an incomplete interpreter frame");
+  unijit::runtime::OsrEntryPlan wrong_signature(501, 33);
+  expect(wrong_signature.add_argument(9, unijit::ir::ValueType::kWord).ok() &&
+             wrong_signature
+                 .add_argument(4, unijit::ir::ValueType::kFloat64)
+                 .ok() &&
+             !retained.enter_osr(frame, wrong_signature).entered(),
+         "OSR must reject plans that differ from the native signature");
+  expect(!unijit::jit::CodeHandle{}.enter_osr(frame, plan).entered(),
+         "OSR must reject an invalid code lease");
+
+  unijit::runtime::OsrFrame bounded_frame(1, 1);
+  unijit::runtime::OsrEntryPlan bounded_plan(1, 1);
+  bool within_limits = true;
+  for (std::size_t index = 0;
+       index < unijit::runtime::OsrFrame::kMaximumValues; ++index) {
+    within_limits =
+        within_limits &&
+        bounded_frame.add(index, unijit::ir::ValueType::kWord, 0).ok() &&
+        bounded_plan.add_argument(index, unijit::ir::ValueType::kWord).ok();
+  }
+  expect(within_limits &&
+             !bounded_frame
+                  .add(unijit::runtime::OsrFrame::kMaximumValues,
+                       unijit::ir::ValueType::kWord, 0)
+                  .ok() &&
+             !bounded_plan
+                  .add_argument(
+                      unijit::runtime::OsrEntryPlan::kMaximumArguments,
+                      unijit::ir::ValueType::kWord)
+                  .ok(),
+         "OSR metadata must enforce fixed transfer limits");
+
+  FunctionBuilder guarded_builder(
+      std::vector<unijit::ir::ValueType>{
+          unijit::ir::ValueType::kFloat64,
+          unijit::ir::ValueType::kFloat64});
+  const Value divisor = guarded_builder.parameter(1);
+  expect(guarded_builder.guard_float64_nonzero(divisor, 602).valid() &&
+             guarded_builder
+                 .set_return(guarded_builder.float64_divide(
+                     guarded_builder.parameter(0), divisor))
+                 .ok(),
+         "guarded OSR fixture must be constructible");
+  unijit::runtime::DeoptimizationRecord record;
+  record.site = 602;
+  record.resume_offset = 88;
+  record.reason = unijit::runtime::DeoptimizationReason::kDivisionByZero;
+  record.recovery = {
+      unijit::runtime::RecoveryOperation::argument(
+          20, unijit::ir::ValueType::kFloat64, 0),
+      unijit::runtime::RecoveryOperation::argument(
+          21, unijit::ir::ValueType::kFloat64, 1)};
+  unijit::runtime::DeoptimizationTable metadata;
+  expect(metadata.add(record).ok(),
+         "guarded OSR fixture must accept deoptimization metadata");
+  auto guarded = Compiler::compile(std::move(guarded_builder).build(), metadata);
+  expect(guarded.ok(), "guarded OSR fixture must compile");
+  if (!guarded.ok()) {
+    return;
+  }
+  unijit::runtime::OsrFrame guarded_frame(601, 77);
+  const Word negative_zero = unijit::ir::pack_float64(-0.0);
+  expect(guarded_frame
+             .add(10, unijit::ir::ValueType::kFloat64,
+                  unijit::ir::pack_float64(8.0))
+             .ok() &&
+             guarded_frame
+                 .add(11, unijit::ir::ValueType::kFloat64, negative_zero)
+                 .ok(),
+         "guarded OSR frame must retain signed-zero state");
+  unijit::runtime::OsrEntryPlan guarded_plan(601, 77);
+  expect(guarded_plan
+             .add_argument(10, unijit::ir::ValueType::kFloat64)
+             .ok() &&
+             guarded_plan
+                 .add_argument(11, unijit::ir::ValueType::kFloat64)
+                 .ok(),
+         "guarded OSR plan must map live interpreter slots");
+  unijit::runtime::ExecutionContext context;
+  const auto guarded_entry =
+      guarded.function->enter_osr(guarded_frame, guarded_plan, &context);
+  const auto reconstruction = guarded.function->reconstruct_deoptimization(
+      602, guarded_entry.arguments.data(), guarded_entry.arguments.count,
+      context);
+  const auto* recovered_divisor = reconstruction.frame.find(21);
+  expect(guarded_entry.entered() && !guarded_entry.result.ok() &&
+             guarded_entry.result.status.code() ==
+                 unijit::StatusCode::kRuntimeExit &&
+             guarded_entry.result.status.location() == 602 &&
+             reconstruction.ok() && recovered_divisor != nullptr &&
+             recovered_divisor->value == negative_zero,
+         "OSR exits must retain marshalled arguments for exact deoptimization");
+}
+
 void test_constant_float64_nonzero_guard_elimination() {
   FunctionBuilder builder(
       std::vector<unijit::ir::ValueType>{unijit::ir::ValueType::kFloat64});
@@ -2950,6 +3112,7 @@ int main() {
   test_float64_nonzero_guard();
   test_deoptimization_reconstruction();
   test_transactional_object_materialization();
+  test_on_stack_replacement_entry();
   test_constant_float64_nonzero_guard_elimination();
   test_runtime_exit_site_identity();
   test_verifier_rejects_mixed_arithmetic();
