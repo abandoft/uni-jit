@@ -24,6 +24,10 @@ elseif(UNIJIT_SYSTEM_PROCESSOR MATCHES "^(amd64|x86_64)$")
   target_sources(unijit PRIVATE
     jit/backend/x86_64/lower.cpp)
   target_compile_definitions(unijit PRIVATE UNIJIT_TARGET_X86_64=1)
+elseif(UNIJIT_SYSTEM_PROCESSOR MATCHES "^(riscv64|riscv64gc)$")
+  target_sources(unijit PRIVATE
+    jit/backend/riscv64/lower.cpp)
+  target_compile_definitions(unijit PRIVATE UNIJIT_TARGET_RISCV64=1)
 endif()
 
 add_library(UniJIT::unijit ALIAS unijit)

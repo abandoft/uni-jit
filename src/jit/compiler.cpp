@@ -11,6 +11,8 @@
 #include "jit/backend/aarch64/lower.h"
 #elif defined(UNIJIT_TARGET_X86_64)
 #include "jit/backend/x86_64/lower.h"
+#elif defined(UNIJIT_TARGET_RISCV64)
+#include "jit/backend/riscv64/lower.h"
 #endif
 
 namespace unijit::jit {
@@ -74,9 +76,13 @@ CompilationResult Compiler::compile(const ir::Function& function) {
 #elif defined(UNIJIT_TARGET_X86_64)
   detail::x86_64::LoweringResult lowering =
       detail::x86_64::lower(function);
+#elif defined(UNIJIT_TARGET_RISCV64)
+  detail::riscv64::LoweringResult lowering =
+      detail::riscv64::lower(function);
 #endif
 
-#if defined(UNIJIT_TARGET_AARCH64) || defined(UNIJIT_TARGET_X86_64)
+#if defined(UNIJIT_TARGET_AARCH64) || defined(UNIJIT_TARGET_X86_64) || \
+    defined(UNIJIT_TARGET_RISCV64)
   if (!lowering.status.ok()) {
     return {lowering.status, nullptr};
   }
