@@ -1,5 +1,7 @@
 #include "source_translator.h"
 
+#include "counted_loop_translator.h"
+
 #include <cstdlib>
 #include <new>
 #include <string>
@@ -348,6 +350,9 @@ private:
 
 TranslationResult translate_numeric_function(std::string_view source) {
   try {
+    if (looks_like_counted_loop(source)) {
+      return translate_counted_loop(source);
+    }
     return Parser(source).translate();
   } catch (const std::bad_alloc &) {
     return {{StatusCode::kResourceExhausted,

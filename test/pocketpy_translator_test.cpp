@@ -70,6 +70,56 @@ int main() {
     return EXIT_FAILURE;
   }
 
+  constexpr char kCountedLoopSource[] =
+      "def numeric_workload(count):\n"
+      "    lhs = 1.25\n"
+      "    rhs = -7.5\n"
+      "    checksum = 0.0\n"
+      "    for iteration in range(count):\n"
+      "        checksum = checksum + (lhs + rhs) * (lhs - 3.25) + rhs * 0.75\n"
+      "        lhs = lhs + 0.125\n"
+      "        rhs = rhs - 0.0625\n"
+      "        if lhs > 4096.0:\n"
+      "            lhs = 1.25\n"
+      "        if rhs < -4096.0:\n"
+      "            rhs = -7.5\n"
+      "    return checksum\n";
+  const auto counted_loop =
+      unijit::frontend::pocketpy::translate_numeric_function(
+          kCountedLoopSource);
+  if (!counted_loop.ok() || counted_loop.parameter_count != 1 ||
+      !counted_loop.function->requires_context()) {
+    std::cerr << "PocketPy counted loop did not compile: "
+              << counted_loop.status.message() << '\n';
+    return EXIT_FAILURE;
+  }
+  constexpr std::size_t kLoopIterations = 10000;
+  double expected_loop = 0.0;
+  double expected_lhs = 1.25;
+  double expected_rhs = -7.5;
+  for (std::size_t iteration = 0; iteration < kLoopIterations; ++iteration) {
+    expected_loop += (expected_lhs + expected_rhs) *
+                         (expected_lhs - 3.25) +
+                     expected_rhs * 0.75;
+    expected_lhs += 0.125;
+    expected_rhs -= 0.0625;
+    if (expected_lhs > 4096.0) {
+      expected_lhs = 1.25;
+    }
+    if (expected_rhs < -4096.0) {
+      expected_rhs = -7.5;
+    }
+  }
+  const std::array<unijit::ir::Word, 1> loop_arguments = {
+      unijit::ir::pack_float64(static_cast<double>(kLoopIterations))};
+  const auto loop_result = counted_loop.function->invoke(
+      loop_arguments.data(), loop_arguments.size());
+  if (!loop_result.ok() ||
+      loop_result.value != unijit::ir::pack_float64(expected_loop)) {
+    std::cerr << "PocketPy counted loop produced the wrong native result\n";
+    return EXIT_FAILURE;
+  }
+
   constexpr std::array<const char *, 6> kRejectedSources = {
       "lambda a: a + 1",
       "def f(a, a): return a",
@@ -98,6 +148,35 @@ int main() {
       "divide = unijit.compile(\"def divide(a, b): return a / b\")\n";
   if (!py_exec(kNativeSource, "<unijit-pocketpy-native>", EXEC_MODE, nullptr)) {
     py_printexc();
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  constexpr char kNativeLoopSource[] =
+      "native_loop = unijit.compile('''def numeric_workload(count):\n"
+      "    lhs = 1.25\n"
+      "    rhs = -7.5\n"
+      "    checksum = 0.0\n"
+      "    for iteration in range(count):\n"
+      "        checksum = checksum + (lhs + rhs) * (lhs - 3.25) + rhs * 0.75\n"
+      "        lhs = lhs + 0.125\n"
+      "        rhs = rhs - 0.0625\n"
+      "        if lhs > 4096.0:\n"
+      "            lhs = 1.25\n"
+      "        if rhs < -4096.0:\n"
+      "            rhs = -7.5\n"
+      "    return checksum\n''')\n"
+      "loop_result = native_loop(10000)\n";
+  if (!py_exec(kNativeLoopSource, "<unijit-pocketpy-counted-loop>",
+               EXEC_MODE, nullptr)) {
+    py_printexc();
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  const py_Ref native_loop_result = py_getglobal(py_name("loop_result"));
+  if (native_loop_result == nullptr || !py_isfloat(native_loop_result) ||
+      unijit::ir::pack_float64(py_tofloat(native_loop_result)) !=
+          unijit::ir::pack_float64(expected_loop)) {
+    std::cerr << "PocketPy did not execute the compiled counted-loop callable\n";
     py_finalize();
     return EXIT_FAILURE;
   }

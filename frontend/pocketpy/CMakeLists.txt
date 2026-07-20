@@ -43,6 +43,7 @@ set_target_properties(unijit_pocketpy_reference PROPERTIES
   UNITY_BUILD_MODE GROUP)
 
 add_library(unijit_pocketpy_frontend STATIC
+  counted_loop_translator.cpp
   jit_module.cpp
   source_translator.cpp)
 target_include_directories(unijit_pocketpy_frontend
