@@ -53,6 +53,23 @@ int main() {
     return EXIT_FAILURE;
   }
 
+  const auto constant_division =
+      unijit::frontend::pocketpy::translate_numeric_function(
+          "def half(a): return a / 2");
+  if (!constant_division.ok() ||
+      constant_division.function->requires_context()) {
+    std::cerr << "PocketPy constant division retained a redundant guard\n";
+    return EXIT_FAILURE;
+  }
+  const std::array<unijit::ir::Word, 1> constant_division_arguments = {
+      unijit::ir::pack_float64(9.0)};
+  const auto half = constant_division.function->invoke(
+      constant_division_arguments.data(), constant_division_arguments.size());
+  if (!half.ok() || unijit::ir::unpack_float64(half.value) != 4.5) {
+    std::cerr << "PocketPy constant division produced the wrong result\n";
+    return EXIT_FAILURE;
+  }
+
   constexpr std::array<const char *, 6> kRejectedSources = {
       "lambda a: a + 1",
       "def f(a, a): return a",
