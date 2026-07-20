@@ -28,6 +28,7 @@ class ExecutableMemory final {
  private:
   void release() noexcept;
 
+  void* mapping_address_{nullptr};
   void* address_{nullptr};
   std::size_t mapping_size_{0};
   std::size_t code_size_{0};

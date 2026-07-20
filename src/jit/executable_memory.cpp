@@ -19,6 +19,11 @@
 namespace unijit::jit::detail {
 namespace {
 
+// Clang's function-type sanitizer probes eight bytes before an indirect-call
+// target. Dynamic code has no sanitizer signature, so keep a readable,
+// zero-filled prefix while preserving 16-byte entry alignment.
+constexpr std::size_t kCodePrefixSize = 16;
+
 #if defined(_WIN32)
 std::size_t page_size() noexcept {
   SYSTEM_INFO info{};
@@ -46,13 +51,15 @@ bool round_to_pages(std::size_t size, std::size_t* rounded) noexcept {
 ExecutableMemory::~ExecutableMemory() { release(); }
 
 ExecutableMemory::ExecutableMemory(ExecutableMemory&& other) noexcept
-    : address_(std::exchange(other.address_, nullptr)),
+    : mapping_address_(std::exchange(other.mapping_address_, nullptr)),
+      address_(std::exchange(other.address_, nullptr)),
       mapping_size_(std::exchange(other.mapping_size_, 0)),
       code_size_(std::exchange(other.code_size_, 0)) {}
 
 ExecutableMemory& ExecutableMemory::operator=(ExecutableMemory&& other) noexcept {
   if (this != &other) {
     release();
+    mapping_address_ = std::exchange(other.mapping_address_, nullptr);
     address_ = std::exchange(other.address_, nullptr);
     mapping_size_ = std::exchange(other.mapping_size_, 0);
     code_size_ = std::exchange(other.code_size_, 0);
@@ -61,14 +68,15 @@ ExecutableMemory& ExecutableMemory::operator=(ExecutableMemory&& other) noexcept
 }
 
 void ExecutableMemory::release() noexcept {
-  if (address_ == nullptr) {
+  if (mapping_address_ == nullptr) {
     return;
   }
 #if defined(_WIN32)
-  VirtualFree(address_, 0, MEM_RELEASE);
+  VirtualFree(mapping_address_, 0, MEM_RELEASE);
 #else
-  munmap(address_, mapping_size_);
+  munmap(mapping_address_, mapping_size_);
 #endif
+  mapping_address_ = nullptr;
   address_ = nullptr;
   mapping_size_ = 0;
   code_size_ = 0;
@@ -82,8 +90,13 @@ Status ExecutableMemory::publish(const std::uint8_t* code,
             "native code and output storage must be non-empty"};
   }
 
+  if (code_size >
+      std::numeric_limits<std::size_t>::max() - kCodePrefixSize) {
+    return {StatusCode::kResourceExhausted,
+            "native code size overflows its entry prefix"};
+  }
   std::size_t mapping_size = 0;
-  if (!round_to_pages(code_size, &mapping_size)) {
+  if (!round_to_pages(code_size + kCodePrefixSize, &mapping_size)) {
     return {StatusCode::kResourceExhausted,
             "native code size overflows an address-space page"};
   }
@@ -95,8 +108,11 @@ Status ExecutableMemory::publish(const std::uint8_t* code,
     return {StatusCode::kResourceExhausted,
             "VirtualAlloc failed for the native code mapping"};
   }
-  std::memcpy(mapping, code, code_size);
-  FlushInstructionCache(GetCurrentProcess(), mapping, code_size);
+  auto* code_address =
+      static_cast<std::uint8_t*>(mapping) + kCodePrefixSize;
+  std::memset(mapping, 0, kCodePrefixSize);
+  std::memcpy(code_address, code, code_size);
+  FlushInstructionCache(GetCurrentProcess(), code_address, code_size);
   DWORD old_protection = 0;
   if (VirtualProtect(mapping, mapping_size, PAGE_EXECUTE_READ,
                      &old_protection) == 0) {
@@ -112,8 +128,11 @@ Status ExecutableMemory::publish(const std::uint8_t* code,
             std::string("mmap failed for native code: ") +
                 std::strerror(errno)};
   }
-  std::memcpy(mapping, code, code_size);
-  auto* begin = static_cast<char*>(mapping);
+  auto* code_address =
+      static_cast<std::uint8_t*>(mapping) + kCodePrefixSize;
+  std::memset(mapping, 0, kCodePrefixSize);
+  std::memcpy(code_address, code, code_size);
+  auto* begin = reinterpret_cast<char*>(code_address);
   __builtin___clear_cache(begin, begin + code_size);
   if (mprotect(mapping, mapping_size, PROT_READ | PROT_EXEC) != 0) {
     const std::string message =
@@ -125,7 +144,8 @@ Status ExecutableMemory::publish(const std::uint8_t* code,
 #endif
 
   output->release();
-  output->address_ = mapping;
+  output->mapping_address_ = mapping;
+  output->address_ = code_address;
   output->mapping_size_ = mapping_size;
   output->code_size_ = code_size;
   return Status::ok_status();
