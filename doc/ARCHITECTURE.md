@@ -90,6 +90,14 @@ execution-context area before restoring the frame, and the exact attempted
 generation reconstructs the typed bits after ABI return. The contract and
 remaining frame-installation boundary are specified in `doc/STACK_MAPS.md`.
 
+Reconstructed primitive slots can feed a site-bound object materialization
+plan. UniJIT validates all recovered inputs and graph references, allocates
+every frontend-owned object shell before populating fields so cycles retain
+identity, and wraps the process in explicit begin, commit, and exactly-once
+rollback callbacks. Compiled functions and retained cache leases expose the
+same operation without embedding runtime layouts in target backends. The
+contract is specified in `doc/MATERIALIZATION.md`.
+
 The optimizing tier adds a separate CFG SSA representation with explicit
 basic-block parameters. Predecessor edges supply every block argument, making
 phi semantics visible in construction, verification, interpretation, and

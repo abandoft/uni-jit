@@ -75,9 +75,11 @@ The current recovery vocabulary materializes complete primitive Word and
 Float64 logical frame state at the ABI boundary. Compiled guards and
 safepoints retain canonical stack maps and copy their bounded values into the
 execution context before ABI return. The exact compiled generation can
-reconstruct that typed state after its native frame has been restored. Broader
-optimized tiers still need object materialization, installation into each
-stock interpreter's concrete frame representation, unwind registration, and
-resumable transfer. Those additions can build on this target-independent
-recovery program without exposing physical register layouts to frontends; see
-[STACK_MAPS.md](STACK_MAPS.md).
+reconstruct that typed state after its native frame has been restored. A
+site-bound two-phase plan can now turn those slots into cyclic frontend-owned
+object graphs with transactional rollback as defined in
+[MATERIALIZATION.md](MATERIALIZATION.md). Broader optimized tiers still need
+frontend-specific recipes, installation into each stock interpreter's concrete
+frame representation, unwind registration, and resumable transfer. Those
+additions build on this target-independent recovery program without exposing
+physical register layouts to frontends; see [STACK_MAPS.md](STACK_MAPS.md).
