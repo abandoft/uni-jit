@@ -3,6 +3,7 @@
 #include <utility>
 #include <vector>
 
+#include "unijit/ir/control_flow.h"
 #include "unijit/ir/function.h"
 #include "unijit/jit/code_cache.h"
 #include "unijit/jit/compilation_scheduler.h"
@@ -99,6 +100,19 @@ void rollback_objects(void* opaque) noexcept {
   ++static_cast<PackageMaterializer*>(opaque)->rollbacks;
 }
 
+std::size_t package_cfg_call_count = 0;
+
+unijit::ir::Word package_cfg_helper(const unijit::ir::Word* arguments,
+                                    std::size_t count) {
+  ++package_cfg_call_count;
+  if (count != 2) {
+    return unijit::ir::pack_float64(0.0);
+  }
+  return unijit::ir::pack_float64(
+      unijit::ir::unpack_float64(arguments[0]) +
+      unijit::ir::unpack_float64(arguments[1]));
+}
+
 }  // namespace
 
 int main() {
@@ -140,6 +154,39 @@ int main() {
       limited_compilation.status.code() !=
           unijit::StatusCode::kResourceExhausted) {
     return 33;
+  }
+
+  unijit::ir::ControlFlowBuilder cfg_builder(
+      {unijit::ir::ValueType::kFloat64,
+       unijit::ir::ValueType::kFloat64});
+  const auto cfg_live = cfg_builder.float64_add(
+      cfg_builder.parameter(0), cfg_builder.float64_constant(0.5));
+  const auto cfg_called = cfg_builder.call(
+      package_cfg_helper, {cfg_live, cfg_builder.parameter(1)},
+      unijit::ir::ValueType::kFloat64);
+  if (!cfg_builder
+           .set_return(cfg_builder.float64_add(cfg_live, cfg_called))
+           .ok()) {
+    return 34;
+  }
+  const auto cfg_function = std::move(cfg_builder).build();
+  if (!unijit::ir::verify(cfg_function).ok()) {
+    return 35;
+  }
+  auto cfg_compilation = unijit::jit::Compiler::compile(cfg_function);
+  if (!cfg_compilation.ok()) {
+    return 36;
+  }
+  const std::array<unijit::ir::Word, 2> cfg_arguments = {
+      unijit::ir::pack_float64(2.5),
+      unijit::ir::pack_float64(4.0)};
+  package_cfg_call_count = 0;
+  const auto cfg_result = cfg_compilation.function->invoke(
+      cfg_arguments.data(), cfg_arguments.size());
+  if (!cfg_result.ok() ||
+      cfg_result.value != unijit::ir::pack_float64(10.0) ||
+      package_cfg_call_count != 1) {
+    return 37;
   }
   unijit::runtime::OsrFrame osr_frame(31, 7);
   unijit::runtime::OsrEntryPlan osr_plan(31, 7);
