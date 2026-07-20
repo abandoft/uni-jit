@@ -84,10 +84,34 @@ struct PrototypeSnapshot final {
 };
 
 struct LoopHotnessPlan final {
-  enum class LimitKind : unsigned char {
-    kUnknown,
-    kConstant,
-    kParameter,
+  struct Operand final {
+    enum class Kind : unsigned char {
+      kUnknown,
+      kConstant,
+      kParameter,
+    };
+
+    bool resolve(const Word *arguments, std::size_t argument_count,
+                 Word *value) const noexcept {
+      if (value == nullptr) {
+        return false;
+      }
+      if (kind == Kind::kConstant) {
+        *value = constant;
+        return true;
+      }
+      if (kind == Kind::kParameter && parameter < argument_count) {
+        *value = arguments[parameter];
+        return true;
+      }
+      return false;
+    }
+
+    bool resolvable() const noexcept { return kind != Kind::kUnknown; }
+
+    Kind kind{Kind::kUnknown};
+    Word constant{0};
+    std::size_t parameter{0};
   };
 
   std::uint64_t estimate(const Word *arguments,
@@ -95,31 +119,30 @@ struct LoopHotnessPlan final {
     if (!is_loop) {
       return 0;
     }
-    Word limit = 0;
-    if (limit_kind == LimitKind::kConstant) {
-      limit = limit_constant;
-    } else if (limit_kind == LimitKind::kParameter &&
-               limit_parameter < argument_count) {
-      limit = arguments[limit_parameter];
-    } else {
+    Word start_value = 0;
+    Word limit_value = 0;
+    Word step_value = 0;
+    if (!start.resolve(arguments, argument_count, &start_value) ||
+        !limit.resolve(arguments, argument_count, &limit_value) ||
+        !step.resolve(arguments, argument_count, &step_value)) {
       return 1;
     }
     std::uint64_t distance = 0;
     std::uint64_t stride = 0;
-    if (step > 0) {
-      if (limit < start) {
+    if (step_value > 0) {
+      if (limit_value < start_value) {
         return 0;
       }
-      distance = static_cast<std::uint64_t>(limit) -
-                 static_cast<std::uint64_t>(start);
-      stride = static_cast<std::uint64_t>(step);
-    } else if (step < 0) {
-      if (start < limit) {
+      distance = static_cast<std::uint64_t>(limit_value) -
+                 static_cast<std::uint64_t>(start_value);
+      stride = static_cast<std::uint64_t>(step_value);
+    } else if (step_value < 0) {
+      if (start_value < limit_value) {
         return 0;
       }
-      distance = static_cast<std::uint64_t>(start) -
-                 static_cast<std::uint64_t>(limit);
-      stride = std::uint64_t{0} - static_cast<std::uint64_t>(step);
+      distance = static_cast<std::uint64_t>(start_value) -
+                 static_cast<std::uint64_t>(limit_value);
+      stride = std::uint64_t{0} - static_cast<std::uint64_t>(step_value);
     } else {
       return 0;
     }
@@ -130,11 +153,9 @@ struct LoopHotnessPlan final {
   }
 
   bool is_loop{false};
-  LimitKind limit_kind{LimitKind::kUnknown};
-  Word start{0};
-  Word step{0};
-  Word limit_constant{0};
-  std::size_t limit_parameter{0};
+  Operand start;
+  Operand limit;
+  Operand step;
 };
 
 constexpr std::uint64_t kIntegerBaselineFingerprint =
@@ -349,6 +370,17 @@ LoopHotnessPlan analyze_loop_hotness(const Proto &prototype) {
   for (std::size_t index = 0; index < prototype.numparams; ++index) {
     registers[index].parameter = index;
   }
+  const auto capture_operand = [](const SymbolicInteger &source) {
+    LoopHotnessPlan::Operand operand;
+    if (source.constant.has_value()) {
+      operand.kind = LoopHotnessPlan::Operand::Kind::kConstant;
+      operand.constant = source.constant.value();
+    } else if (source.parameter.has_value()) {
+      operand.kind = LoopHotnessPlan::Operand::Kind::kParameter;
+      operand.parameter = source.parameter.value();
+    }
+    return operand;
+  };
 
   for (int pc = 0; pc < prototype.sizecode; ++pc) {
     const Instruction instruction = prototype.code[pc];
@@ -366,18 +398,13 @@ LoopHotnessPlan analyze_loop_hotness(const Proto &prototype) {
           registers[static_cast<std::size_t>(state_base + 1)];
       const SymbolicInteger &step =
           registers[static_cast<std::size_t>(state_base + 2)];
-      if (!start.constant.has_value() || !step.constant.has_value() ||
-          step.constant.value() == 0) {
+      plan.start = capture_operand(start);
+      plan.limit = capture_operand(limit);
+      plan.step = capture_operand(step);
+      if (!plan.start.resolvable() || !plan.step.resolvable() ||
+          (plan.step.kind == LoopHotnessPlan::Operand::Kind::kConstant &&
+           plan.step.constant == 0)) {
         return plan;
-      }
-      plan.start = start.constant.value();
-      plan.step = step.constant.value();
-      if (limit.constant.has_value()) {
-        plan.limit_kind = LoopHotnessPlan::LimitKind::kConstant;
-        plan.limit_constant = limit.constant.value();
-      } else if (limit.parameter.has_value()) {
-        plan.limit_kind = LoopHotnessPlan::LimitKind::kParameter;
-        plan.limit_parameter = limit.parameter.value();
       }
       return plan;
     }
@@ -908,17 +935,19 @@ CompilationResult compile_numeric_for_prototype(
       return {status, nullptr};
     }
 
+    const LoopHotnessPlan loop_controls = analyze_loop_hotness(prototype);
     if (!valid_register(registers, state_base) ||
         !valid_register(registers, state_base + 1) ||
         !valid_register(registers, state_base + 2) ||
-        !known[static_cast<std::size_t>(state_base)].has_value() ||
-        !known[static_cast<std::size_t>(state_base + 2)].has_value()) {
+        !loop_controls.start.resolvable() ||
+        loop_controls.step.kind !=
+            LoopHotnessPlan::Operand::Kind::kConstant) {
       return translation_error(
           static_cast<std::size_t>(preparation_pc),
-          "numeric for loop requires integer constant start and step");
+          "numeric for loop requires an integer constant or parameter start "
+          "and an integer constant step");
     }
-    const Word loop_step =
-        known[static_cast<std::size_t>(state_base + 2)].value();
+    const Word loop_step = loop_controls.step.constant;
     if (loop_step == 0) {
       return translation_error(static_cast<std::size_t>(preparation_pc),
                                "numeric for loop step cannot be zero");

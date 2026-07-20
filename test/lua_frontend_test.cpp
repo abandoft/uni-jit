@@ -231,6 +231,55 @@ for _, limit in ipairs({30008, 30002, 30001, 30000, 29998, 17, 0, -1000}) do
   assert(native_negative_stride_sum(limit) == negative_stride_sum(limit))
 end
 
+local parameter_start_sum = function(start, limit)
+  local sum = 0
+  for index = start, limit, 3 do
+    sum = sum + index
+  end
+  return sum
+end
+local native_parameter_start_sum = unijit.compile(parameter_start_sum)
+local parameter_start_baseline_stats = unijit.stats(native_parameter_start_sum)
+assert(native_parameter_start_sum(0, 30000) ==
+       parameter_start_sum(0, 30000))
+assert(unijit.wait(native_parameter_start_sum, 5000))
+local parameter_start_stats = unijit.stats(native_parameter_start_sum)
+assert(parameter_start_stats.active_tier == "optimized")
+assert(parameter_start_stats.backedges == 10001)
+assert(parameter_start_stats.input_ir_nodes >
+       parameter_start_baseline_stats.input_ir_nodes)
+for _, bounds in ipairs({{7, -7}, {7, 7}, {7, 8}, {-17, 19},
+                          {math.maxinteger - 17, math.maxinteger}}) do
+  assert(native_parameter_start_sum(bounds[1], bounds[2]) ==
+         parameter_start_sum(bounds[1], bounds[2]))
+end
+
+local reverse_parameter_start_sum = function(start, limit)
+  local sum = 0
+  for index = start, limit, -3 do
+    sum = sum + index
+  end
+  return sum
+end
+local native_reverse_parameter_start_sum =
+    unijit.compile(reverse_parameter_start_sum)
+local reverse_parameter_start_baseline_stats =
+    unijit.stats(native_reverse_parameter_start_sum)
+assert(native_reverse_parameter_start_sum(30000, 0) ==
+       reverse_parameter_start_sum(30000, 0))
+assert(unijit.wait(native_reverse_parameter_start_sum, 5000))
+local reverse_parameter_start_stats =
+    unijit.stats(native_reverse_parameter_start_sum)
+assert(reverse_parameter_start_stats.active_tier == "optimized")
+assert(reverse_parameter_start_stats.backedges == 10001)
+assert(reverse_parameter_start_stats.input_ir_nodes >
+       reverse_parameter_start_baseline_stats.input_ir_nodes)
+for _, bounds in ipairs({{-7, 7}, {-7, -7}, {-7, -8}, {19, -17},
+                          {math.mininteger + 17, math.mininteger}}) do
+  assert(native_reverse_parameter_start_sum(bounds[1], bounds[2]) ==
+         reverse_parameter_start_sum(bounds[1], bounds[2]))
+end
+
 local near_max_stride = function(limit)
   local visits = 0
   for index = 9223372036854775790, limit, 3 do
@@ -363,6 +412,8 @@ native_offset_sum = nil
 native_near_max_loop = nil
 native_positive_stride_sum = nil
 native_negative_stride_sum = nil
+native_parameter_start_sum = nil
+native_reverse_parameter_start_sum = nil
 native_near_max_stride = nil
 native_near_min_stride = nil
 native_huge_positive_stride = nil
