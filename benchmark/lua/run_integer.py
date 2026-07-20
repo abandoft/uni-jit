@@ -93,7 +93,7 @@ def main() -> int:
         "reference",
     )
 
-    checksums = {int(result["checksum"]) for result in (stock, unijit, luajit)}
+    checksums = {result["checksum"] for result in (stock, unijit, luajit)}
     if len(checksums) != 1:
         raise RuntimeError("stock Lua, UniJIT, and LuaJIT checksums differ")
 

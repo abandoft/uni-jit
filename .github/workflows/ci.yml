@@ -79,6 +79,16 @@ jobs:
           --warmup 100 --iterations 1000 --samples 3
           > build/language/lua-integer-loop.json
 
+      - name: Compare stock Lua, UniJIT, and LuaJIT Float64 execution
+        run: >-
+          python3 benchmark/lua/run_integer.py
+          --script benchmark/lua/float_call.lua
+          --lua build/language/bin/lua5.5-reference
+          --unijit build/language/bin/lua5.5-unijit
+          --luajit build/language/references/luajit/src/luajit
+          --warmup 10000 --iterations 100000 --samples 3
+          > build/language/lua-float.json
+
   build-and-test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
