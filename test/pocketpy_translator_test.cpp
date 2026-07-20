@@ -212,6 +212,48 @@ int main() {
     return EXIT_FAILURE;
   }
 
+  constexpr char kLoopControlSource[] =
+      "def gated_sum(count):\n"
+      "    sum = 0.0\n"
+      "    for iteration in range(count):\n"
+      "        if iteration >= 8.0:\n"
+      "            break\n"
+      "        if iteration < 3.0:\n"
+      "            continue\n"
+      "        sum += iteration\n"
+      "    return sum\n";
+  const auto loop_control =
+      unijit::frontend::pocketpy::translate_numeric_function(
+          kLoopControlSource);
+  const std::array<unijit::ir::Word, 1> loop_control_arguments = {
+      unijit::ir::pack_float64(100.0)};
+  const auto loop_control_result =
+      loop_control.ok()
+          ? loop_control.function->invoke(loop_control_arguments.data(),
+                                          loop_control_arguments.size())
+          : unijit::ir::EvaluationResult{};
+  if (!loop_control.ok() || !loop_control_result.ok() ||
+      loop_control_result.value != unijit::ir::pack_float64(25.0)) {
+    std::cerr << "PocketPy break/continue loop semantics were not preserved: "
+              << loop_control.status.message() << '\n';
+    return EXIT_FAILURE;
+  }
+  constexpr char kRejectedControlElse[] =
+      "def rejected(count):\n"
+      "    sum = 0.0\n"
+      "    for iteration in range(count):\n"
+      "        if iteration > 2.0:\n"
+      "            break\n"
+      "        else:\n"
+      "            sum += iteration\n"
+      "    return sum\n";
+  if (unijit::frontend::pocketpy::translate_numeric_function(
+          kRejectedControlElse)
+          .ok()) {
+    std::cerr << "PocketPy accepted a break guard with an else arm\n";
+    return EXIT_FAILURE;
+  }
+
   constexpr char kLoopDivisionSource[] =
       "def divide_loop(count, divisor):\n"
       "    quotient = 12.0\n"
