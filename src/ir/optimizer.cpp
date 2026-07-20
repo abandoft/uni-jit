@@ -156,8 +156,18 @@ PassResult transform_once(const Function& input) {
     }
 
     if (node.opcode == Opcode::kGuardFloatNonzero) {
-      mapped[index] = builder.guard_float64_nonzero(
-          mapped[node.lhs.id()], static_cast<std::size_t>(node.immediate));
+      const std::size_t guarded_id = node.lhs.id();
+      if (known_constant[guarded_id] &&
+          unpack_float64(constant_value[guarded_id]) != 0.0) {
+        mapped[index] = builder.constant(0);
+        known_constant[index] = true;
+        constant_value[index] = 0;
+        ++simplified;
+        changed = true;
+      } else {
+        mapped[index] = builder.guard_float64_nonzero(
+            mapped[guarded_id], static_cast<std::size_t>(node.immediate));
+      }
       continue;
     }
 
