@@ -35,6 +35,12 @@ overflow, failed clearing, and reclamation of a retained lease. The dedicated
 workflow also runs this executable under ThreadSanitizer, in addition to the
 repository-wide AddressSanitizer and UndefinedBehaviorSanitizer job.
 
+Core runtime tests also invalidate an assumption while a billion-iteration
+native CFG loop is registered, require its safepoint to exit at the dependency
+site, reconstruct the entry frame, verify invalidation quiescence, replace the
+stale cache generation, and preserve an independent sticky interrupt. This path
+is included in the dedicated ThreadSanitizer job.
+
 ## Performance gates
 
 `tool/performance_gate.py` consumes retained benchmark JSON instead of parsing

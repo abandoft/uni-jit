@@ -18,6 +18,8 @@ gates, [doc/PORTABILITY.md](doc/PORTABILITY.md) for verified platforms, and
 capacity, invalidation, telemetry, and concurrent lifetime guarantees.
 [doc/DEOPTIMIZATION.md](doc/DEOPTIMIZATION.md) defines diagnosed exits,
 immutable recovery metadata, and ABI-boundary frame reconstruction.
+[doc/ASSUMPTIONS.md](doc/ASSUMPTIONS.md) defines one-shot runtime dependencies,
+quiescent invalidation, and stale cache-generation retirement.
 [doc/QUALIFICATION.md](doc/QUALIFICATION.md) defines deterministic fuzzing,
 concurrency stress, sanitizers, and commercial performance floors.
 [doc/LUA_FRONTEND.md](doc/LUA_FRONTEND.md) describes the first stock Lua 5.5

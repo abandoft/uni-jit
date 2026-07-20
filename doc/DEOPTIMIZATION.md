@@ -48,6 +48,10 @@ handle is an immutable execution lease, metadata remains available after cache
 replacement, invalidation, eviction, clearing, or cache destruction for as
 long as that handle is retained.
 
+Runtime assumptions use the same records with
+`kAssumptionInvalidated`, default recovery of every typed entry argument, and a
+quiescent invalidation protocol described in [ASSUMPTIONS.md](ASSUMPTIONS.md).
+
 ## Frontend policy and current boundary
 
 PocketPy numeric division records all source parameters plus the guarded

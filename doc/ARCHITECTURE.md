@@ -129,6 +129,13 @@ The planned runtime is tiered:
 4. Invalidated code exits through deoptimization rather than silently using
    stale assumptions.
 
+The first assumption tier implements this as one-shot shared tokens. Managed
+entries register with their dependencies, invalidation wakes existing
+safepoints and waits for quiescence, and both entry and return boundaries reject
+invalid code. Cache lookup and publication retire stale generations without
+revoking memory-safe execution leases. The contract is specified in
+`doc/ASSUMPTIONS.md`.
+
 Code is created writable, populated, instruction-cache synchronized, and only
 then published executable. Published code is never writable. A bounded,
 thread-safe LRU cache publishes immutable functions behind copyable execution

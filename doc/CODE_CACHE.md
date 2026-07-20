@@ -60,6 +60,15 @@ Neither operation interrupts active execution. Frontends that need immediate
 semantic withdrawal must pair invalidation with execution-context safepoints
 and diagnosed exits.
 
+Compiled runtime assumptions provide that pairing as a first-class contract.
+Lookup retires a resident generation whose token is invalid, and publication
+replaces rather than reuses an invalid same-identity generation. Both paths
+increment `CodeCacheStats::assumption_invalidations`. Existing leases remain
+memory-safe but their managed invocation exits through deoptimization. See
+[ASSUMPTIONS.md](ASSUMPTIONS.md) for the required invalidate-before-mutate
+ordering. An incoming function whose dependency is already invalid receives an
+owned uncached handle and is never made lookup-visible.
+
 The current implementation uses shared immutable ownership. Epoch-based
 reclamation may later reduce reference-count traffic without changing the
 public lease and invalidation contract.

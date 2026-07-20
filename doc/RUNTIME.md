@@ -26,7 +26,9 @@ concurrent invocations.
 
 Interruption is sticky until `clear_interrupt()` is called. Invocation clears
 stale exit diagnostics but deliberately does not clear the interrupt request,
-so a request made immediately before entry cannot be lost. `user_data` is an
+so a request made immediately before entry cannot be lost. The same atomic poll
+word has an independent runtime-only wake bit for assumption invalidation; it
+does not consume or clear a concurrent user interruption. `user_data` is an
 opaque frontend-owned pointer and is never dereferenced by the core runtime.
 
 ## Safepoints and exits
@@ -66,6 +68,11 @@ weakening dynamic-divisor checks.
 Runtime helpers and generated code must not unwind a C++ exception across a
 native entry. The supported ABI-boundary reconstruction model and its explicit
 limits are defined in [DEOPTIMIZATION.md](DEOPTIMIZATION.md).
+
+Compiled assumption dependencies use managed invocation to register active
+contexts, wake long-running safepointed code, reconstruct an invalidation exit,
+and establish a quiescent handoff before protected runtime state changes. The
+ordering and cache contract are defined in [ASSUMPTIONS.md](ASSUMPTIONS.md).
 
 ## Compiled-code ownership
 
