@@ -15,15 +15,26 @@ namespace {
 
 struct PackageMaterializer final {
   unijit::ir::Word primitive{0};
+  bool began{false};
+  std::size_t frame_primitives{0};
+  std::size_t frame_objects{0};
+  unijit::runtime::ObjectHandle installed_object{0};
   std::size_t commits{0};
   std::size_t rollbacks{0};
 };
 
-unijit::Status begin_objects(void*, std::size_t count) noexcept {
-  return count == 1
-             ? unijit::Status::ok_status()
-             : unijit::Status{unijit::StatusCode::kInvalidArgument,
-                              "unexpected package object count"};
+unijit::Status begin_objects(
+    void* opaque, unijit::runtime::DeoptimizationReason reason,
+    std::size_t site, std::size_t resume_offset, std::size_t object_count,
+    std::size_t frame_value_count) noexcept {
+  if (reason != unijit::runtime::DeoptimizationReason::kDivisionByZero ||
+      site != 17 || resume_offset != 9 || object_count != 1 ||
+      frame_value_count != 3) {
+    return {unijit::StatusCode::kInvalidArgument,
+            "unexpected package materialization transaction"};
+  }
+  static_cast<PackageMaterializer*>(opaque)->began = true;
+  return unijit::Status::ok_status();
 }
 
 unijit::Status allocate_object(
@@ -52,6 +63,30 @@ unijit::Status store_primitive(
 unijit::Status store_object(void*, unijit::runtime::ObjectHandle,
                             std::size_t,
                             unijit::runtime::ObjectHandle) noexcept {
+  return unijit::Status::ok_status();
+}
+
+unijit::Status store_frame_primitive(
+    void* opaque, std::size_t slot, unijit::ir::ValueType type,
+    unijit::ir::Word) noexcept {
+  if (slot > 1 || type != unijit::ir::ValueType::kFloat64) {
+    return {unijit::StatusCode::kInvalidArgument,
+            "unexpected package primitive frame slot"};
+  }
+  ++static_cast<PackageMaterializer*>(opaque)->frame_primitives;
+  return unijit::Status::ok_status();
+}
+
+unijit::Status store_frame_object(
+    void* opaque, std::size_t slot,
+    unijit::runtime::ObjectHandle value) noexcept {
+  if (slot != 10 || value != 77) {
+    return {unijit::StatusCode::kInvalidArgument,
+            "unexpected package object frame slot"};
+  }
+  auto* state = static_cast<PackageMaterializer*>(opaque);
+  ++state->frame_objects;
+  state->installed_object = value;
   return unijit::Status::ok_status();
 }
 
@@ -176,13 +211,16 @@ int main() {
       guarded_publication.handle.materialize_deoptimization(
           17, zero.data(), zero.size(), context, object_plan,
           {&object_state, begin_objects, allocate_object, store_primitive,
-           store_object, commit_objects, rollback_objects});
+           store_object, store_frame_primitive, store_frame_object,
+           commit_objects, rollback_objects});
   const auto *materialized_object = materialized.frame.find(10);
   if (!materialized.ok() || materialized_object == nullptr ||
       materialized_object->kind !=
           unijit::runtime::MaterializedValueKind::kObject ||
       materialized_object->object != 77 ||
       object_state.primitive != unijit::ir::pack_float64(2.5) ||
+      !object_state.began || object_state.frame_primitives != 2 ||
+      object_state.frame_objects != 1 || object_state.installed_object != 77 ||
       object_state.commits != 1 || object_state.rollbacks != 0) {
     return 28;
   }

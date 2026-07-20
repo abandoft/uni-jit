@@ -54,31 +54,51 @@ struct TestMaterializer final {
   bool active{false};
   bool fail_begin{false};
   bool fail_commit{false};
+  unijit::runtime::DeoptimizationReason reason{
+      unijit::runtime::DeoptimizationReason::kGuardFailed};
+  std::size_t site{0};
+  std::size_t resume_offset{0};
+  std::size_t frame_value_count{0};
   std::size_t begin_count{0};
   std::size_t allocate_count{0};
   std::size_t commit_count{0};
   std::size_t rollback_count{0};
   std::size_t store_count{0};
+  std::size_t frame_store_count{0};
   std::size_t fail_allocate{std::numeric_limits<std::size_t>::max()};
   std::size_t fail_store{std::numeric_limits<std::size_t>::max()};
+  std::size_t fail_frame_store{std::numeric_limits<std::size_t>::max()};
   std::vector<TestMaterializedObject> staged;
   std::vector<TestMaterializedObject> committed;
+  std::vector<unijit::runtime::MaterializedValue> staged_frame;
+  std::vector<unijit::runtime::MaterializedValue> committed_frame;
 };
 
 unijit::Status begin_materialization(void* opaque,
-                                     std::size_t object_count) noexcept {
+                                     unijit::runtime::DeoptimizationReason reason,
+                                     std::size_t site,
+                                     std::size_t resume_offset,
+                                     std::size_t object_count,
+                                     std::size_t frame_value_count) noexcept {
   auto* state = static_cast<TestMaterializer*>(opaque);
   ++state->begin_count;
   state->active = true;
+  state->reason = reason;
+  state->site = site;
+  state->resume_offset = resume_offset;
+  state->frame_value_count = frame_value_count;
   state->allocate_count = 0;
   state->store_count = 0;
+  state->frame_store_count = 0;
   state->staged.clear();
+  state->staged_frame.clear();
   if (state->fail_begin) {
     return {unijit::StatusCode::kResourceExhausted,
             "injected object transaction failure"};
   }
   try {
     state->staged.reserve(object_count);
+    state->staged_frame.reserve(frame_value_count);
     return unijit::Status::ok_status();
   } catch (const std::bad_alloc&) {
     return {unijit::StatusCode::kResourceExhausted,
@@ -165,6 +185,54 @@ unijit::Status store_materialized_object(
   return unijit::Status::ok_status();
 }
 
+unijit::Status store_materialized_frame_primitive(
+    void* opaque, std::size_t slot, unijit::ir::ValueType type,
+    Word value) noexcept {
+  auto* state = static_cast<TestMaterializer*>(opaque);
+  if (!state->active) {
+    return {unijit::StatusCode::kInvalidArgument,
+            "test primitive frame slot is outside a transaction"};
+  }
+  if (state->frame_store_count++ == state->fail_frame_store) {
+    return {unijit::StatusCode::kResourceExhausted,
+            "injected frame slot failure"};
+  }
+  try {
+    state->staged_frame.push_back(
+        {slot,
+         type == unijit::ir::ValueType::kFloat64
+             ? unijit::runtime::MaterializedValueKind::kFloat64
+             : unijit::runtime::MaterializedValueKind::kWord,
+         value, 0});
+    return unijit::Status::ok_status();
+  } catch (const std::bad_alloc&) {
+    return {unijit::StatusCode::kResourceExhausted,
+            "test materializer could not install a primitive frame slot"};
+  }
+}
+
+unijit::Status store_materialized_frame_object(
+    void* opaque, std::size_t slot,
+    unijit::runtime::ObjectHandle value) noexcept {
+  auto* state = static_cast<TestMaterializer*>(opaque);
+  if (!state->active) {
+    return {unijit::StatusCode::kInvalidArgument,
+            "test object frame slot is outside a transaction"};
+  }
+  if (state->frame_store_count++ == state->fail_frame_store) {
+    return {unijit::StatusCode::kResourceExhausted,
+            "injected frame slot failure"};
+  }
+  try {
+    state->staged_frame.push_back(
+        {slot, unijit::runtime::MaterializedValueKind::kObject, 0, value});
+    return unijit::Status::ok_status();
+  } catch (const std::bad_alloc&) {
+    return {unijit::StatusCode::kResourceExhausted,
+            "test materializer could not install an object frame slot"};
+  }
+}
+
 unijit::Status commit_materialization(void* opaque) noexcept {
   auto* state = static_cast<TestMaterializer*>(opaque);
   if (!state->active) {
@@ -177,6 +245,8 @@ unijit::Status commit_materialization(void* opaque) noexcept {
   }
   state->committed.clear();
   state->committed.swap(state->staged);
+  state->committed_frame.clear();
+  state->committed_frame.swap(state->staged_frame);
   state->active = false;
   ++state->commit_count;
   return unijit::Status::ok_status();
@@ -185,6 +255,7 @@ unijit::Status commit_materialization(void* opaque) noexcept {
 void rollback_materialization(void* opaque) noexcept {
   auto* state = static_cast<TestMaterializer*>(opaque);
   state->staged.clear();
+  state->staged_frame.clear();
   state->active = false;
   ++state->rollback_count;
 }
@@ -196,6 +267,8 @@ unijit::runtime::MaterializationCallbacks materialization_callbacks(
           allocate_materialized_object,
           store_materialized_primitive,
           store_materialized_object,
+          store_materialized_frame_primitive,
+          store_materialized_frame_object,
           commit_materialization,
           rollback_materialization};
 }
@@ -1038,6 +1111,10 @@ void test_transactional_object_materialization() {
                  unijit::runtime::MaterializedValueKind::kObject &&
              first_slot->object == 1001 && second_slot != nullptr &&
              second_slot->object == 1002 && state.begin_count == 1 &&
+             state.reason ==
+                 unijit::runtime::DeoptimizationReason::kTypeMismatch &&
+             state.site == 401 && state.resume_offset == 73 &&
+             state.frame_value_count == 4 &&
              state.commit_count == 1 && state.rollback_count == 0 &&
              state.committed.size() == 2 &&
              state.committed[0].fields[0].primitive == 42 &&
@@ -1048,8 +1125,20 @@ void test_transactional_object_materialization() {
              state.committed[1].fields[1].is_object &&
              state.committed[1].fields[1].object == 1001 &&
              state.committed[1].fields[2].primitive ==
-                 unijit::ir::pack_float64(-0.0),
-         "two-phase materialization must preserve primitive bits, object identity, and cycles");
+                 unijit::ir::pack_float64(-0.0) &&
+             state.committed_frame.size() == 4 &&
+             state.committed_frame[0].slot == 0 &&
+             state.committed_frame[0].value == 42 &&
+             state.committed_frame[1].slot == 1 &&
+             state.committed_frame[1].kind ==
+                 unijit::runtime::MaterializedValueKind::kFloat64 &&
+             state.committed_frame[1].value ==
+                 unijit::ir::pack_float64(-0.0) &&
+             state.committed_frame[2].slot == 10 &&
+             state.committed_frame[2].object == 1001 &&
+             state.committed_frame[3].slot == 11 &&
+             state.committed_frame[3].object == 1002,
+         "atomic materialization must preserve metadata, primitive bits, object identity, cycles, and the logical frame");
 
   TestMaterializer failing_state;
   failing_state.fail_store = 1;
@@ -1059,8 +1148,23 @@ void test_transactional_object_materialization() {
              failing_state.commit_count == 0 &&
              failing_state.rollback_count == 1 &&
              failing_state.staged.empty() &&
+             failing_state.staged_frame.empty() &&
              failing_state.committed.empty(),
          "field failures must roll back partially materialized object graphs exactly once");
+
+  TestMaterializer frame_failure;
+  frame_failure.fail_frame_store = 2;
+  const auto failed_frame = unijit::runtime::materialize_frame(
+      frame, plan, materialization_callbacks(&frame_failure));
+  expect(!failed_frame.ok() && frame_failure.begin_count == 1 &&
+             frame_failure.frame_store_count == 3 &&
+             frame_failure.commit_count == 0 &&
+             frame_failure.rollback_count == 1 &&
+             frame_failure.staged.empty() &&
+             frame_failure.staged_frame.empty() &&
+             frame_failure.committed.empty() &&
+             frame_failure.committed_frame.empty(),
+         "frame installation failures must roll back the object graph and logical frame together");
 
   TestMaterializer begin_failure;
   begin_failure.fail_begin = true;
@@ -1090,8 +1194,9 @@ void test_transactional_object_materialization() {
              commit_failure.commit_count == 0 &&
              commit_failure.rollback_count == 1 &&
              commit_failure.staged.empty() &&
+             commit_failure.staged_frame.empty() &&
              commit_failure.committed.empty(),
-         "commit failure must roll back a fully populated object graph");
+         "commit failure must roll back a fully populated object graph and logical frame");
 
   unijit::runtime::MaterializationPlan unknown_reference(401, 73);
   expect(unknown_reference
