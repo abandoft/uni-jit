@@ -112,3 +112,32 @@ if(UNIJIT_BUILD_TESTS)
   add_test(NAME unijit.pocketpy_translator
     COMMAND unijit_pocketpy_translator_tests)
 endif()
+
+if(UNIJIT_BUILD_BENCHMARKS)
+  add_executable(unijit_pocketpy_benchmark
+    "${PROJECT_SOURCE_DIR}/benchmark/pocketpy/call_runner.cpp")
+  target_compile_features(unijit_pocketpy_benchmark PRIVATE cxx_std_17)
+  target_link_libraries(unijit_pocketpy_benchmark
+    PRIVATE unijit_pocketpy_frontend)
+  set_target_properties(unijit_pocketpy_benchmark PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin")
+
+  if(MSVC)
+    target_compile_options(unijit_pocketpy_benchmark PRIVATE /W4 /permissive-)
+    if(UNIJIT_WARNINGS_AS_ERRORS)
+      target_compile_options(unijit_pocketpy_benchmark PRIVATE /WX)
+    endif()
+  else()
+    target_compile_options(unijit_pocketpy_benchmark PRIVATE
+      -Wall -Wextra -Wpedantic)
+    if(UNIJIT_WARNINGS_AS_ERRORS)
+      target_compile_options(unijit_pocketpy_benchmark PRIVATE -Werror)
+    endif()
+  endif()
+
+  if(UNIJIT_BUILD_TESTS)
+    add_test(NAME unijit.pocketpy_benchmark_smoke
+      COMMAND unijit_pocketpy_benchmark
+        --warmup 100 --iterations 1000 --samples 1)
+  endif()
+endif()
