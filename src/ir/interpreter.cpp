@@ -39,6 +39,7 @@ Word evaluate_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
       return pack_float64(unpack_float64(lhs) * unpack_float64(rhs));
     case Opcode::kFloatDivide:
       return pack_float64(unpack_float64(lhs) / unpack_float64(rhs));
+    case Opcode::kGuardFloatNonzero:
     case Opcode::kParameter:
     case Opcode::kConstant:
     case Opcode::kCall:
@@ -97,6 +98,18 @@ EvaluationResult Interpreter::evaluate(const Function& function,
               helper_arguments.data(), helper_arguments.size());
           break;
         }
+        case Opcode::kGuardFloatNonzero:
+          values[index] = 0;
+          if (unpack_float64(values[node.lhs.id()]) == 0.0) {
+            const auto site = static_cast<std::size_t>(node.immediate);
+            if (context != nullptr) {
+              context->record_exit(runtime::ExitReason::kRuntime, site);
+            }
+            return {{StatusCode::kRuntimeExit,
+                     "Float64 nonzero guard requested a runtime exit", site},
+                    0};
+          }
+          break;
         case Opcode::kSafepoint:
           values[index] = 0;
           if (context != nullptr && context->interrupt_requested()) {

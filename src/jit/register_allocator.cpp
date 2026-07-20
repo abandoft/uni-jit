@@ -38,6 +38,8 @@ RegisterAllocation allocate_impl(const ir::Function& function,
         node.opcode == ir::Opcode::kFloatDivide) {
       note_use(&last_use, node.lhs, index);
       note_use(&last_use, node.rhs, index);
+    } else if (node.opcode == ir::Opcode::kGuardFloatNonzero) {
+      note_use(&last_use, node.lhs, index);
     } else if (node.opcode == ir::Opcode::kCall) {
       for (std::size_t argument_index = 0;
            argument_index < node.argument_count; ++argument_index) {

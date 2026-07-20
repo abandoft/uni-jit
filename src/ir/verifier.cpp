@@ -75,6 +75,15 @@ Status verify(const Function& function) {
       expected_call_argument += node.argument_count;
       continue;
     }
+    if (node.opcode == Opcode::kGuardFloatNonzero) {
+      if (node.immediate < 0 || node.type != ValueType::kWord ||
+          !node.lhs.valid() || node.lhs.id() >= index || node.rhs.valid() ||
+          node.argument_begin != 0 || node.argument_count != 0 ||
+          nodes[node.lhs.id()].type != ValueType::kFloat64) {
+        return invalid_node(index, "Float64 nonzero guard is malformed");
+      }
+      continue;
+    }
     if (node.opcode == Opcode::kSafepoint) {
       if (node.immediate < 0 || node.type != ValueType::kWord ||
           node.lhs.valid() || node.rhs.valid() || node.argument_begin != 0 ||

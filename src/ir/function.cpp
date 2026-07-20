@@ -127,6 +127,17 @@ Value FunctionBuilder::float64_divide(Value lhs, Value rhs) {
   return append_binary(Opcode::kFloatDivide, lhs, rhs);
 }
 
+Value FunctionBuilder::guard_float64_nonzero(Value value, std::size_t site) {
+  if (function_.nodes_.size() >= Value::kInvalidId ||
+      site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {
+    return {};
+  }
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  function_.nodes_.push_back(Node{Opcode::kGuardFloatNonzero, value, {},
+                                  static_cast<Word>(site)});
+  return Value{id};
+}
+
 Value FunctionBuilder::call(RuntimeHelper helper,
                             std::vector<Value> arguments,
                             ValueType result_type) {

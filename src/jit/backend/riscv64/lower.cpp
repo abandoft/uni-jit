@@ -385,15 +385,16 @@ LoweringResult lower_impl(const ir::Function& function) {
 
   std::size_t maximum_call_arguments = 0;
   bool has_calls = false;
-  bool has_safepoints = false;
+  bool has_context_operations = false;
   for (const ir::Node& node : function.nodes()) {
     if (node.opcode == ir::Opcode::kCall) {
       has_calls = true;
       maximum_call_arguments =
           std::max(maximum_call_arguments,
                    static_cast<std::size_t>(node.argument_count));
-    } else if (node.opcode == ir::Opcode::kSafepoint) {
-      has_safepoints = true;
+    } else if (node.opcode == ir::Opcode::kSafepoint ||
+               node.opcode == ir::Opcode::kGuardFloatNonzero) {
+      has_context_operations = true;
     }
   }
   const std::size_t call_argument_base = allocation.spill_slots;
@@ -402,7 +403,7 @@ LoweringResult lower_impl(const ir::Function& function) {
   const std::size_t context_slot =
       return_address_slot + static_cast<std::size_t>(has_calls);
   const std::size_t total_slots =
-      context_slot + static_cast<std::size_t>(has_safepoints);
+      context_slot + static_cast<std::size_t>(has_context_operations);
   if (total_slots > kMaximumStackSize / sizeof(ir::Word)) {
     return {{StatusCode::kResourceExhausted,
              "RISC-V runtime-call frame exceeds the backend limit"},
@@ -421,7 +422,7 @@ LoweringResult lower_impl(const ir::Function& function) {
     assembler.store(kReturnAddress, kStackPointer,
                     return_address_slot * sizeof(ir::Word));
   }
-  if (has_safepoints) {
+  if (has_context_operations) {
     assembler.store(kContextArgument, kStackPointer,
                     context_slot * sizeof(ir::Word));
   }
@@ -567,6 +568,59 @@ LoweringResult lower_impl(const ir::Function& function) {
                           spill_offset(destination));
         }
         restore_live_across_call(&assembler, function, allocation, index);
+        break;
+      }
+      case ir::Opcode::kGuardFloatNonzero: {
+        const int source = load_float_operand(
+            &assembler, allocation.locations[node.lhs.id()], kFloatScratch0);
+        assembler.move_float_to_word(kScratch0, source);
+        assembler.add(kScratch0, kScratch0, kScratch0);
+        const std::size_t nonzero = assembler.branch_nonzero(kScratch0);
+
+        assembler.load(kScratch0, kStackPointer,
+                       context_slot * sizeof(ir::Word));
+        const std::size_t no_context = assembler.branch_zero(kScratch0);
+        assembler.move_immediate(kScratch1, 0);
+        assembler.store(kScratch1, kScratch0,
+                        runtime::ExecutionContext::exit_value_offset());
+        assembler.move_immediate(kScratch1, node.immediate);
+        assembler.store(kScratch1, kScratch0,
+                        runtime::ExecutionContext::exit_site_offset());
+        assembler.move_immediate(
+            kScratch1,
+            static_cast<ir::Word>(runtime::ExitReason::kRuntime));
+        assembler.store(kScratch1, kScratch0,
+                        runtime::ExecutionContext::exit_reason_offset());
+
+        const std::size_t exit = assembler.size();
+        assembler.move_immediate(kArgumentAndReturn, 0);
+        if (has_calls) {
+          assembler.load(kReturnAddress, kStackPointer,
+                         return_address_slot * sizeof(ir::Word));
+        }
+        if (stack_size != 0) {
+          assembler.release_stack(stack_size);
+        }
+        assembler.return_to_caller();
+
+        const std::size_t resume = assembler.size();
+        const Status context_status =
+            assembler.patch_zero_branch(no_context, exit);
+        if (!context_status.ok()) {
+          return {context_status, {}, 0};
+        }
+        const Status guard_status =
+            assembler.patch_branch(nonzero, resume, true);
+        if (!guard_status.ok()) {
+          return {guard_status, {}, 0};
+        }
+        const int target = destination.in_register()
+                               ? physical_register(destination)
+                               : kScratch0;
+        assembler.move_immediate(target, 0);
+        if (!destination.in_register()) {
+          assembler.store(target, kStackPointer, spill_offset(destination));
+        }
         break;
       }
       case ir::Opcode::kSafepoint: {

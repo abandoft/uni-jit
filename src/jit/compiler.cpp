@@ -1,5 +1,6 @@
 #include "unijit/jit/compiler.h"
 
+#include <algorithm>
 #include <cstring>
 #include <memory>
 #include <new>
@@ -17,6 +18,25 @@
 #endif
 
 namespace unijit::jit {
+namespace {
+
+ir::EvaluationResult finish_invocation(
+    ir::Word value, runtime::ExecutionContext* context) {
+  if (context == nullptr ||
+      context->exit_reason() == runtime::ExitReason::kNone) {
+    return {Status::ok_status(), value};
+  }
+  if (context->exit_reason() == runtime::ExitReason::kSafepoint) {
+    return {{StatusCode::kExecutionInterrupted,
+             "execution interrupted at a safepoint", context->exit_site()},
+            value};
+  }
+  return {{StatusCode::kRuntimeExit,
+           "compiled execution requested a runtime exit", context->exit_site()},
+          value};
+}
+
+}  // namespace
 
 struct CompiledFunction::Impl final {
   detail::ExecutableMemory memory;
@@ -33,10 +53,12 @@ struct CompiledFunction::Impl final {
 
 CompiledFunction::CompiledFunction(std::unique_ptr<Impl> impl,
                                    std::size_t parameter_count,
-                                   CompilationStats stats) noexcept
+                                   CompilationStats stats,
+                                   bool requires_context) noexcept
     : impl_(std::move(impl)),
       parameter_count_(parameter_count),
-      stats_(stats) {}
+      stats_(stats),
+      requires_context_(requires_context) {}
 
 CompiledFunction::~CompiledFunction() = default;
 CompiledFunction::CompiledFunction(CompiledFunction&&) noexcept = default;
@@ -66,22 +88,14 @@ ir::EvaluationResult CompiledFunction::invoke(
              "compiled function has no published entry point"},
             0};
   }
+  if (context == nullptr && requires_context_) {
+    runtime::ExecutionContext local_context;
+    return finish_invocation(entry(args, &local_context), &local_context);
+  }
   if (context != nullptr) {
     context->clear_exit();
   }
-  const ir::Word value = entry(args, context);
-  if (context == nullptr ||
-      context->exit_reason() == runtime::ExitReason::kNone) {
-    return {Status::ok_status(), value};
-  }
-  if (context->exit_reason() == runtime::ExitReason::kSafepoint) {
-    return {{StatusCode::kExecutionInterrupted,
-             "execution interrupted at a safepoint", context->exit_site()},
-            value};
-  }
-  return {{StatusCode::kRuntimeExit,
-           "compiled execution requested a runtime exit", context->exit_site()},
-          value};
+  return finish_invocation(entry(args, context), context);
 }
 
 CompilationResult Compiler::compile(const ir::Function& function) {
@@ -120,8 +134,14 @@ CompilationResult Compiler::compile(const ir::Function& function) {
 
     CompilationStats stats{lowering.code.size(), lowering.spill_slots,
                            function.nodes().size(), optimized.nodes().size()};
+    const bool requires_context = std::any_of(
+        optimized.nodes().begin(), optimized.nodes().end(),
+        [](const ir::Node& node) {
+          return node.opcode == ir::Opcode::kGuardFloatNonzero;
+        });
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
-        std::move(implementation), function.parameter_count(), stats));
+        std::move(implementation), function.parameter_count(), stats,
+        requires_context));
     return {Status::ok_status(), std::move(compiled)};
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
@@ -167,7 +187,7 @@ CompilationResult Compiler::compile(const ir::ControlFlowFunction& function) {
     CompilationStats stats{lowering.code.size(), lowering.spill_slots,
                            function.nodes().size(), function.nodes().size()};
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
-        std::move(implementation), function.parameter_count(), stats));
+        std::move(implementation), function.parameter_count(), stats, false));
     return {Status::ok_status(), std::move(compiled)};
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,

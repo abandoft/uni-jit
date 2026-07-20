@@ -50,11 +50,12 @@ class CompiledFunction final {
   friend class Compiler;
 
   CompiledFunction(std::unique_ptr<Impl> impl, std::size_t parameter_count,
-                   CompilationStats stats) noexcept;
+                   CompilationStats stats, bool requires_context) noexcept;
 
   std::unique_ptr<Impl> impl_;
   std::size_t parameter_count_{0};
   CompilationStats stats_;
+  bool requires_context_{false};
 };
 
 struct CompilationResult final {

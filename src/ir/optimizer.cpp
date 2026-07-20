@@ -75,6 +75,7 @@ PassResult transform_once(const Function& input) {
   live[input.return_value().id()] = true;
   for (std::size_t index = 0; index < node_count; ++index) {
     if (input.nodes()[index].opcode == Opcode::kCall ||
+        input.nodes()[index].opcode == Opcode::kGuardFloatNonzero ||
         input.nodes()[index].opcode == Opcode::kSafepoint) {
       live[index] = true;
     }
@@ -95,6 +96,8 @@ PassResult transform_once(const Function& input) {
             static_cast<std::size_t>(node.argument_begin) + argument_index];
         live[argument.id()] = true;
       }
+    } else if (node.opcode == Opcode::kGuardFloatNonzero) {
+      live[node.lhs.id()] = true;
     }
   }
 
@@ -149,6 +152,12 @@ PassResult transform_once(const Function& input) {
     if (node.opcode == Opcode::kSafepoint) {
       mapped[index] = builder.safepoint(
           static_cast<std::size_t>(node.immediate));
+      continue;
+    }
+
+    if (node.opcode == Opcode::kGuardFloatNonzero) {
+      mapped[index] = builder.guard_float64_nonzero(
+          mapped[node.lhs.id()], static_cast<std::size_t>(node.immediate));
       continue;
     }
 
