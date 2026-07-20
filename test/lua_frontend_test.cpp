@@ -41,8 +41,12 @@ assert(not recurrence_stats.loop)
 assert(recurrence_stats.active_tier == "optimized")
 assert(recurrence_stats.invocations == #cases)
 assert(recurrence_stats.backedges == 0)
-assert(recurrence_stats.compilation_attempts == 1)
-assert(recurrence_stats.successful_compilations == 1)
+assert(recurrence_stats.compilation_attempts == 1,
+       "unexpected compilation attempt count: " ..
+       tostring(recurrence_stats.compilation_attempts))
+assert(recurrence_stats.successful_compilations == 1,
+       "unexpected successful compilation count: " ..
+       tostring(recurrence_stats.successful_compilations))
 assert(recurrence_stats.failed_compilations == 0)
 assert(recurrence_stats.promotions == 1)
 assert(recurrence_stats.compilation_state == "succeeded")

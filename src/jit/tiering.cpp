@@ -303,11 +303,14 @@ Status TieredCode::publish_optimized(CodeHandle optimized,
     state->tier = CodeTier::kOptimized;
     state->generation = optimized_generation;
     state->fallback = std::move(fallback);
+    saturating_add(&impl_->promotions, 1);
+    impl_->hotness.mark_optimized();
+    // Publish the executable tier only after its accounting is complete.  A
+    // reader that acquires the optimized state must never observe a partial
+    // promotion (for example, optimized code with zero successful builds).
     std::atomic_store_explicit(
         &impl_->state, std::shared_ptr<const Impl::State>(std::move(state)),
         std::memory_order_release);
-    saturating_add(&impl_->promotions, 1);
-    impl_->hotness.mark_optimized();
     return Status::ok_status();
   } catch (const std::bad_alloc&) {
     return {StatusCode::kResourceExhausted,
@@ -389,7 +392,18 @@ void TieredCode::record_backedges(std::uint64_t count) noexcept {
 }
 
 bool TieredCode::try_begin_optimization() noexcept {
-  return impl_ != nullptr && impl_->hotness.try_begin_optimization();
+  if (impl_ == nullptr) {
+    return false;
+  }
+  try {
+    std::lock_guard<std::mutex> lock(impl_->publication_mutex);
+    const std::shared_ptr<const Impl::State> current =
+        std::atomic_load_explicit(&impl_->state, std::memory_order_acquire);
+    return current != nullptr && current->tier == CodeTier::kBaseline &&
+           impl_->hotness.try_begin_optimization();
+  } catch (...) {
+    return false;
+  }
 }
 
 Status TieredCode::report_optimization_failure() {
