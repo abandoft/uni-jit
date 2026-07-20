@@ -14,6 +14,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(UNIJIT_BUILD_TESTS "Build UniJIT tests" ON)
+option(UNIJIT_BUILD_BENCHMARKS "Build UniJIT benchmarks" OFF)
 option(UNIJIT_WARNINGS_AS_ERRORS "Treat UniJIT warnings as errors" OFF)
 
 include(GNUInstallDirs)
@@ -24,6 +25,10 @@ add_subdirectory(src)
 if(UNIJIT_BUILD_TESTS)
   enable_testing()
   add_subdirectory(test)
+endif()
+
+if(UNIJIT_BUILD_BENCHMARKS)
+  add_subdirectory(benchmark)
 endif()
 
 install(
