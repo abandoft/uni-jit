@@ -65,7 +65,9 @@ class MaterializationPlan final {
 
 struct MaterializationCallbacks final {
   void* state{nullptr};
-  Status (*begin)(void* state, std::size_t object_count) noexcept = nullptr;
+  Status (*begin)(void* state, DeoptimizationReason reason, std::size_t site,
+                  std::size_t resume_offset, std::size_t object_count,
+                  std::size_t frame_value_count) noexcept = nullptr;
   Status (*allocate)(void* state, std::size_t object_id, std::uint64_t kind,
                      std::size_t field_count,
                      ObjectHandle* handle) noexcept = nullptr;
@@ -75,6 +77,11 @@ struct MaterializationCallbacks final {
   Status (*store_object)(void* state, ObjectHandle object,
                          std::size_t field_index,
                          ObjectHandle value) noexcept = nullptr;
+  Status (*store_frame_primitive)(void* state, std::size_t slot,
+                                  ir::ValueType type,
+                                  ir::Word value) noexcept = nullptr;
+  Status (*store_frame_object)(void* state, std::size_t slot,
+                               ObjectHandle value) noexcept = nullptr;
   Status (*commit)(void* state) noexcept = nullptr;
   void (*rollback)(void* state) noexcept = nullptr;
 };

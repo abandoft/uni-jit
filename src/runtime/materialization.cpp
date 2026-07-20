@@ -23,7 +23,9 @@ bool valid_source(MaterializationSource source) noexcept {
 Status validate_callbacks(const MaterializationCallbacks& callbacks) noexcept {
   if (callbacks.begin == nullptr || callbacks.allocate == nullptr ||
       callbacks.store_primitive == nullptr ||
-      callbacks.store_object == nullptr || callbacks.commit == nullptr ||
+      callbacks.store_object == nullptr ||
+      callbacks.store_frame_primitive == nullptr ||
+      callbacks.store_frame_object == nullptr || callbacks.commit == nullptr ||
       callbacks.rollback == nullptr) {
     return {StatusCode::kInvalidArgument,
             "object materialization callbacks are incomplete"};
@@ -249,7 +251,10 @@ MaterializationResult materialize_frame(
     }
 
     std::vector<ObjectHandle> handles(plan.size(), 0);
-    const Status begin = callbacks.begin(callbacks.state, plan.size());
+    const std::size_t frame_value_count = frame.values.size() + plan.size();
+    const Status begin = callbacks.begin(
+        callbacks.state, frame.reason, frame.site, frame.resume_offset,
+        plan.size(), frame_value_count);
     if (!begin.ok()) {
       return rollback_failure(callbacks, begin);
     }
@@ -289,6 +294,23 @@ MaterializationResult materialize_frame(
       output.values.push_back(
           {plan.recipes()[index].destination_slot,
            MaterializedValueKind::kObject, 0, handles[index]});
+    }
+    for (const MaterializedValue& value : output.values) {
+      Status installed;
+      if (value.kind == MaterializedValueKind::kObject) {
+        installed = callbacks.store_frame_object(
+            callbacks.state, value.slot, value.object);
+      } else {
+        installed = callbacks.store_frame_primitive(
+            callbacks.state, value.slot,
+            value.kind == MaterializedValueKind::kFloat64
+                ? ir::ValueType::kFloat64
+                : ir::ValueType::kWord,
+            value.value);
+      }
+      if (!installed.ok()) {
+        return rollback_failure(callbacks, installed);
+      }
     }
     const Status committed = callbacks.commit(callbacks.state);
     if (!committed.ok()) {
