@@ -377,6 +377,41 @@ void test_float64_nonzero_guard() {
   }
 }
 
+void test_constant_float64_nonzero_guard_elimination() {
+  FunctionBuilder builder(
+      std::vector<unijit::ir::ValueType>{unijit::ir::ValueType::kFloat64});
+  const Value divisor = builder.float64_constant(2.0);
+  const Value guard = builder.guard_float64_nonzero(divisor, 81);
+  expect(guard.valid(), "constant nonzero guard fixture must be constructible");
+  const Value quotient = builder.float64_divide(builder.parameter(0), divisor);
+  expect(builder.set_return(quotient).ok(),
+         "constant nonzero guard fixture must record its result");
+  const Function function = std::move(builder).build();
+
+  const auto optimization = unijit::ir::Optimizer::run(function);
+  expect(optimization.ok() &&
+             std::none_of(optimization.function.nodes().begin(),
+                          optimization.function.nodes().end(),
+                          [](const unijit::ir::Node& node) {
+                            return node.opcode ==
+                                   unijit::ir::Opcode::kGuardFloatNonzero;
+                          }),
+         "optimizer must eliminate a provably passing Float64 guard");
+
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "constant-guard fixture must compile");
+  if (!compilation.ok()) {
+    return;
+  }
+  expect(!compilation.function->requires_context(),
+         "eliminated guards must not require a managed execution context");
+  const std::array<Word, 1> arguments = {unijit::ir::pack_float64(9.0)};
+  const auto result =
+      compilation.function->invoke(arguments.data(), arguments.size());
+  expect(result.ok() && unijit::ir::unpack_float64(result.value) == 4.5,
+         "constant-guard elimination must preserve the quotient");
+}
+
 void test_verifier_rejects_mixed_arithmetic() {
   FunctionBuilder builder(
       std::vector<unijit::ir::ValueType>{unijit::ir::ValueType::kFloat64});
@@ -965,6 +1000,7 @@ int main() {
   test_float64_ir_and_interpreter();
   test_float64_division();
   test_float64_nonzero_guard();
+  test_constant_float64_nonzero_guard_elimination();
   test_verifier_rejects_mixed_arithmetic();
   test_float64_spill_path();
   test_float64_preserves_host_abi();
