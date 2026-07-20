@@ -71,7 +71,7 @@ each target encoder before executable code is published.
 - `src/jit`: lowering orchestration, code ownership, and executable memory.
 - `src/jit/backend/<arch>`: MIR constraints and native instruction encoding
   for AArch64, x86-64, and RISC-V 64.
-- `frontends/<language>`: bytecode decoding, runtime guards, and deoptimization.
+- `frontend/<language>`: bytecode decoding, runtime guards, and deoptimization.
 - `benchmark`: pinned workloads, runners, environment manifests, and reports.
 
 Frontend code may depend on the IR and runtime API. The IR cannot include a

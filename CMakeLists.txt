@@ -37,7 +37,7 @@ if(UNIJIT_BUILD_LUA_REFERENCE)
   if(NOT EXISTS "${PROJECT_SOURCE_DIR}/third/lua/lua.h")
     message(FATAL_ERROR "Lua submodule is missing; run git submodule update --init")
   endif()
-  add_subdirectory(frontends/lua)
+  add_subdirectory(frontend/lua)
 endif()
 
 if(UNIJIT_BUILD_LUAJIT_REFERENCE)

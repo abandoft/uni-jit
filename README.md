@@ -10,9 +10,9 @@ management. Third-party JIT projects under `third/` are references and
 benchmark competitors; UniJIT does not link against them as its backend.
 
 Native integer backends currently target AArch64, x86-64, and RISC-V 64.
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and delivery
-gates, [docs/PORTABILITY.md](docs/PORTABILITY.md) for verified platforms, and
-[docs/LUA_FRONTEND.md](docs/LUA_FRONTEND.md) for the first stock Lua 5.5
+See [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) for the design and delivery
+gates, [doc/PORTABILITY.md](doc/PORTABILITY.md) for verified platforms, and
+[doc/LUA_FRONTEND.md](doc/LUA_FRONTEND.md) for the first stock Lua 5.5
 integration contract.
 
 ## Build

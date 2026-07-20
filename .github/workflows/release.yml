@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
-      - run: python3 tools/release.py check --tag "$GITHUB_REF_NAME"
+      - run: python3 tool/release.py check --tag "$GITHUB_REF_NAME"
 
   publish:
     name: Publish GitHub Release
@@ -31,7 +31,7 @@ jobs:
       - name: Extract canonical release notes
         run: |
           mkdir -p build
-          python3 tools/release.py notes "$GITHUB_REF_NAME" \
+          python3 tool/release.py notes "$GITHUB_REF_NAME" \
             > build/release-notes.md
 
       - name: Create or update release
