@@ -76,36 +76,42 @@ JSValue invoke_compiled_function(JSContext* context, JSValueConst, int argc,
   return JS_NewFloat64(context, unijit::ir::unpack_float64(result));
 }
 
-JSValue compile_from_javascript(JSContext* context, JSValueConst, int argc,
-                                JSValueConst* arguments) {
-  if (argc < 1) {
-    return JS_ThrowTypeError(context, "unijit.compile expects a function");
+JSValue get_function_to_string(JSContext* context) {
+  JSValue global = JS_GetGlobalObject(context);
+  if (JS_IsException(global)) {
+    return global;
   }
-  return unijit_quickjs_compile(context, arguments[0]);
-}
-
-}  // namespace
-
-extern "C" JSValue unijit_quickjs_compile(JSContext* context,
-                                           JSValueConst function_value) {
-  if (context == nullptr) {
-    return JS_EXCEPTION;
+  JSValue constructor = JS_GetPropertyStr(context, global, "Function");
+  JS_FreeValue(context, global);
+  if (JS_IsException(constructor)) {
+    return constructor;
   }
-  if (JS_IsFunction(context, function_value) == 0) {
-    return JS_ThrowTypeError(context, "unijit.compile expects a function");
+  JSValue prototype = JS_GetPropertyStr(context, constructor, "prototype");
+  JS_FreeValue(context, constructor);
+  if (JS_IsException(prototype)) {
+    return prototype;
   }
-
-  JSValue to_string = JS_GetPropertyStr(context, function_value, "toString");
+  JSValue to_string = JS_GetPropertyStr(context, prototype, "toString");
+  JS_FreeValue(context, prototype);
   if (JS_IsException(to_string)) {
     return to_string;
   }
   if (JS_IsFunction(context, to_string) == 0) {
     JS_FreeValue(context, to_string);
-    return JS_ThrowTypeError(context, "function has no callable toString");
+    return JS_ThrowTypeError(context,
+                             "Function.prototype.toString is not callable");
   }
+  return to_string;
+}
+
+JSValue compile_with_to_string(JSContext* context, JSValueConst function_value,
+                               JSValueConst to_string) {
+  if (JS_IsFunction(context, function_value) == 0) {
+    return JS_ThrowTypeError(context, "unijit.compile expects a function");
+  }
+
   JSValue source_value =
       JS_Call(context, to_string, function_value, 0, nullptr);
-  JS_FreeValue(context, to_string);
   if (JS_IsException(source_value)) {
     return source_value;
   }
@@ -154,6 +160,32 @@ extern "C" JSValue unijit_quickjs_compile(JSContext* context,
   return compiled;
 }
 
+JSValue compile_from_javascript(JSContext* context, JSValueConst, int argc,
+                                JSValueConst* arguments, int,
+                                JSValue* function_data) {
+  if (argc < 1) {
+    return JS_ThrowTypeError(context, "unijit.compile expects a function");
+  }
+  return compile_with_to_string(context, arguments[0], function_data[0]);
+}
+
+}  // namespace
+
+extern "C" JSValue unijit_quickjs_compile(JSContext* context,
+                                           JSValueConst function_value) {
+  if (context == nullptr) {
+    return JS_EXCEPTION;
+  }
+  JSValue to_string = get_function_to_string(context);
+  if (JS_IsException(to_string)) {
+    return to_string;
+  }
+  JSValue result =
+      compile_with_to_string(context, function_value, to_string);
+  JS_FreeValue(context, to_string);
+  return result;
+}
+
 extern "C" int unijit_quickjs_install(JSContext* context) {
   if (context == nullptr) {
     return -1;
@@ -167,8 +199,16 @@ extern "C" int unijit_quickjs_install(JSContext* context) {
     JS_FreeValue(context, global);
     return -1;
   }
-  JSValue compile =
-      JS_NewCFunction(context, compile_from_javascript, "compile", 1);
+  JSValue to_string = get_function_to_string(context);
+  if (JS_IsException(to_string)) {
+    JS_FreeValue(context, module);
+    JS_FreeValue(context, global);
+    return -1;
+  }
+  JSValue data[] = {to_string};
+  JSValue compile = JS_NewCFunctionData(context, compile_from_javascript, 1, 0,
+                                        1, data);
+  JS_FreeValue(context, to_string);
   if (JS_IsException(compile)) {
     JS_FreeValue(context, module);
     JS_FreeValue(context, global);

@@ -71,9 +71,11 @@ int main() {
     return EXIT_FAILURE;
   }
   constexpr char kNativeSource[] =
-      "const native = unijit.compile(function(a, b) {"
+      "function sourceFunction(a, b) {"
       "  return (a + 2.5) * (b - -3);"
-      "});"
+      "}"
+      "sourceFunction.toString = () => 'function(a, b) { return 999; }';"
+      "const native = unijit.compile(sourceFunction);"
       "native(1.5, 4.0, 99);";
   result = JS_Eval(context, kNativeSource, std::strlen(kNativeSource),
                    "<unijit-quickjs-native>", JS_EVAL_TYPE_GLOBAL);
