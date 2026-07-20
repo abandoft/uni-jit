@@ -112,9 +112,10 @@ local counted_sum = function(count)
   return sum
 end
 local native_counted_sum = unijit.compile(counted_sum)
-for _, count in ipairs({-7, 0, 1, 2, 17, 100, 10000}) do
+for count = -7, 128 do
   assert(native_counted_sum(count) == counted_sum(count))
 end
+assert(native_counted_sum(10000) == counted_sum(10000))
 
 local offset_sum = function(count)
   local sum = 5
@@ -126,6 +127,19 @@ end
 local native_offset_sum = unijit.compile(offset_sum)
 for _, count in ipairs({-1, 0, 2, 3, 19, 1000}) do
   assert(native_offset_sum(count) == offset_sum(count))
+end
+
+local near_max_loop = function(limit)
+  local visits = 0
+  for index = 9223372036854775800, limit do
+    visits = visits + 1
+  end
+  return visits
+end
+local native_near_max_loop = unijit.compile(near_max_loop)
+for _, limit in ipairs({math.maxinteger - 8, math.maxinteger - 7,
+                        math.maxinteger - 6, math.maxinteger}) do
+  assert(native_near_max_loop(limit) == near_max_loop(limit))
 end
 
 assert(native_recurrence(9, 3, 5, "extra arguments are ignored") == 48)
@@ -198,6 +212,7 @@ native_float_recurrence = nil
 cached_float_recurrence = nil
 native_counted_sum = nil
 native_offset_sum = nil
+native_near_max_loop = nil
 disposable = nil
 collectgarbage("collect")
 )lua";
