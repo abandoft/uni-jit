@@ -28,6 +28,7 @@
 - Added bounded site-and-resume-checked on-stack replacement entry with unique typed interpreter slots, exact native-signature plans, allocation-free successful marshalling into fixed argument storage, generation-stable compiled-function and cache-lease transfer, retained exit arguments for exact deoptimization, and installed-package coverage.
 - Integrated OSR transfer with atomic tier snapshots, retained the exact attempted baseline or optimized lease under concurrent publication, withdrew optimized assumption exits without invalidating reconstruction, added attempt/entry/exit telemetry to all frontend stats APIs, and stress-tested OSR while generations switch.
 - Added configurable positive per-compilation budgets for parameters, IR nodes and arguments, CFG blocks and edges, exit and stack-map metadata, and native code bytes, enforced before expensive verification and before W^X publication, with 1 MiB untrusted-source ceilings for QuickJS and PocketPy plus public-package rejection coverage.
+- Enforced per-version English/Chinese release-note count parity in metadata validation, preventing tag publication when either single-line changelog omits translated updates.
 
 ## 0.1.6
 
