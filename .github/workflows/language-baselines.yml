@@ -60,7 +60,7 @@ jobs:
           --lua build/language/bin/lua5.5-reference
           --unijit build/language/bin/lua5.5-unijit
           --luajit build/language/references/luajit/src/luajit
-          --warmup 100 --iterations 3000 --samples 5
+          --warmup 1000 --iterations 300000 --samples 7
           > build/language/lua-integer-loop.json
 
       - name: Enforce Lua commercial performance floor
