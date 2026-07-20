@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <string>
 
 #include <quickjs.h>
 
@@ -53,6 +54,61 @@ int main() {
     return EXIT_FAILURE;
   }
 
+  constexpr char kCountedLoopSource[] =
+      "function numericWorkload(count) {"
+      "  let lhs = 1.25;"
+      "  let rhs = -7.5;"
+      "  let checksum = 0.0;"
+      "  for (let iteration = 0; iteration < count; ++iteration) {"
+      "    checksum += (lhs + rhs) * (lhs - 3.25) + rhs * 0.75;"
+      "    lhs += 0.125;"
+      "    rhs -= 0.0625;"
+      "    if (lhs > 4096.0) { lhs = 1.25; }"
+      "    if (rhs < -4096.0) { rhs = -7.5; }"
+      "  }"
+      "  return checksum;"
+      "}";
+  const auto counted_loop =
+      unijit::frontend::quickjs::translate_numeric_function(
+          kCountedLoopSource);
+  if (!counted_loop.ok() || counted_loop.parameter_count != 1 ||
+      !counted_loop.function->requires_context()) {
+    std::cerr << "QuickJS counted loop did not compile: "
+              << counted_loop.status.message() << '\n';
+    return EXIT_FAILURE;
+  }
+  constexpr std::size_t kLoopIterations = 10000;
+  double expected_loop = 0.0;
+  double expected_lhs = 1.25;
+  double expected_rhs = -7.5;
+  for (std::size_t iteration = 0; iteration < kLoopIterations; ++iteration) {
+    expected_loop += (expected_lhs + expected_rhs) *
+                         (expected_lhs - 3.25) +
+                     expected_rhs * 0.75;
+    expected_lhs += 0.125;
+    expected_rhs -= 0.0625;
+    if (expected_lhs > 4096.0) {
+      expected_lhs = 1.25;
+    }
+    if (expected_rhs < -4096.0) {
+      expected_rhs = -7.5;
+    }
+  }
+  const std::array<unijit::ir::Word, 1> loop_arguments = {
+      unijit::ir::pack_float64(static_cast<double>(kLoopIterations))};
+  const auto loop_result = counted_loop.function->invoke(
+      loop_arguments.data(), loop_arguments.size());
+  if (!loop_result.ok() ||
+      loop_result.value != unijit::ir::pack_float64(expected_loop)) {
+    std::cerr << "QuickJS counted loop produced the wrong native result: "
+              << (loop_result.ok()
+                      ? unijit::ir::unpack_float64(loop_result.value)
+                      : 0.0)
+              << " != " << expected_loop << " ("
+              << loop_result.status.message() << ")\n";
+    return EXIT_FAILURE;
+  }
+
   constexpr std::array<const char*, 3> kRejectedSources = {
       "function(a, a) { return a; }",
       "function(a) { return external + a; }",
@@ -82,6 +138,22 @@ int main() {
   if (JS_IsException(result) ||
       JS_ToFloat64(context, &number, result) != 0 || number != 14.0) {
     std::cerr << "QuickJS did not execute the compiled native closure\n";
+    JS_FreeValue(context, result);
+    return EXIT_FAILURE;
+  }
+  JS_FreeValue(context, result);
+
+  const std::string counted_loop_call =
+      std::string("const nativeLoop = unijit.compile(") +
+      kCountedLoopSource + "); nativeLoop(10000);";
+  result = JS_Eval(context, counted_loop_call.data(), counted_loop_call.size(),
+                   "<unijit-quickjs-counted-loop>", JS_EVAL_TYPE_GLOBAL);
+  number = 0.0;
+  if (JS_IsException(result) ||
+      JS_ToFloat64(context, &number, result) != 0 ||
+      unijit::ir::pack_float64(number) !=
+          unijit::ir::pack_float64(expected_loop)) {
+    std::cerr << "QuickJS did not execute the compiled counted-loop closure\n";
     JS_FreeValue(context, result);
     return EXIT_FAILURE;
   }

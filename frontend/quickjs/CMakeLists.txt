@@ -40,6 +40,7 @@ set_target_properties(unijit_quickjs_reference PROPERTIES
   POSITION_INDEPENDENT_CODE ON)
 
 add_library(unijit_quickjs_frontend STATIC
+  counted_loop_translator.cpp
   jit_module.cpp
   source_translator.cpp)
 target_include_directories(unijit_quickjs_frontend

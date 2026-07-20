@@ -71,8 +71,19 @@ JSValue invoke_compiled_function(JSContext* context, JSValueConst, int argc,
     native_arguments[index] = unijit::ir::pack_float64(number);
   }
 
-  const Word result = owned->function->native_entry()(native_arguments.data(),
-                                                       nullptr);
+  Word result = 0;
+  if (owned->function->requires_context()) {
+    const unijit::ir::EvaluationResult invocation = owned->function->invoke(
+        native_arguments.data(), owned->parameter_count);
+    if (!invocation.ok()) {
+      return JS_ThrowInternalError(
+          context, "UniJIT invocation failed at site %zu: %s",
+          invocation.status.location(), invocation.status.message().c_str());
+    }
+    result = invocation.value;
+  } else {
+    result = owned->function->native_entry()(native_arguments.data(), nullptr);
+  }
   return JS_NewFloat64(context, unijit::ir::unpack_float64(result));
 }
 
