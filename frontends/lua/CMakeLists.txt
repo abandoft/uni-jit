@@ -51,8 +51,6 @@ if(APPLE)
   target_compile_definitions(unijit_lua55_reference PRIVATE LUA_USE_MACOSX)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_definitions(unijit_lua55_reference PRIVATE LUA_USE_LINUX)
-elseif(WIN32)
-  target_compile_definitions(unijit_lua55_reference PRIVATE LUA_USE_WINDOWS)
 endif()
 
 set_target_properties(unijit_lua55_reference PROPERTIES
