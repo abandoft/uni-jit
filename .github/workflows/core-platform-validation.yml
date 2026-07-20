@@ -48,6 +48,7 @@ jobs:
           cmake -S . -B build/platform -G Ninja
           -DCMAKE_BUILD_TYPE=RelWithDebInfo
           -DUNIJIT_BUILD_POCKETPY_REFERENCE=ON
+          -DUNIJIT_BUILD_BENCHMARKS=ON
           -DUNIJIT_WARNINGS_AS_ERRORS=ON
 
       - name: Configure Windows
@@ -55,6 +56,7 @@ jobs:
         run: >-
           cmake -S . -B build/platform -A x64
           -DUNIJIT_BUILD_POCKETPY_REFERENCE=ON
+          -DUNIJIT_BUILD_BENCHMARKS=ON
           -DUNIJIT_WARNINGS_AS_ERRORS=ON
 
       - name: Build
@@ -64,6 +66,28 @@ jobs:
         run: >-
           ctest --test-dir build/platform -C RelWithDebInfo
           --output-on-failure
+
+      - name: Measure CFG Float64 register residency on Unix
+        if: runner.os != 'Windows'
+        run: >-
+          ./build/platform/benchmark/unijit_cfg_float64_benchmark
+          --loop-iterations 1000 --warmup 100 --invocations 500 --samples 7
+          > build/platform/cfg-float64.json
+
+      - name: Measure CFG Float64 register residency on Windows
+        if: runner.os == 'Windows'
+        run: >-
+          .\build\platform\benchmark\RelWithDebInfo\unijit_cfg_float64_benchmark.exe
+          --loop-iterations 1000 --warmup 100 --invocations 500 --samples 7
+          | Out-File -Encoding utf8 build/platform/cfg-float64.json
+
+      - name: Retain CFG Float64 platform evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: cfg-float64-${{ matrix.name }}
+          path: build/platform/cfg-float64.json
+          if-no-files-found: error
 
       - name: Install
         run: >-
