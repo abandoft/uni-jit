@@ -60,8 +60,11 @@ The first CFG path also accepts one structured numeric `for` loop when its
 start and step are integer constants and the step is exactly 1. The limit is a
 guarded runtime integer. Loop-carried Lua registers become explicit CFG block
 parameters, and a bytecode liveness scan avoids carrying dead setup
-registers. Zero-iteration loops and signed limits preserve stock Lua results;
-nested loops, non-unit steps, and early returns are rejected for now.
+registers. The production path uses overflow-safe eight-way body unrolling, a
+bounded scalar tail, and one cooperative safepoint poll per dispatch, so no
+more than eight source iterations occur between polls. Starts near
+`math.maxinteger`, zero-iteration loops, and signed limits preserve stock Lua
+results; nested loops, non-unit steps, and early returns are rejected for now.
 
 The compiled closure owns its executable allocation through a Lua userdata
 upvalue. Its finalizer is idempotent, so collection and adversarial repeated

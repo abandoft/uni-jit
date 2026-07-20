@@ -44,6 +44,8 @@ floor. Hosted validation currently enforces:
 
 | Target | Complete-loop minimum |
 |---|---:|
+| UniJIT over stock Lua 5.5 | 1.25x |
+| UniJIT over LuaJIT | 1.10x |
 | UniJIT over stock QuickJS | 1.25x |
 | UniJIT over V8 Jitless | 1.10x |
 | UniJIT over stock PocketPy | 1.25x |
@@ -54,11 +56,10 @@ The margins are performance floors, not claims that the current observed ratio
 is stable across unrelated machines. Both the raw comparison and the
 machine-readable gate decision are retained as workflow artifacts.
 
-Lua records now include the direct `unijit_speedup_over_luajit` ratio and all
-four hosted Lua baselines are retained. The current Lua complete-loop tier is
-not yet a passing LuaJIT target, so it is deliberately not represented as a
-release-qualified performance gate. Closing that target remains mandatory
-before the corresponding commercial release claim.
+Lua records include the direct `unijit_speedup_over_luajit` ratio and all four
+hosted Lua baselines are retained. Its release gate uses the complete
+1,000-iteration numeric-loop boundary rather than the narrower native-call
+microbenchmark.
 
 ## Local execution
 
