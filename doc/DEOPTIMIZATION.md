@@ -61,8 +61,11 @@ division-by-zero record and a zero Float64 trigger; an unknown runtime exit
 becomes a diagnostic runtime error instead of being silently misclassified.
 
 The current recovery vocabulary is sufficient for entry-argument
-specializations and language exceptions at the ABI boundary. Broader optimized
-tiers still need stack maps for arbitrary live SSA values, materialized object
-state, interpreter-frame installation, and resumable transfer into the stock
-runtime. Those additions can extend recovery sources without exposing target
-register layouts to frontends.
+specializations and language exceptions at the ABI boundary. Compiled guards
+and safepoints now retain canonical stack maps for arbitrary live Word and
+Float64 SSA values while the native frame is active. Broader optimized tiers
+still need captured-value transport after ABI return, materialized object
+state, interpreter-frame installation, unwind registration, and resumable
+transfer into the stock runtime. Those additions can extend recovery sources
+without exposing target register layouts to frontends; see
+[STACK_MAPS.md](STACK_MAPS.md).

@@ -78,6 +78,16 @@ contexts bypass polling for bounded trusted code; guarded functions use managed
 invocation as described in `doc/RUNTIME.md`, with the reconstruction boundary
 defined in `doc/DEOPTIMIZATION.md`.
 
+Every guard and safepoint also receives an immutable canonical stack map.
+Architecture-independent backward dataflow computes the typed SSA values live
+before the effect, including fixed-point loop liveness and block-parameter to
+edge-argument translation. AArch64, x86-64, and RISC-V 64 lowering flush live
+register values to stable frame offsets before the effect, then records the
+native instruction offset and complete frame size. Compiled functions and
+cache leases expose this metadata without exposing physical register layouts;
+the exact contract and remaining frame-installation boundary are specified in
+`doc/STACK_MAPS.md`.
+
 The optimizing tier adds a separate CFG SSA representation with explicit
 basic-block parameters. Predecessor edges supply every block argument, making
 phi semantics visible in construction, verification, interpretation, and
@@ -192,8 +202,9 @@ language semantics permit, with semantic differences listed in the report.
    sanitizers, mobile targets, and cross-platform CI.
 3. Lua tier: Lua bytecode frontend, guards/exits, benchmark corpus, and parity
    testing against the stock interpreter.
-4. Optimizing tier: profiles, CFG SSA, core optimization passes, stack maps,
-   deoptimization, and on-stack replacement.
+4. Optimizing tier: profiles, CFG SSA, core optimization passes, canonical
+   stack maps, deoptimization, complete frame installation, and on-stack
+   replacement.
 5. Additional frontends: QuickJS and PocketPy adapters sharing the same core.
 6. Release qualification: sustained stress, fuzzing, security review,
    performance gates, artifacts, changelog, and monitored release pipelines as

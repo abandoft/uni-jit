@@ -17,6 +17,8 @@
 - Retained complete parameter and return types in compiled functions and cache leases, rejected inconsistent CFG return types, and strengthened tier publication to compare every signature type rather than parameter count alone.
 - Enabled one top-level QuickJS `<`, `<=`, `>`, or `>=` Number comparison with strict chained-comparison rejection and true JavaScript Boolean results that remain correctly typed after asynchronous optimized-tier promotion.
 - Enabled one top-level PocketPy `<`, `<=`, `>`, or `>=` numeric comparison with strict chained-comparison rejection and true PocketPy `bool` results that preserve NaN and asynchronous optimized-tier semantics.
+- Added canonical stack maps for every compiled guard and safepoint, with precise straight-line liveness, fixed-point CFG loop liveness, successor-parameter edge translation, stable typed frame slots, bounded metadata growth, and independent AArch64, x86-64, and RISC-V 64 publication.
+- Exposed immutable native offsets, frame sizes, exit kinds, live SSA locations, and map telemetry through compiled functions and cache leases, enforced unique runtime exit sites, pruned maps with eliminated guards, and verified metadata lifetime through the installed package API.
 
 ## 0.1.6
 

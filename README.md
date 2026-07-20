@@ -18,6 +18,8 @@ gates, [doc/PORTABILITY.md](doc/PORTABILITY.md) for verified platforms, and
 capacity, invalidation, telemetry, and concurrent lifetime guarantees.
 [doc/DEOPTIMIZATION.md](doc/DEOPTIMIZATION.md) defines diagnosed exits,
 immutable recovery metadata, and ABI-boundary frame reconstruction.
+[doc/STACK_MAPS.md](doc/STACK_MAPS.md) defines canonical live SSA locations,
+native site metadata, and compiled-generation ownership.
 [doc/ASSUMPTIONS.md](doc/ASSUMPTIONS.md) defines one-shot runtime dependencies,
 quiescent invalidation, and stale cache-generation retirement.
 [doc/TIERING.md](doc/TIERING.md) defines saturating hotness profiles, single
