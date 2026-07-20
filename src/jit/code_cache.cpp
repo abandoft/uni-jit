@@ -28,6 +28,11 @@ std::size_t CodeHandle::assumption_count() const noexcept {
   return function_ == nullptr ? 0 : function_->assumptions().size();
 }
 
+bool CodeHandle::assumptions_valid() const noexcept {
+  return function_ != nullptr &&
+         function_->assumptions().first_invalid() == nullptr;
+}
+
 const CompilationStats* CodeHandle::compilation_stats() const noexcept {
   return function_ == nullptr ? nullptr : &function_->stats();
 }

@@ -8,6 +8,7 @@ add_library(unijit
   jit/compiler.cpp
   jit/executable_memory.cpp
   jit/register_allocator.cpp
+  jit/tiering.cpp
   runtime/assumption.cpp
   runtime/deoptimization.cpp)
 
