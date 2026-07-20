@@ -123,8 +123,11 @@ void test_execution_context_lifecycle() {
 
 void test_safepoint_ir_and_interpreter() {
   FunctionBuilder builder(0);
-  const Value result = builder.constant(73);
-  expect(builder.safepoint(42).valid(), "safepoint must produce an effect value");
+  const Value base = builder.call(
+      sum_runtime_helper, {builder.constant(70), builder.constant(3)});
+  const Value safepoint = builder.safepoint(42);
+  expect(safepoint.valid(), "safepoint must produce an effect value");
+  const Value result = builder.add(base, safepoint);
   expect(builder.set_return(result).ok(),
          "safepoint fixture must have a return value");
   const Function function = std::move(builder).build();
@@ -158,6 +161,29 @@ void test_safepoint_ir_and_interpreter() {
   expect(completed.ok() && completed.value == 73 &&
              context.exit_reason() == unijit::runtime::ExitReason::kNone,
          "clear safepoints must continue without changing the result");
+
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "safepoint IR must compile to native code");
+  if (compilation.ok()) {
+    context.request_interrupt();
+    const auto native_interrupted =
+        compilation.function->invoke(nullptr, 0, &context);
+    expect(!native_interrupted.ok() &&
+               native_interrupted.status.code() ==
+                   unijit::StatusCode::kExecutionInterrupted &&
+               native_interrupted.status.location() == 42 &&
+               context.exit_reason() ==
+                   unijit::runtime::ExitReason::kSafepoint,
+           "native safepoints must exit with the matching site identity");
+
+    context.clear_interrupt();
+    const auto native_completed =
+        compilation.function->invoke(nullptr, 0, &context);
+    expect(native_completed.ok() && native_completed.value == 73,
+           "native clear safepoints must continue with a zero effect value");
+    expect(compilation.function->native_entry()(nullptr, nullptr) == 73,
+           "a null execution context must bypass safepoint polling");
+  }
 }
 
 void test_differential_arithmetic() {

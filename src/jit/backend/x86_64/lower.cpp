@@ -10,6 +10,7 @@
 
 #include "jit/code_buffer.h"
 #include "jit/register_allocator.h"
+#include "unijit/runtime/execution_context.h"
 
 namespace unijit::jit::detail::x86_64 {
 namespace {
@@ -27,11 +28,13 @@ constexpr int kR11 = 11;
 
 #if defined(_WIN32)
 constexpr int kArgumentRegister = kRcx;
+constexpr int kContextArgumentRegister = kRdx;
 constexpr int kRuntimeArgument0 = kRcx;
 constexpr int kRuntimeArgument1 = kRdx;
 constexpr std::size_t kCallStackAdjustment = 40;
 #else
 constexpr int kArgumentRegister = kRdi;
+constexpr int kContextArgumentRegister = kRsi;
 constexpr int kRuntimeArgument0 = kRdi;
 constexpr int kRuntimeArgument1 = kRsi;
 constexpr std::size_t kCallStackAdjustment = 8;
@@ -188,6 +191,17 @@ class Assembler final {
     emit_modrm(3, source, source);
     buffer_.emit_u8(0x0FU);
     buffer_.emit_u8(0x85U);
+    const std::size_t displacement = buffer_.size();
+    buffer_.emit_u32(0);
+    return displacement;
+  }
+
+  std::size_t branch_zero(int source) {
+    emit_rex(source, source);
+    buffer_.emit_u8(0x85U);
+    emit_modrm(3, source, source);
+    buffer_.emit_u8(0x0FU);
+    buffer_.emit_u8(0x84U);
     const std::size_t displacement = buffer_.size();
     buffer_.emit_u32(0);
     return displacement;
@@ -374,16 +388,21 @@ LoweringResult lower_impl(const ir::Function& function) {
   }
 
   std::size_t maximum_call_arguments = 0;
+  bool has_safepoints = false;
   for (const ir::Node& node : function.nodes()) {
     if (node.opcode == ir::Opcode::kCall) {
       maximum_call_arguments =
           std::max(maximum_call_arguments,
                    static_cast<std::size_t>(node.argument_count));
+    } else if (node.opcode == ir::Opcode::kSafepoint) {
+      has_safepoints = true;
     }
   }
   const std::size_t call_argument_base = allocation.spill_slots;
-  const std::size_t total_slots =
+  const std::size_t context_slot =
       call_argument_base + maximum_call_arguments;
+  const std::size_t total_slots =
+      context_slot + static_cast<std::size_t>(has_safepoints);
   if (total_slots > kMaximumStackSize / sizeof(ir::Word)) {
     return {{StatusCode::kResourceExhausted,
              "x86-64 runtime-call frame exceeds the backend limit"},
@@ -397,6 +416,10 @@ LoweringResult lower_impl(const ir::Function& function) {
   const std::size_t stack_size = (raw_stack_size + 15U) & ~std::size_t{15U};
   if (stack_size != 0) {
     assembler.reserve_stack(stack_size);
+  }
+  if (has_safepoints) {
+    assembler.store(kContextArgumentRegister, kRsp,
+                    context_slot * sizeof(ir::Word));
   }
 
   for (std::size_t index = 0; index < function.nodes().size(); ++index) {
@@ -535,10 +558,51 @@ LoweringResult lower_impl(const ir::Function& function) {
         restore_live_across_call(&assembler, function, allocation, index);
         break;
       }
-      case ir::Opcode::kSafepoint:
-        return {{StatusCode::kCodeGenerationFailed,
-                 "x86-64 safepoint lowering is unavailable"},
-                {}, 0};
+      case ir::Opcode::kSafepoint: {
+        assembler.load(kScratch0, kRsp, context_slot * sizeof(ir::Word));
+        const std::size_t no_context = assembler.branch_zero(kScratch0);
+        assembler.load(
+            kScratch0, kScratch0,
+            runtime::ExecutionContext::interrupt_requested_offset());
+        const std::size_t not_interrupted = assembler.branch_zero(kScratch0);
+        assembler.load(kScratch0, kRsp, context_slot * sizeof(ir::Word));
+        assembler.move_immediate(kScratch1, 0);
+        assembler.store(kScratch1, kScratch0,
+                        runtime::ExecutionContext::exit_value_offset());
+        assembler.move_immediate(kScratch1, node.immediate);
+        assembler.store(kScratch1, kScratch0,
+                        runtime::ExecutionContext::exit_site_offset());
+        assembler.move_immediate(
+            kScratch1,
+            static_cast<ir::Word>(runtime::ExitReason::kSafepoint));
+        assembler.store(kScratch1, kScratch0,
+                        runtime::ExecutionContext::exit_reason_offset());
+        assembler.move_immediate(kReturnRegister, 0);
+        if (stack_size != 0) {
+          assembler.release_stack(stack_size);
+        }
+        assembler.return_to_caller();
+
+        const std::size_t resume = assembler.size();
+        const Status context_status =
+            assembler.patch_branch(no_context, resume);
+        if (!context_status.ok()) {
+          return {context_status, {}, 0};
+        }
+        const Status interrupt_status =
+            assembler.patch_branch(not_interrupted, resume);
+        if (!interrupt_status.ok()) {
+          return {interrupt_status, {}, 0};
+        }
+        const int target = destination.in_register()
+                               ? physical_register(destination)
+                               : kScratch0;
+        assembler.move_immediate(target, 0);
+        if (!destination.in_register()) {
+          assembler.store(target, kRsp, spill_offset(destination));
+        }
+        break;
+      }
     }
   }
 

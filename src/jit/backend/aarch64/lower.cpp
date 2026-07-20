@@ -11,11 +11,13 @@
 
 #include "jit/code_buffer.h"
 #include "jit/register_allocator.h"
+#include "unijit/runtime/execution_context.h"
 
 namespace unijit::jit::detail::aarch64 {
 namespace {
 
 constexpr int kReturnRegister = 0;
+constexpr int kContextArgumentRegister = 1;
 constexpr int kArgumentBaseRegister = 9;
 constexpr int kScratch0 = 16;
 constexpr int kScratch1 = 17;
@@ -149,6 +151,12 @@ class Assembler final {
     return offset;
   }
 
+  std::size_t branch_zero(int source) {
+    const std::size_t offset = buffer_.size();
+    buffer_.emit_u32(0xB4000000U | reg(source));
+    return offset;
+  }
+
   Status patch_branch(std::size_t offset, std::size_t target,
                       bool conditional) {
     const std::int64_t delta =
@@ -180,6 +188,27 @@ class Assembler final {
           offset,
           0x14000000U | (static_cast<std::uint32_t>(words) & 0x03FFFFFFU));
     }
+    return Status::ok_status();
+  }
+
+  Status patch_zero_branch(std::size_t offset, std::size_t target) {
+    const std::int64_t delta =
+        static_cast<std::int64_t>(target) - static_cast<std::int64_t>(offset);
+    if ((delta & 3) != 0) {
+      return {StatusCode::kCodeGenerationFailed,
+              "AArch64 safepoint branch target is not instruction aligned"};
+    }
+    const std::int64_t words = delta / 4;
+    constexpr std::int64_t kMinimum = -(std::int64_t{1} << 18);
+    constexpr std::int64_t kMaximum = (std::int64_t{1} << 18) - 1;
+    if (words < kMinimum || words > kMaximum) {
+      return {StatusCode::kResourceExhausted,
+              "AArch64 safepoint branch exceeds its encoding range"};
+    }
+    buffer_.patch_u32(
+        offset,
+        0xB4000000U | ((static_cast<std::uint32_t>(words) & 0x7FFFFU) << 5U) |
+            reg(kScratch0));
     return Status::ok_status();
   }
 
@@ -304,19 +333,24 @@ LoweringResult lower_impl(const ir::Function& function) {
 
   std::size_t maximum_call_arguments = 0;
   bool has_calls = false;
+  bool has_safepoints = false;
   for (const ir::Node& node : function.nodes()) {
     if (node.opcode == ir::Opcode::kCall) {
       has_calls = true;
       maximum_call_arguments =
           std::max(maximum_call_arguments,
                    static_cast<std::size_t>(node.argument_count));
+    } else if (node.opcode == ir::Opcode::kSafepoint) {
+      has_safepoints = true;
     }
   }
   const std::size_t call_argument_base = allocation.spill_slots;
   const std::size_t return_address_slot =
       call_argument_base + maximum_call_arguments;
-  const std::size_t total_slots =
+  const std::size_t context_slot =
       return_address_slot + static_cast<std::size_t>(has_calls);
+  const std::size_t total_slots =
+      context_slot + static_cast<std::size_t>(has_safepoints);
   if (total_slots > kMaximumStackSize / sizeof(ir::Word)) {
     return {{StatusCode::kResourceExhausted,
              "AArch64 runtime-call frame exceeds the backend limit"},
@@ -334,6 +368,10 @@ LoweringResult lower_impl(const ir::Function& function) {
   if (has_calls) {
     assembler.store(kReturnAddressRegister, kStackPointer,
                     return_address_slot * sizeof(ir::Word));
+  }
+  if (has_safepoints) {
+    assembler.store(kContextArgumentRegister, kStackPointer,
+                    context_slot * sizeof(ir::Word));
   }
 
   for (std::size_t index = 0; index < function.nodes().size(); ++index) {
@@ -475,10 +513,57 @@ LoweringResult lower_impl(const ir::Function& function) {
         restore_live_across_call(&assembler, function, allocation, index);
         break;
       }
-      case ir::Opcode::kSafepoint:
-        return {{StatusCode::kCodeGenerationFailed,
-                 "AArch64 safepoint lowering is unavailable"},
-                {}, 0};
+      case ir::Opcode::kSafepoint: {
+        assembler.load(kScratch0, kStackPointer,
+                       context_slot * sizeof(ir::Word));
+        const std::size_t no_context = assembler.branch_zero(kScratch0);
+        assembler.load(
+            kScratch0, kScratch0,
+            runtime::ExecutionContext::interrupt_requested_offset());
+        const std::size_t not_interrupted = assembler.branch_zero(kScratch0);
+        assembler.load(kScratch0, kStackPointer,
+                       context_slot * sizeof(ir::Word));
+        assembler.move_immediate(kScratch1, 0);
+        assembler.store(kScratch1, kScratch0,
+                        runtime::ExecutionContext::exit_value_offset());
+        assembler.move_immediate(kScratch1, node.immediate);
+        assembler.store(kScratch1, kScratch0,
+                        runtime::ExecutionContext::exit_site_offset());
+        assembler.move_immediate(
+            kScratch1,
+            static_cast<ir::Word>(runtime::ExitReason::kSafepoint));
+        assembler.store(kScratch1, kScratch0,
+                        runtime::ExecutionContext::exit_reason_offset());
+        assembler.move_immediate(kReturnRegister, 0);
+        if (has_calls) {
+          assembler.load(kReturnAddressRegister, kStackPointer,
+                         return_address_slot * sizeof(ir::Word));
+        }
+        if (stack_size != 0) {
+          assembler.release_stack(stack_size);
+        }
+        assembler.return_to_caller();
+
+        const std::size_t resume = assembler.size();
+        const Status context_status =
+            assembler.patch_zero_branch(no_context, resume);
+        if (!context_status.ok()) {
+          return {context_status, {}, 0};
+        }
+        const Status interrupt_status =
+            assembler.patch_zero_branch(not_interrupted, resume);
+        if (!interrupt_status.ok()) {
+          return {interrupt_status, {}, 0};
+        }
+        const int target = destination.in_register()
+                               ? physical_register(destination)
+                               : kScratch0;
+        assembler.move_immediate(target, 0);
+        if (!destination.in_register()) {
+          assembler.store(target, kStackPointer, spill_offset(destination));
+        }
+        break;
+      }
     }
   }
 
