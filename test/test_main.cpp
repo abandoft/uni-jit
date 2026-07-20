@@ -293,6 +293,20 @@ Word float_runtime_helper(const Word* arguments, std::size_t count) {
       unijit::ir::unpack_float64(arguments[1]));
 }
 
+Word mixed_runtime_helper(const Word* arguments, std::size_t count) {
+  ++runtime_call_count;
+  if (count != 12) {
+    return unijit::ir::pack_float64(0.0);
+  }
+  double result = 0.0;
+  for (std::size_t index = 0; index < count; ++index) {
+    result += index % 2 == 0
+                  ? static_cast<double>(arguments[index])
+                  : unijit::ir::unpack_float64(arguments[index]);
+  }
+  return unijit::ir::pack_float64(result);
+}
+
 void expect(bool condition, const std::string& message) {
   if (!condition) {
     std::cerr << "FAIL: " << message << '\n';
@@ -2066,6 +2080,16 @@ void test_control_flow_runtime_helper_ir() {
              interpreted.value == unijit::ir::pack_float64(-4.0) &&
              runtime_call_count == 1,
          "CFG interpreter must execute typed helpers and preserve live values");
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "typed CFG runtime calls must compile");
+  if (compilation.ok()) {
+    runtime_call_count = 0;
+    const auto native =
+        compilation.function->invoke(arguments.data(), arguments.size());
+    expect(native.ok() && native.value == interpreted.value &&
+               runtime_call_count == 1,
+           "native CFG calls must preserve Float64 results and live registers");
+  }
 
   ControlFlowBuilder null_builder(0);
   const Value invalid = null_builder.call(nullptr, {});
@@ -2082,6 +2106,241 @@ void test_control_flow_runtime_helper_ir() {
   expect(terminated.call_arguments().empty() &&
              unijit::ir::verify(terminated).ok(),
          "failed CFG call construction must roll back flattened arguments");
+
+  ControlFlowBuilder limited_builder(0);
+  const Value limited_call = limited_builder.call(
+      sum_runtime_helper,
+      {limited_builder.constant(1), limited_builder.constant(2),
+       limited_builder.constant(3)});
+  expect(limited_builder.set_return(limited_call).ok(),
+         "CFG call-limit fixture must record its result");
+  unijit::jit::CompilationLimits limits;
+  limits.maximum_ir_arguments = 2;
+  const auto limited =
+      Compiler::compile(std::move(limited_builder).build(), limits);
+  expect(!limited.ok() &&
+             limited.status.code() ==
+                 unijit::StatusCode::kResourceExhausted &&
+             limited.status.location() == 3,
+         "CFG compilation must bound flattened runtime-call arguments");
+}
+
+void test_control_flow_runtime_call_loop() {
+  using unijit::ir::Block;
+  using unijit::ir::ControlFlowBuilder;
+  using unijit::ir::ControlFlowInterpreter;
+  using unijit::ir::ValueType;
+
+  ControlFlowBuilder builder({ValueType::kWord, ValueType::kFloat64});
+  const Block loop = builder.create_block(
+      {ValueType::kWord, ValueType::kWord, ValueType::kFloat64});
+  const Block exit =
+      builder.create_block({ValueType::kWord, ValueType::kFloat64});
+  const Value zero = builder.constant(0);
+  const Value one = builder.constant(1);
+  expect(builder.jump(loop, {builder.parameter(0), zero,
+                             builder.parameter(1)})
+             .ok(),
+         "CFG runtime-call loop must enter with mixed state");
+
+  expect(builder.set_insertion_block(loop).ok(),
+         "CFG runtime-call loop block must exist");
+  const Value remaining = builder.block_parameter(loop, 0);
+  const Value sum = builder.block_parameter(loop, 1);
+  const Value marker = builder.block_parameter(loop, 2);
+  const Value next_sum =
+      builder.call(sum_runtime_helper, {sum, remaining});
+  const Value next_remaining = builder.subtract(remaining, one);
+  const Value continues = builder.less_than(zero, next_remaining);
+  expect(builder
+             .branch(continues, loop,
+                     {next_remaining, next_sum, marker}, exit,
+                     {next_sum, marker})
+             .ok(),
+         "CFG runtime-call loop must carry helper results across its backedge");
+
+  expect(builder.set_insertion_block(exit).ok(),
+         "CFG runtime-call loop exit must exist");
+  const Value final_sum = builder.block_parameter(exit, 0);
+  const Value final_marker = builder.block_parameter(exit, 1);
+  const Value marker_is_positive = builder.float64_less_than(
+      builder.float64_constant(0.0), final_marker);
+  expect(builder.set_return(builder.add(final_sum, marker_is_positive)).ok(),
+         "CFG runtime-call loop must consume live Word and Float64 state");
+
+  const auto function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "CFG runtime-call loop must satisfy verifier invariants");
+  const std::array<Word, 2> arguments = {
+      4, unijit::ir::pack_float64(3.5)};
+  runtime_call_count = 0;
+  const auto interpreted = ControlFlowInterpreter::evaluate(
+      function, arguments.data(), arguments.size());
+  expect(interpreted.ok() && interpreted.value == 11 &&
+             runtime_call_count == 4,
+         "CFG interpreter must execute one Word helper call per iteration");
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "CFG runtime-call loop must compile");
+  if (compilation.ok()) {
+    runtime_call_count = 0;
+    const auto native =
+        compilation.function->invoke(arguments.data(), arguments.size());
+    expect(native.ok() && native.value == interpreted.value &&
+               runtime_call_count == 4,
+           "native CFG loops must preserve mixed values across helper calls");
+  }
+}
+
+void test_control_flow_runtime_call_spills() {
+  using unijit::ir::Block;
+  using unijit::ir::ControlFlowBuilder;
+  using unijit::ir::ControlFlowInterpreter;
+  using unijit::ir::ValueType;
+
+  std::vector<ValueType> types;
+  std::vector<Value> call_arguments;
+  std::array<Word, 12> arguments{};
+  for (std::size_t index = 0; index < arguments.size(); ++index) {
+    types.push_back(index % 2 == 0 ? ValueType::kWord
+                                  : ValueType::kFloat64);
+    arguments[index] = index % 2 == 0
+                           ? static_cast<Word>(index / 2 + 1)
+                           : unijit::ir::pack_float64(
+                                 static_cast<double>(index / 2) + 0.5);
+  }
+  ControlFlowBuilder builder(types);
+  for (std::size_t index = 0; index < arguments.size(); ++index) {
+    call_arguments.push_back(builder.parameter(index));
+  }
+  const Block positive = builder.create_block(0);
+  const Block negative = builder.create_block(0);
+  const Value called =
+      builder.call(mixed_runtime_helper, call_arguments, ValueType::kFloat64);
+  const Value condition =
+      builder.less_than(builder.parameter(0), builder.constant(1000));
+  expect(builder.branch(condition, positive, {}, negative, {}).ok(),
+         "mixed runtime-call fixture must branch on a live Word value");
+  expect(builder.set_insertion_block(positive).ok() &&
+             builder
+                 .set_return(builder.float64_add(called,
+                                                 builder.parameter(1)))
+                 .ok(),
+         "mixed runtime-call positive path must return its Float64 result");
+  expect(builder.set_insertion_block(negative).ok() &&
+             builder
+                 .set_return(builder.float64_subtract(called,
+                                                      builder.parameter(1)))
+                 .ok(),
+         "mixed runtime-call negative path must return its Float64 result");
+
+  const auto function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "mixed runtime-call spill fixture must verify");
+  runtime_call_count = 0;
+  const auto interpreted = ControlFlowInterpreter::evaluate(
+      function, arguments.data(), arguments.size());
+  expect(interpreted.ok() &&
+             interpreted.value == unijit::ir::pack_float64(39.5) &&
+             runtime_call_count == 1,
+         "CFG interpreter must preserve ordered mixed helper arguments");
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "mixed CFG runtime-call spills must compile");
+  if (compilation.ok()) {
+    runtime_call_count = 0;
+    const auto native =
+        compilation.function->invoke(arguments.data(), arguments.size());
+    expect(native.ok() && native.value == interpreted.value &&
+               runtime_call_count == 1,
+           "native CFG calls must marshal mixed register and stack arguments");
+  }
+}
+
+void test_control_flow_effectful_dead_runtime_call() {
+  unijit::ir::ControlFlowBuilder builder(0);
+  builder.call(sum_runtime_helper,
+               {builder.constant(19), builder.constant(23)});
+  expect(builder.set_return(builder.constant(42)).ok(),
+         "dead-result CFG call fixture must record its return value");
+  const auto function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "effectful dead-result CFG calls must verify");
+
+  runtime_call_count = 0;
+  const auto interpreted =
+      unijit::ir::ControlFlowInterpreter::evaluate(function, nullptr, 0);
+  expect(interpreted.ok() && interpreted.value == 42 &&
+             runtime_call_count == 1,
+         "CFG interpreter must retain effectful dead-result calls");
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "effectful dead-result CFG calls must compile");
+  if (compilation.ok()) {
+    runtime_call_count = 0;
+    const auto native = compilation.function->invoke(nullptr, 0);
+    expect(native.ok() && native.value == 42 && runtime_call_count == 1,
+           "native CFG code must retain effectful dead-result calls");
+  }
+}
+
+void test_control_flow_runtime_call_exits() {
+  using unijit::ir::ControlFlowBuilder;
+  using unijit::ir::ValueType;
+
+  constexpr std::size_t kGuardSite = 316;
+  ControlFlowBuilder guard_builder(
+      {ValueType::kFloat64, ValueType::kFloat64});
+  const Value divisor = guard_builder.call(
+      float_runtime_helper,
+      {guard_builder.parameter(0), guard_builder.parameter(1)},
+      ValueType::kFloat64);
+  expect(guard_builder.guard_float64_nonzero(divisor, kGuardSite).valid() &&
+             guard_builder.set_return(divisor).ok(),
+         "CFG call-before-guard fixture must be constructible");
+  const auto guard_function = std::move(guard_builder).build();
+  auto guard_compilation = Compiler::compile(guard_function);
+  expect(guard_compilation.ok(), "CFG calls followed by guards must compile");
+  if (guard_compilation.ok()) {
+    const std::array<Word, 2> arguments = {
+        unijit::ir::pack_float64(2.0),
+        unijit::ir::pack_float64(0.0)};
+    unijit::runtime::ExecutionContext context;
+    runtime_call_count = 0;
+    const auto guarded = guard_compilation.function->invoke(
+        arguments.data(), arguments.size(), &context);
+    expect(!guarded.ok() &&
+               guarded.status.code() == unijit::StatusCode::kRuntimeExit &&
+               guarded.status.location() == kGuardSite &&
+               runtime_call_count == 1,
+           "CFG guard exits must return safely after a helper call");
+  }
+
+  constexpr std::size_t kSafepointSite = 317;
+  ControlFlowBuilder safepoint_builder(1);
+  const Value called = safepoint_builder.call(
+      sum_runtime_helper,
+      {safepoint_builder.parameter(0), safepoint_builder.constant(1)});
+  const Value safepoint = safepoint_builder.safepoint(kSafepointSite);
+  expect(safepoint_builder
+             .set_return(safepoint_builder.add(called, safepoint))
+             .ok(),
+         "CFG call-before-safepoint fixture must be constructible");
+  const auto safepoint_function = std::move(safepoint_builder).build();
+  auto safepoint_compilation = Compiler::compile(safepoint_function);
+  expect(safepoint_compilation.ok(),
+         "CFG calls followed by safepoints must compile");
+  if (safepoint_compilation.ok()) {
+    const std::array<Word, 1> arguments = {41};
+    unijit::runtime::ExecutionContext context;
+    context.request_interrupt();
+    runtime_call_count = 0;
+    const auto interrupted = safepoint_compilation.function->invoke(
+        arguments.data(), arguments.size(), &context);
+    expect(!interrupted.ok() &&
+               interrupted.status.code() ==
+                   unijit::StatusCode::kExecutionInterrupted &&
+               interrupted.status.location() == kSafepointSite &&
+               runtime_call_count == 1,
+           "CFG safepoint exits must return safely after a helper call");
+  }
 }
 
 void test_control_flow_float64_loop() {
@@ -3574,6 +3833,10 @@ int main() {
   test_optimization_exit_state_mapping();
   test_float64_constant_folding();
   test_control_flow_runtime_helper_ir();
+  test_control_flow_runtime_call_loop();
+  test_control_flow_runtime_call_spills();
+  test_control_flow_effectful_dead_runtime_call();
+  test_control_flow_runtime_call_exits();
   test_control_flow_counted_loop();
   test_control_flow_float64_loop();
   test_control_flow_float64_guard_deoptimization();
