@@ -57,7 +57,9 @@ site, and a zero exit value before restoring the native frame. Managed
 invocation reports `StatusCode::kRuntimeExit`; a frontend can then reconstruct
 the language exception without unwinding through generated code. Calling a raw
 native entry with a null context is only supported when `requires_context()` is
-false.
+false. Optimization proves guards over known nonzero constants cannot exit and
+removes them, so functions such as division by a literal keep the raw-entry
+fast path without weakening dynamic-divisor checks.
 
 Runtime helpers and generated code must not unwind a C++ exception across a
 native entry. Later tiers will extend diagnosed runtime exits with full
