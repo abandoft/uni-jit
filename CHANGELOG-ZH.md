@@ -2,6 +2,7 @@
 
 - 为类型化 SSA 与全部原生后端新增 IEEE-754 Float64 除法，并接入受守卫保护的 Lua 5.5 和 QuickJS 前端。
 - 新增覆盖加、减、乘、除的链式 Float64 常量折叠。
+- 新增覆盖全部后端且可诊断退出的副作用 Float64 非零守卫，并以此为 PocketPy 原生除法保留 `ZeroDivisionError` 语义。
 
 ## 0.1.3
 

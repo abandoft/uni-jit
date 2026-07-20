@@ -2,6 +2,7 @@
 
 - Added IEEE-754 Float64 division to typed SSA and every native backend, with guarded Lua 5.5 and QuickJS frontend support.
 - Added chained Float64 constant folding for addition, subtraction, multiplication, and division.
+- Added effectful Float64 nonzero guards with diagnosed exits on every backend and used them to preserve PocketPy `ZeroDivisionError` semantics for native division.
 
 ## 0.1.3
 
