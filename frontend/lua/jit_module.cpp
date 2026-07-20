@@ -37,13 +37,13 @@ namespace {
 
 using unijit::Status;
 using unijit::StatusCode;
-using unijit::ir::FunctionBuilder;
 using unijit::ir::ControlFlowBuilder;
+using unijit::ir::FunctionBuilder;
 using unijit::ir::Value;
 using unijit::ir::Word;
-using unijit::jit::CompilationResult;
 using unijit::jit::CodeCache;
 using unijit::jit::CodeHandle;
+using unijit::jit::CompilationResult;
 using unijit::jit::CompiledFunction;
 using unijit::jit::Compiler;
 
@@ -114,6 +114,20 @@ struct LoopHotnessPlan final {
     std::size_t parameter{0};
   };
 
+  enum class Relation : unsigned char {
+    kEqual,
+    kNotEqual,
+    kLessThan,
+    kLessEqual,
+    kGreaterThan,
+    kGreaterEqual,
+  };
+
+  struct EarlyExit final {
+    Relation relation{Relation::kEqual};
+    Operand threshold;
+  };
+
   std::uint64_t estimate(const Word *arguments,
                          std::size_t argument_count) const noexcept {
     if (!is_loop) {
@@ -147,9 +161,93 @@ struct LoopHotnessPlan final {
       return 0;
     }
     const std::uint64_t completed_backedges = distance / stride;
-    return completed_backedges == std::numeric_limits<std::uint64_t>::max()
-               ? completed_backedges
-               : completed_backedges + 1;
+    const std::uint64_t potential_iterations =
+        completed_backedges == std::numeric_limits<std::uint64_t>::max()
+            ? completed_backedges
+            : completed_backedges + 1;
+    if (!early_exit.has_value() || potential_iterations == 0) {
+      return potential_iterations;
+    }
+    Word threshold = 0;
+    if (!early_exit->threshold.resolve(arguments, argument_count, &threshold)) {
+      return potential_iterations;
+    }
+
+    std::uint64_t first_exit = std::numeric_limits<std::uint64_t>::max();
+    const auto ceiling_quotient = [](std::uint64_t numerator,
+                                     std::uint64_t denominator) {
+      return numerator / denominator +
+             static_cast<std::uint64_t>(numerator % denominator != 0);
+    };
+    const auto increment_saturated = [](std::uint64_t value) {
+      return value == std::numeric_limits<std::uint64_t>::max() ? value
+                                                                : value + 1;
+    };
+    switch (early_exit->relation) {
+    case Relation::kEqual: {
+      if ((step_value > 0 && threshold >= start_value) ||
+          (step_value < 0 && threshold <= start_value)) {
+        const std::uint64_t exit_distance =
+            step_value > 0 ? static_cast<std::uint64_t>(threshold) -
+                                 static_cast<std::uint64_t>(start_value)
+                           : static_cast<std::uint64_t>(start_value) -
+                                 static_cast<std::uint64_t>(threshold);
+        if (exit_distance % stride == 0) {
+          first_exit = exit_distance / stride;
+        }
+      }
+      break;
+    }
+    case Relation::kNotEqual:
+      if (start_value != threshold) {
+        first_exit = 0;
+      } else if (potential_iterations > 1) {
+        first_exit = 1;
+      }
+      break;
+    case Relation::kLessThan:
+      if (start_value < threshold) {
+        first_exit = 0;
+      } else if (step_value < 0) {
+        const std::uint64_t exit_distance =
+            static_cast<std::uint64_t>(start_value) -
+            static_cast<std::uint64_t>(threshold);
+        first_exit = increment_saturated(exit_distance / stride);
+      }
+      break;
+    case Relation::kLessEqual:
+      if (start_value <= threshold) {
+        first_exit = 0;
+      } else if (step_value < 0) {
+        const std::uint64_t exit_distance =
+            static_cast<std::uint64_t>(start_value) -
+            static_cast<std::uint64_t>(threshold);
+        first_exit = ceiling_quotient(exit_distance, stride);
+      }
+      break;
+    case Relation::kGreaterThan:
+      if (start_value > threshold) {
+        first_exit = 0;
+      } else if (step_value > 0) {
+        const std::uint64_t exit_distance =
+            static_cast<std::uint64_t>(threshold) -
+            static_cast<std::uint64_t>(start_value);
+        first_exit = increment_saturated(exit_distance / stride);
+      }
+      break;
+    case Relation::kGreaterEqual:
+      if (start_value >= threshold) {
+        first_exit = 0;
+      } else if (step_value > 0) {
+        const std::uint64_t exit_distance =
+            static_cast<std::uint64_t>(threshold) -
+            static_cast<std::uint64_t>(start_value);
+        first_exit = ceiling_quotient(exit_distance, stride);
+      }
+      break;
+    }
+    return first_exit < potential_iterations ? first_exit + 1
+                                             : potential_iterations;
   }
 
   bool has_zero_step(const Word *arguments,
@@ -163,6 +261,7 @@ struct LoopHotnessPlan final {
   Operand start;
   Operand limit;
   Operand step;
+  std::optional<EarlyExit> early_exit;
 };
 
 Word lua_integer_for_remaining(const Word *arguments,
@@ -196,14 +295,11 @@ Word lua_integer_for_remaining(const Word *arguments,
   return bits;
 }
 
-constexpr std::uint64_t kIntegerBaselineFingerprint =
-    0x554A4C5549424153ULL;
-constexpr std::uint64_t kIntegerOptimizedFingerprint =
-    0x554A4C5541494E54ULL;
+constexpr std::uint64_t kIntegerBaselineFingerprint = 0x554A4C5549424153ULL;
+constexpr std::uint64_t kIntegerOptimizedFingerprint = 0x554A4C5541494E54ULL;
 constexpr std::uint64_t kFloatBaselineFingerprint = 0x554A4C5546424153ULL;
 constexpr std::uint64_t kFloatOptimizedFingerprint = 0x554A4C5541464C54ULL;
-constexpr unijit::jit::TieringThresholds kLuaTieringThresholds{64, 10000,
-                                                               64};
+constexpr unijit::jit::TieringThresholds kLuaTieringThresholds{64, 10000, 64};
 constexpr std::size_t kLuaSchedulerBytes = 16U * 1024U * 1024U;
 
 struct CompiledFunctionState final {
@@ -212,12 +308,10 @@ struct CompiledFunctionState final {
       std::shared_ptr<const PrototypeSnapshot> retained_prototype,
       std::string retained_cache_key, LoopHotnessPlan retained_loop_hotness,
       bool supports_tiering)
-      : parameter_count(parameters),
-        mode(numeric_mode),
+      : parameter_count(parameters), mode(numeric_mode),
         prototype(std::move(retained_prototype)),
         cache_key(std::move(retained_cache_key)),
-        loop_hotness(retained_loop_hotness),
-        tierable(supports_tiering),
+        loop_hotness(retained_loop_hotness), tierable(supports_tiering),
         scheduling_identity("lua55:" + std::to_string(id)),
         code(kLuaTieringThresholds) {}
 
@@ -295,8 +389,8 @@ LuaService &lua_service() {
   return service;
 }
 
-std::uint64_t cache_fingerprint(
-    NumericMode mode, unijit::jit::OptimizationLevel level) noexcept {
+std::uint64_t cache_fingerprint(NumericMode mode,
+                                unijit::jit::OptimizationLevel level) noexcept {
   if (mode == NumericMode::kInteger) {
     return level == unijit::jit::OptimizationLevel::kBaseline
                ? kIntegerBaselineFingerprint
@@ -307,8 +401,7 @@ std::uint64_t cache_fingerprint(
              : kFloatOptimizedFingerprint;
 }
 
-template <typename T>
-void append_binary(std::string *output, const T &value) {
+template <typename T> void append_binary(std::string *output, const T &value) {
   output->append(reinterpret_cast<const char *>(&value), sizeof(value));
 }
 
@@ -322,11 +415,9 @@ bool prototype_cache_key(const Proto &prototype, NumericMode mode,
   }
   try {
     output->clear();
-    output->reserve(sizeof(Instruction) *
-                        static_cast<std::size_t>(prototype.sizecode) +
-                    sizeof(TValue) *
-                        static_cast<std::size_t>(prototype.sizek) +
-                    32U);
+    output->reserve(
+        sizeof(Instruction) * static_cast<std::size_t>(prototype.sizecode) +
+        sizeof(TValue) * static_cast<std::size_t>(prototype.sizek) + 32U);
     const auto numeric_mode = static_cast<unsigned char>(mode);
     append_binary(output, numeric_mode);
     append_binary(output, prototype.numparams);
@@ -336,9 +427,9 @@ bool prototype_cache_key(const Proto &prototype, NumericMode mode,
     append_binary(output, prototype.sizek);
     append_binary(output, prototype.sizecode);
     if (prototype.sizecode != 0) {
-      output->append(
-          reinterpret_cast<const char *>(prototype.code),
-          sizeof(Instruction) * static_cast<std::size_t>(prototype.sizecode));
+      output->append(reinterpret_cast<const char *>(prototype.code),
+                     sizeof(Instruction) *
+                         static_cast<std::size_t>(prototype.sizecode));
     }
     for (int index = 0; index < prototype.sizek; ++index) {
       const TValue *constant = &prototype.k[index];
@@ -362,8 +453,8 @@ bool prototype_cache_key(const Proto &prototype, NumericMode mode,
   }
 }
 
-std::shared_ptr<const PrototypeSnapshot> capture_prototype(
-    const Proto &prototype) {
+std::shared_ptr<const PrototypeSnapshot>
+capture_prototype(const Proto &prototype) {
   if (prototype.sizecode < 0 || prototype.sizek < 0 ||
       prototype.sizeupvalues < 0 || prototype.sizep != 0 ||
       (prototype.sizecode != 0 && prototype.code == nullptr) ||
@@ -377,8 +468,8 @@ std::shared_ptr<const PrototypeSnapshot> capture_prototype(
     snapshot->maxstacksize = prototype.maxstacksize;
     snapshot->sizeupvalues = prototype.sizeupvalues;
     if (prototype.sizecode != 0) {
-      snapshot->instructions.assign(
-          prototype.code, prototype.code + prototype.sizecode);
+      snapshot->instructions.assign(prototype.code,
+                                    prototype.code + prototype.sizecode);
     }
     snapshot->constants.reserve(static_cast<std::size_t>(prototype.sizek));
     for (int index = 0; index < prototype.sizek; ++index) {
@@ -444,45 +535,196 @@ LoopHotnessPlan analyze_loop_hotness(const Proto &prototype) {
            plan.step.constant == 0)) {
         return plan;
       }
+
+      const int loop_pc = pc + GETARG_Bx(instruction) + 1;
+      if (loop_pc <= pc || loop_pc >= prototype.sizecode ||
+          GET_OPCODE(prototype.code[loop_pc]) != OP_FORLOOP) {
+        return plan;
+      }
+      const auto reverse_relation = [](LoopHotnessPlan::Relation relation) {
+        switch (relation) {
+        case LoopHotnessPlan::Relation::kLessThan:
+          return LoopHotnessPlan::Relation::kGreaterThan;
+        case LoopHotnessPlan::Relation::kLessEqual:
+          return LoopHotnessPlan::Relation::kGreaterEqual;
+        case LoopHotnessPlan::Relation::kGreaterThan:
+          return LoopHotnessPlan::Relation::kLessThan;
+        case LoopHotnessPlan::Relation::kGreaterEqual:
+          return LoopHotnessPlan::Relation::kLessEqual;
+        default:
+          return relation;
+        }
+      };
+      const auto complement_relation = [](LoopHotnessPlan::Relation relation) {
+        switch (relation) {
+        case LoopHotnessPlan::Relation::kEqual:
+          return LoopHotnessPlan::Relation::kNotEqual;
+        case LoopHotnessPlan::Relation::kNotEqual:
+          return LoopHotnessPlan::Relation::kEqual;
+        case LoopHotnessPlan::Relation::kLessThan:
+          return LoopHotnessPlan::Relation::kGreaterEqual;
+        case LoopHotnessPlan::Relation::kLessEqual:
+          return LoopHotnessPlan::Relation::kGreaterThan;
+        case LoopHotnessPlan::Relation::kGreaterThan:
+          return LoopHotnessPlan::Relation::kLessEqual;
+        case LoopHotnessPlan::Relation::kGreaterEqual:
+          return LoopHotnessPlan::Relation::kLessThan;
+        }
+        return relation;
+      };
+      for (int condition_pc = pc + 1; condition_pc + 1 < loop_pc;
+           ++condition_pc) {
+        const Instruction condition = prototype.code[condition_pc];
+        const OpCode condition_opcode = GET_OPCODE(condition);
+        if (condition_opcode != OP_EQ && condition_opcode != OP_LT &&
+            condition_opcode != OP_LE && condition_opcode != OP_EQK &&
+            condition_opcode != OP_EQI && condition_opcode != OP_LTI &&
+            condition_opcode != OP_LEI && condition_opcode != OP_GTI &&
+            condition_opcode != OP_GEI) {
+          continue;
+        }
+        if (GET_OPCODE(prototype.code[condition_pc + 1]) != OP_JMP) {
+          return plan;
+        }
+        const int action_pc = condition_pc + 2;
+        const int bypass_pc =
+            condition_pc + 2 + GETARG_sJ(prototype.code[condition_pc + 1]);
+        if (action_pc >= loop_pc || bypass_pc <= action_pc ||
+            bypass_pc > loop_pc) {
+          return plan;
+        }
+        const OpCode action_opcode = GET_OPCODE(prototype.code[action_pc]);
+        const bool guarded_return =
+            action_opcode == OP_RETURN || action_opcode == OP_RETURN1;
+        const bool guarded_break =
+            action_opcode == OP_JMP &&
+            action_pc + 1 + GETARG_sJ(prototype.code[action_pc]) == loop_pc + 1;
+        if (!guarded_return && !guarded_break) {
+          return plan;
+        }
+
+        LoopHotnessPlan::Relation relation = LoopHotnessPlan::Relation::kEqual;
+        int threshold_register = -1;
+        LoopHotnessPlan::Operand threshold;
+        const int lhs_register = GETARG_A(condition);
+        if (condition_opcode == OP_EQ || condition_opcode == OP_LT ||
+            condition_opcode == OP_LE) {
+          const int rhs_register = GETARG_B(condition);
+          if (lhs_register == state_base + 2 &&
+              rhs_register != state_base + 2) {
+            threshold_register = rhs_register;
+          } else if (rhs_register == state_base + 2 &&
+                     lhs_register != state_base + 2) {
+            threshold_register = lhs_register;
+          } else {
+            return plan;
+          }
+          if (threshold_register < 0 ||
+              threshold_register >= prototype.maxstacksize) {
+            return plan;
+          }
+          threshold = capture_operand(
+              registers[static_cast<std::size_t>(threshold_register)]);
+          relation = condition_opcode == OP_EQ
+                         ? LoopHotnessPlan::Relation::kEqual
+                         : (condition_opcode == OP_LT
+                                ? LoopHotnessPlan::Relation::kLessThan
+                                : LoopHotnessPlan::Relation::kLessEqual);
+          if (rhs_register == state_base + 2) {
+            relation = reverse_relation(relation);
+          }
+        } else {
+          if (lhs_register != state_base + 2) {
+            return plan;
+          }
+          if (condition_opcode == OP_EQK) {
+            const int constant_index = GETARG_B(condition);
+            if (constant_index < 0 || constant_index >= prototype.sizek ||
+                !ttisinteger(&prototype.k[constant_index])) {
+              return plan;
+            }
+            threshold.kind = LoopHotnessPlan::Operand::Kind::kConstant;
+            threshold.constant =
+                static_cast<Word>(ivalue(&prototype.k[constant_index]));
+            relation = LoopHotnessPlan::Relation::kEqual;
+          } else {
+            threshold.kind = LoopHotnessPlan::Operand::Kind::kConstant;
+            threshold.constant = static_cast<Word>(GETARG_sB(condition));
+            if (condition_opcode == OP_EQI) {
+              relation = LoopHotnessPlan::Relation::kEqual;
+            } else if (condition_opcode == OP_LTI) {
+              relation = LoopHotnessPlan::Relation::kLessThan;
+            } else if (condition_opcode == OP_LEI) {
+              relation = LoopHotnessPlan::Relation::kLessEqual;
+            } else if (condition_opcode == OP_GTI) {
+              relation = LoopHotnessPlan::Relation::kGreaterThan;
+            } else {
+              relation = LoopHotnessPlan::Relation::kGreaterEqual;
+            }
+          }
+        }
+        if (!threshold.resolvable()) {
+          return plan;
+        }
+        if (threshold_register >= 0) {
+          for (int body_pc = pc + 1; body_pc < condition_pc; ++body_pc) {
+            const OpCode body_opcode = GET_OPCODE(prototype.code[body_pc]);
+            const bool writes_destination =
+                body_opcode == OP_MOVE || body_opcode == OP_LOADI ||
+                body_opcode == OP_LOADK || body_opcode == OP_ADDI ||
+                body_opcode == OP_ADDK || body_opcode == OP_SUBK ||
+                body_opcode == OP_MULK || body_opcode == OP_ADD ||
+                body_opcode == OP_SUB || body_opcode == OP_MUL;
+            if (writes_destination &&
+                GETARG_A(prototype.code[body_pc]) == threshold_register) {
+              return plan;
+            }
+          }
+        }
+        if (GETARG_k(condition) != 0) {
+          relation = complement_relation(relation);
+        }
+        plan.early_exit = LoopHotnessPlan::EarlyExit{relation, threshold};
+        return plan;
+      }
       return plan;
     }
 
     if (destination < 0 || destination >= prototype.maxstacksize) {
       continue;
     }
-    SymbolicInteger &result =
-        registers[static_cast<std::size_t>(destination)];
+    SymbolicInteger &result = registers[static_cast<std::size_t>(destination)];
     switch (opcode) {
-      case OP_MOVE: {
-        const int source = GETARG_B(instruction);
-        result = source >= 0 && source < prototype.maxstacksize
-                     ? registers[static_cast<std::size_t>(source)]
-                     : SymbolicInteger{};
-        break;
-      }
-      case OP_LOADI:
-        result.constant = static_cast<Word>(GETARG_sBx(instruction));
+    case OP_MOVE: {
+      const int source = GETARG_B(instruction);
+      result = source >= 0 && source < prototype.maxstacksize
+                   ? registers[static_cast<std::size_t>(source)]
+                   : SymbolicInteger{};
+      break;
+    }
+    case OP_LOADI:
+      result.constant = static_cast<Word>(GETARG_sBx(instruction));
+      result.parameter.reset();
+      break;
+    case OP_LOADK: {
+      const int constant_index = GETARG_Bx(instruction);
+      if (constant_index >= 0 && constant_index < prototype.sizek &&
+          ttisinteger(&prototype.k[constant_index])) {
+        result.constant =
+            static_cast<Word>(ivalue(&prototype.k[constant_index]));
         result.parameter.reset();
-        break;
-      case OP_LOADK: {
-        const int constant_index = GETARG_Bx(instruction);
-        if (constant_index >= 0 && constant_index < prototype.sizek &&
-            ttisinteger(&prototype.k[constant_index])) {
-          result.constant =
-              static_cast<Word>(ivalue(&prototype.k[constant_index]));
-          result.parameter.reset();
-        } else {
-          result = {};
-        }
-        break;
-      }
-      case OP_MMBIN:
-      case OP_MMBINI:
-      case OP_MMBINK:
-        break;
-      default:
+      } else {
         result = {};
-        break;
+      }
+      break;
+    }
+    case OP_MMBIN:
+    case OP_MMBINI:
+    case OP_MMBINK:
+      break;
+    default:
+      result = {};
+      break;
     }
   }
   return plan;
@@ -501,9 +743,9 @@ bool valid_destination(const std::vector<Value> &registers, int index) {
   return index >= 0 && static_cast<std::size_t>(index) < registers.size();
 }
 
-CompilationResult compile_straight_prototype(
-    const Proto &prototype,
-    unijit::jit::OptimizationLevel optimization_level) {
+CompilationResult
+compile_straight_prototype(const Proto &prototype,
+                           unijit::jit::OptimizationLevel optimization_level) {
   if (isvararg(&prototype)) {
     return translation_error(0, "vararg Lua functions are not supported");
   }
@@ -712,8 +954,7 @@ CompilationResult compile_straight_prototype(
 }
 
 CompilationResult compile_numeric_for_prototype(
-    const Proto &prototype,
-    unijit::jit::OptimizationLevel optimization_level) {
+    const Proto &prototype, unijit::jit::OptimizationLevel optimization_level) {
   if (isvararg(&prototype)) {
     return translation_error(0, "vararg Lua functions are not supported");
   }
@@ -736,8 +977,7 @@ CompilationResult compile_numeric_for_prototype(
   }
 
   const Instruction preparation = prototype.code[preparation_pc];
-  const int loop_pc =
-      preparation_pc + GETARG_Bx(preparation) + 1;
+  const int loop_pc = preparation_pc + GETARG_Bx(preparation) + 1;
   if (loop_pc <= preparation_pc || loop_pc >= prototype.sizecode ||
       GET_OPCODE(prototype.code[loop_pc]) != OP_FORLOOP ||
       GETARG_Bx(prototype.code[loop_pc]) != loop_pc - preparation_pc) {
@@ -750,6 +990,78 @@ CompilationResult compile_numeric_for_prototype(
       GETARG_A(prototype.code[loop_pc]) != state_base) {
     return translation_error(static_cast<std::size_t>(preparation_pc),
                              "numeric for loop has invalid state registers");
+  }
+
+  enum class GuardedBodyKind : unsigned char {
+    kConditionalBody,
+    kBreak,
+    kReturn,
+  };
+  struct GuardedBodyPlan final {
+    int comparison_pc{-1};
+    int action_begin{-1};
+    int bypass_begin{-1};
+    GuardedBodyKind kind{GuardedBodyKind::kConditionalBody};
+  };
+  std::optional<GuardedBodyPlan> guarded_body;
+  const auto is_integer_comparison = [](OpCode opcode) {
+    return opcode == OP_EQ || opcode == OP_LT || opcode == OP_LE ||
+           opcode == OP_EQK || opcode == OP_EQI || opcode == OP_LTI ||
+           opcode == OP_LEI || opcode == OP_GTI || opcode == OP_GEI;
+  };
+  for (int pc = preparation_pc + 1; pc < loop_pc; ++pc) {
+    const OpCode opcode = GET_OPCODE(prototype.code[pc]);
+    if (!is_integer_comparison(opcode)) {
+      continue;
+    }
+    if (guarded_body.has_value()) {
+      return translation_error(
+          static_cast<std::size_t>(pc),
+          "only one guarded condition is supported in a numeric loop");
+    }
+    if (pc + 1 >= loop_pc || GET_OPCODE(prototype.code[pc + 1]) != OP_JMP) {
+      return translation_error(
+          static_cast<std::size_t>(pc),
+          "numeric-loop comparison is missing its conditional jump");
+    }
+    const int action_begin = pc + 2;
+    const int bypass_begin = pc + 2 + GETARG_sJ(prototype.code[pc + 1]);
+    if (action_begin >= loop_pc || bypass_begin <= action_begin ||
+        bypass_begin > loop_pc) {
+      return translation_error(
+          static_cast<std::size_t>(pc),
+          "numeric-loop condition has unsupported control flow");
+    }
+
+    GuardedBodyKind kind = GuardedBodyKind::kConditionalBody;
+    const OpCode action_opcode = GET_OPCODE(prototype.code[action_begin]);
+    if (action_opcode == OP_JMP) {
+      const int break_target =
+          action_begin + 1 + GETARG_sJ(prototype.code[action_begin]);
+      if (break_target != loop_pc + 1) {
+        return translation_error(
+            static_cast<std::size_t>(action_begin),
+            "guarded numeric-loop jump is not a structured break");
+      }
+      for (int skipped_pc = action_begin + 1; skipped_pc < bypass_begin;
+           ++skipped_pc) {
+        if (GET_OPCODE(prototype.code[skipped_pc]) != OP_CLOSE) {
+          return translation_error(
+              static_cast<std::size_t>(skipped_pc),
+              "structured numeric-loop break has unexpected bytecode");
+        }
+      }
+      kind = GuardedBodyKind::kBreak;
+    } else if (action_opcode == OP_RETURN1 || action_opcode == OP_RETURN) {
+      if (bypass_begin != action_begin + 1) {
+        return translation_error(
+            static_cast<std::size_t>(action_begin),
+            "guarded numeric-loop return must be a single return");
+      }
+      kind = GuardedBodyKind::kReturn;
+    }
+    guarded_body = GuardedBodyPlan{pc, action_begin, bypass_begin, kind};
+    ++pc;
   }
 
   try {
@@ -787,180 +1099,171 @@ CompilationResult compile_numeric_for_prototype(
         }
 
         switch (opcode) {
-          case OP_MOVE: {
-            const int source = GETARG_B(instruction);
-            if (!valid_destination(*values, destination) ||
-                !valid_register(*values, source)) {
-              return bytecode_error(pc, "invalid register in OP_MOVE");
-            }
+        case OP_MOVE: {
+          const int source = GETARG_B(instruction);
+          if (!valid_destination(*values, destination) ||
+              !valid_register(*values, source)) {
+            return bytecode_error(pc, "invalid register in OP_MOVE");
+          }
+          (*values)[static_cast<std::size_t>(destination)] =
+              (*values)[static_cast<std::size_t>(source)];
+          (*constants)[static_cast<std::size_t>(destination)] =
+              (*constants)[static_cast<std::size_t>(source)];
+          break;
+        }
+
+        case OP_LOADI: {
+          if (!valid_destination(*values, destination)) {
+            return bytecode_error(pc, "invalid destination in OP_LOADI");
+          }
+          const Word immediate = static_cast<Word>(GETARG_sBx(instruction));
+          (*values)[static_cast<std::size_t>(destination)] =
+              builder.constant(immediate);
+          (*constants)[static_cast<std::size_t>(destination)] = immediate;
+          break;
+        }
+
+        case OP_LOADK: {
+          const int constant_index = GETARG_Bx(instruction);
+          if (!valid_destination(*values, destination) || constant_index < 0 ||
+              constant_index >= prototype.sizek) {
+            return bytecode_error(pc, "invalid operand in OP_LOADK");
+          }
+          const TValue *constant = &prototype.k[constant_index];
+          if (!ttisinteger(constant)) {
+            return bytecode_error(
+                pc, "only integer constants are supported in OP_LOADK");
+          }
+          const Word immediate = static_cast<Word>(ivalue(constant));
+          (*values)[static_cast<std::size_t>(destination)] =
+              builder.constant(immediate);
+          (*constants)[static_cast<std::size_t>(destination)] = immediate;
+          break;
+        }
+
+        case OP_ADDI: {
+          const int source = GETARG_B(instruction);
+          if (!valid_destination(*values, destination) ||
+              !valid_register(*values, source)) {
+            return bytecode_error(pc, "invalid register in OP_ADDI");
+          }
+          (*values)[static_cast<std::size_t>(destination)] = builder.add(
+              (*values)[static_cast<std::size_t>(source)],
+              builder.constant(static_cast<Word>(GETARG_sC(instruction))));
+          (*constants)[static_cast<std::size_t>(destination)].reset();
+          if (pc + 1 >= end ||
+              GET_OPCODE(prototype.code[pc + 1]) != OP_MMBINI) {
+            return bytecode_error(
+                pc, "OP_ADDI is missing its Lua metamethod fallback");
+          }
+          ++pc;
+          break;
+        }
+
+        case OP_ADDK:
+        case OP_SUBK:
+        case OP_MULK: {
+          const int source = GETARG_B(instruction);
+          const int constant_index = GETARG_C(instruction);
+          if (!valid_destination(*values, destination) ||
+              !valid_register(*values, source) || constant_index < 0 ||
+              constant_index >= prototype.sizek) {
+            return bytecode_error(pc, "invalid operand in constant arithmetic");
+          }
+          const TValue *constant = &prototype.k[constant_index];
+          if (!ttisinteger(constant)) {
+            return bytecode_error(
+                pc, "constant arithmetic requires an integer constant");
+          }
+          const Value lhs = (*values)[static_cast<std::size_t>(source)];
+          const Value rhs =
+              builder.constant(static_cast<Word>(ivalue(constant)));
+          if (opcode == OP_ADDK) {
             (*values)[static_cast<std::size_t>(destination)] =
-                (*values)[static_cast<std::size_t>(source)];
-            (*constants)[static_cast<std::size_t>(destination)] =
-                (*constants)[static_cast<std::size_t>(source)];
-            break;
-          }
-
-          case OP_LOADI: {
-            if (!valid_destination(*values, destination)) {
-              return bytecode_error(pc, "invalid destination in OP_LOADI");
-            }
-            const Word immediate =
-                static_cast<Word>(GETARG_sBx(instruction));
+                builder.add(lhs, rhs);
+          } else if (opcode == OP_SUBK) {
             (*values)[static_cast<std::size_t>(destination)] =
-                builder.constant(immediate);
-            (*constants)[static_cast<std::size_t>(destination)] = immediate;
-            break;
-          }
-
-          case OP_LOADK: {
-            const int constant_index = GETARG_Bx(instruction);
-            if (!valid_destination(*values, destination) ||
-                constant_index < 0 || constant_index >= prototype.sizek) {
-              return bytecode_error(pc, "invalid operand in OP_LOADK");
-            }
-            const TValue *constant = &prototype.k[constant_index];
-            if (!ttisinteger(constant)) {
-              return bytecode_error(
-                  pc, "only integer constants are supported in OP_LOADK");
-            }
-            const Word immediate = static_cast<Word>(ivalue(constant));
+                builder.subtract(lhs, rhs);
+          } else {
             (*values)[static_cast<std::size_t>(destination)] =
-                builder.constant(immediate);
-            (*constants)[static_cast<std::size_t>(destination)] = immediate;
-            break;
+                builder.multiply(lhs, rhs);
           }
-
-          case OP_ADDI: {
-            const int source = GETARG_B(instruction);
-            if (!valid_destination(*values, destination) ||
-                !valid_register(*values, source)) {
-              return bytecode_error(pc, "invalid register in OP_ADDI");
-            }
-            (*values)[static_cast<std::size_t>(destination)] = builder.add(
-                (*values)[static_cast<std::size_t>(source)],
-                builder.constant(static_cast<Word>(GETARG_sC(instruction))));
-            (*constants)[static_cast<std::size_t>(destination)].reset();
-            if (pc + 1 >= end ||
-                GET_OPCODE(prototype.code[pc + 1]) != OP_MMBINI) {
-              return bytecode_error(
-                  pc, "OP_ADDI is missing its Lua metamethod fallback");
-            }
-            ++pc;
-            break;
+          (*constants)[static_cast<std::size_t>(destination)].reset();
+          if (pc + 1 >= end ||
+              GET_OPCODE(prototype.code[pc + 1]) != OP_MMBINK) {
+            return bytecode_error(
+                pc,
+                "constant arithmetic is missing its Lua metamethod fallback");
           }
+          ++pc;
+          break;
+        }
 
-          case OP_ADDK:
-          case OP_SUBK:
-          case OP_MULK: {
-            const int source = GETARG_B(instruction);
-            const int constant_index = GETARG_C(instruction);
-            if (!valid_destination(*values, destination) ||
-                !valid_register(*values, source) || constant_index < 0 ||
-                constant_index >= prototype.sizek) {
-              return bytecode_error(pc,
-                                    "invalid operand in constant arithmetic");
-            }
-            const TValue *constant = &prototype.k[constant_index];
-            if (!ttisinteger(constant)) {
-              return bytecode_error(
-                  pc, "constant arithmetic requires an integer constant");
-            }
-            const Value lhs = (*values)[static_cast<std::size_t>(source)];
-            const Value rhs =
-                builder.constant(static_cast<Word>(ivalue(constant)));
-            if (opcode == OP_ADDK) {
-              (*values)[static_cast<std::size_t>(destination)] =
-                  builder.add(lhs, rhs);
-            } else if (opcode == OP_SUBK) {
-              (*values)[static_cast<std::size_t>(destination)] =
-                  builder.subtract(lhs, rhs);
-            } else {
-              (*values)[static_cast<std::size_t>(destination)] =
-                  builder.multiply(lhs, rhs);
-            }
-            (*constants)[static_cast<std::size_t>(destination)].reset();
-            if (pc + 1 >= end ||
-                GET_OPCODE(prototype.code[pc + 1]) != OP_MMBINK) {
-              return bytecode_error(
-                  pc,
-                  "constant arithmetic is missing its Lua metamethod fallback");
-            }
-            ++pc;
-            break;
+        case OP_ADD:
+        case OP_SUB:
+        case OP_MUL: {
+          const int lhs_index = GETARG_B(instruction);
+          const int rhs_index = GETARG_C(instruction);
+          if (!valid_destination(*values, destination) ||
+              !valid_register(*values, lhs_index) ||
+              !valid_register(*values, rhs_index)) {
+            return bytecode_error(pc, "invalid register in binary arithmetic");
           }
-
-          case OP_ADD:
-          case OP_SUB:
-          case OP_MUL: {
-            const int lhs_index = GETARG_B(instruction);
-            const int rhs_index = GETARG_C(instruction);
-            if (!valid_destination(*values, destination) ||
-                !valid_register(*values, lhs_index) ||
-                !valid_register(*values, rhs_index)) {
-              return bytecode_error(pc,
-                                    "invalid register in binary arithmetic");
-            }
-            const Value lhs = (*values)[static_cast<std::size_t>(lhs_index)];
-            const Value rhs = (*values)[static_cast<std::size_t>(rhs_index)];
-            if (opcode == OP_ADD) {
-              (*values)[static_cast<std::size_t>(destination)] =
-                  builder.add(lhs, rhs);
-            } else if (opcode == OP_SUB) {
-              (*values)[static_cast<std::size_t>(destination)] =
-                  builder.subtract(lhs, rhs);
-            } else {
-              (*values)[static_cast<std::size_t>(destination)] =
-                  builder.multiply(lhs, rhs);
-            }
-            (*constants)[static_cast<std::size_t>(destination)].reset();
-            if (pc + 1 >= end ||
-                GET_OPCODE(prototype.code[pc + 1]) != OP_MMBIN) {
-              return bytecode_error(
-                  pc,
-                  "binary arithmetic is missing its Lua metamethod fallback");
-            }
-            ++pc;
-            break;
+          const Value lhs = (*values)[static_cast<std::size_t>(lhs_index)];
+          const Value rhs = (*values)[static_cast<std::size_t>(rhs_index)];
+          if (opcode == OP_ADD) {
+            (*values)[static_cast<std::size_t>(destination)] =
+                builder.add(lhs, rhs);
+          } else if (opcode == OP_SUB) {
+            (*values)[static_cast<std::size_t>(destination)] =
+                builder.subtract(lhs, rhs);
+          } else {
+            (*values)[static_cast<std::size_t>(destination)] =
+                builder.multiply(lhs, rhs);
           }
-
-          case OP_RETURN1:
-            if (!allow_return || !valid_register(*values, destination)) {
-              return bytecode_error(pc, "unsupported return in numeric loop");
-            }
-            if (!builder
-                     .set_return(
-                         (*values)[static_cast<std::size_t>(destination)])
-                     .ok()) {
-              return bytecode_error(pc,
-                                    "unable to record the Lua return value");
-            }
-            *returned = true;
-            return Status::ok_status();
-
-          case OP_RETURN:
-            if (!allow_return || GETARG_B(instruction) != 2 ||
-                GETARG_k(instruction) != 0 ||
-                !valid_register(*values, destination)) {
-              return bytecode_error(
-                  pc, "only one-value fixed Lua returns are supported");
-            }
-            if (!builder
-                     .set_return(
-                         (*values)[static_cast<std::size_t>(destination)])
-                     .ok()) {
-              return bytecode_error(pc,
-                                    "unable to record the Lua return value");
-            }
-            *returned = true;
-            return Status::ok_status();
-
-          default: {
-            char message[96] = {};
-            std::snprintf(message, sizeof(message),
-                          "unsupported Lua 5.5 opcode %d in numeric loop",
-                          static_cast<int>(opcode));
-            return bytecode_error(pc, message);
+          (*constants)[static_cast<std::size_t>(destination)].reset();
+          if (pc + 1 >= end || GET_OPCODE(prototype.code[pc + 1]) != OP_MMBIN) {
+            return bytecode_error(
+                pc, "binary arithmetic is missing its Lua metamethod fallback");
           }
+          ++pc;
+          break;
+        }
+
+        case OP_RETURN1:
+          if (!allow_return || !valid_register(*values, destination)) {
+            return bytecode_error(pc, "unsupported return in numeric loop");
+          }
+          if (!builder
+                   .set_return((*values)[static_cast<std::size_t>(destination)])
+                   .ok()) {
+            return bytecode_error(pc, "unable to record the Lua return value");
+          }
+          *returned = true;
+          return Status::ok_status();
+
+        case OP_RETURN:
+          if (!allow_return || GETARG_B(instruction) != 2 ||
+              GETARG_k(instruction) != 0 ||
+              !valid_register(*values, destination)) {
+            return bytecode_error(
+                pc, "only one-value fixed Lua returns are supported");
+          }
+          if (!builder
+                   .set_return((*values)[static_cast<std::size_t>(destination)])
+                   .ok()) {
+            return bytecode_error(pc, "unable to record the Lua return value");
+          }
+          *returned = true;
+          return Status::ok_status();
+
+        default: {
+          char message[96] = {};
+          std::snprintf(message, sizeof(message),
+                        "unsupported Lua 5.5 opcode %d in numeric loop",
+                        static_cast<int>(opcode));
+          return bytecode_error(pc, message);
+        }
         }
       }
       return Status::ok_status();
@@ -977,18 +1280,15 @@ CompilationResult compile_numeric_for_prototype(
     if (!valid_register(registers, state_base) ||
         !valid_register(registers, state_base + 1) ||
         !valid_register(registers, state_base + 2) ||
-        !loop_controls.start.resolvable() ||
-        !loop_controls.step.resolvable()) {
+        !loop_controls.start.resolvable() || !loop_controls.step.resolvable()) {
       return translation_error(
           static_cast<std::size_t>(preparation_pc),
           "numeric for loop requires an integer constant or parameter start "
           "and step");
     }
     const bool has_parameter_step =
-        loop_controls.step.kind ==
-        LoopHotnessPlan::Operand::Kind::kParameter;
-    const Word loop_step =
-        has_parameter_step ? 0 : loop_controls.step.constant;
+        loop_controls.step.kind == LoopHotnessPlan::Operand::Kind::kParameter;
+    const Word loop_step = has_parameter_step ? 0 : loop_controls.step.constant;
     if (!has_parameter_step && loop_step == 0) {
       return translation_error(static_cast<std::size_t>(preparation_pc),
                                "numeric for loop step cannot be zero");
@@ -1011,6 +1311,12 @@ CompilationResult compile_numeric_for_prototype(
         } else if (opcode == OP_ADD || opcode == OP_SUB || opcode == OP_MUL) {
           note(GETARG_B(instruction));
           note(GETARG_C(instruction));
+        } else if (opcode == OP_EQ || opcode == OP_LT || opcode == OP_LE) {
+          note(GETARG_A(instruction));
+          note(GETARG_B(instruction));
+        } else if (opcode == OP_EQK || opcode == OP_EQI || opcode == OP_LTI ||
+                   opcode == OP_LEI || opcode == OP_GTI || opcode == OP_GEI) {
+          note(GETARG_A(instruction));
         } else if (opcode == OP_RETURN || opcode == OP_RETURN1) {
           note(GETARG_A(instruction));
         }
@@ -1018,7 +1324,7 @@ CompilationResult compile_numeric_for_prototype(
     };
     note_register_reads(preparation_pc + 1, loop_pc);
     note_register_reads(loop_pc + 1, prototype.sizecode);
-    if (!has_parameter_step) {
+    if (!has_parameter_step && !guarded_body.has_value()) {
       needed_registers[static_cast<std::size_t>(state_base + 1)] = true;
     }
     needed_registers[static_cast<std::size_t>(state_base + 2)] = true;
@@ -1042,11 +1348,415 @@ CompilationResult compile_numeric_for_prototype(
               : registers[lua_register]);
     }
 
+    if (guarded_body.has_value()) {
+      const GuardedBodyPlan &plan = guarded_body.value();
+      constexpr std::size_t kGuardedUnrollFactor = 8;
+      const bool unroll_guarded_loop =
+          optimization_level != unijit::jit::OptimizationLevel::kBaseline;
+      const std::size_t counted_parameter_count = carried_registers.size() + 1;
+      const unijit::ir::Block dispatch =
+          builder.create_block(counted_parameter_count);
+      const unijit::ir::Block unroll_count_check =
+          unroll_guarded_loop ? builder.create_block(counted_parameter_count)
+                              : unijit::ir::Block{};
+      std::array<unijit::ir::Block, kGuardedUnrollFactor> unrolled_iterations;
+      if (unroll_guarded_loop) {
+        for (unijit::ir::Block &iteration : unrolled_iterations) {
+          iteration = builder.create_block(counted_parameter_count);
+        }
+      }
+      const unijit::ir::Block scalar_iteration =
+          builder.create_block(counted_parameter_count);
+      const unijit::ir::Block exit =
+          builder.create_block(carried_registers.size());
+      const unijit::ir::Block positive_entry =
+          has_parameter_step ? builder.create_block(0) : unijit::ir::Block{};
+      const unijit::ir::Block nonpositive_entry =
+          has_parameter_step ? builder.create_block(0) : unijit::ir::Block{};
+      const unijit::ir::Block negative_entry =
+          has_parameter_step ? builder.create_block(0) : unijit::ir::Block{};
+      bool valid_unrolled_iterations = true;
+      if (unroll_guarded_loop) {
+        for (const unijit::ir::Block iteration : unrolled_iterations) {
+          valid_unrolled_iterations =
+              valid_unrolled_iterations && iteration.valid();
+        }
+      }
+      if (!dispatch.valid() ||
+          (unroll_guarded_loop && !unroll_count_check.valid()) ||
+          !valid_unrolled_iterations || !scalar_iteration.valid() ||
+          !exit.valid() ||
+          (has_parameter_step &&
+           (!positive_entry.valid() || !nonpositive_entry.valid() ||
+            !negative_entry.valid()))) {
+        return {{StatusCode::kResourceExhausted,
+                 "unable to allocate guarded Lua numeric-loop blocks"},
+                nullptr};
+      }
+
+      const auto block_registers = [&](unijit::ir::Block block) {
+        std::vector<Value> values(prototype.maxstacksize);
+        for (std::size_t index = 0; index < carried_registers.size(); ++index) {
+          values[carried_registers[index]] =
+              builder.block_parameter(block, index);
+        }
+        return values;
+      };
+      const auto completed_registers =
+          [&](const std::vector<Value> &values,
+              std::vector<Value> *completed) -> Status {
+        completed->clear();
+        completed->reserve(carried_registers.size());
+        for (const std::size_t lua_register : carried_registers) {
+          const Value value = values[lua_register];
+          if (!value.valid()) {
+            return bytecode_error(
+                loop_pc,
+                "guarded numeric loop has an undefined carried register");
+          }
+          completed->push_back(value);
+        }
+        return Status::ok_status();
+      };
+      const auto counted_arguments =
+          [&](const std::vector<Value> &values, Value remaining,
+              std::vector<Value> *arguments) -> Status {
+        Status collected = completed_registers(values, arguments);
+        if (!collected.ok()) {
+          return collected;
+        }
+        arguments->push_back(remaining);
+        return Status::ok_status();
+      };
+      const auto comparison_value =
+          [&](const std::vector<Value> &values) -> Value {
+        const Instruction instruction = prototype.code[plan.comparison_pc];
+        const OpCode opcode = GET_OPCODE(instruction);
+        const int lhs_index = GETARG_A(instruction);
+        if (!valid_register(values, lhs_index)) {
+          return {};
+        }
+        const Value lhs = values[static_cast<std::size_t>(lhs_index)];
+        Value rhs;
+        if (opcode == OP_EQ || opcode == OP_LT || opcode == OP_LE) {
+          const int rhs_index = GETARG_B(instruction);
+          if (!valid_register(values, rhs_index)) {
+            return {};
+          }
+          rhs = values[static_cast<std::size_t>(rhs_index)];
+        } else if (opcode == OP_EQK) {
+          const int constant_index = GETARG_B(instruction);
+          if (constant_index < 0 || constant_index >= prototype.sizek ||
+              !ttisinteger(&prototype.k[constant_index])) {
+            return {};
+          }
+          rhs = builder.constant(
+              static_cast<Word>(ivalue(&prototype.k[constant_index])));
+        } else {
+          rhs = builder.constant(static_cast<Word>(GETARG_sB(instruction)));
+        }
+
+        if (opcode == OP_LT || opcode == OP_LTI) {
+          return builder.less_than(lhs, rhs);
+        }
+        if (opcode == OP_LE || opcode == OP_LEI) {
+          return builder.less_equal(lhs, rhs);
+        }
+        if (opcode == OP_GTI) {
+          return builder.less_than(rhs, lhs);
+        }
+        if (opcode == OP_GEI) {
+          return builder.less_equal(rhs, lhs);
+        }
+        const Value lhs_le_rhs = builder.less_equal(lhs, rhs);
+        const Value rhs_le_lhs = builder.less_equal(rhs, lhs);
+        return builder.multiply(lhs_le_rhs, rhs_le_lhs);
+      };
+
+      const Value start = registers[static_cast<std::size_t>(state_base)];
+      const Value limit = registers[static_cast<std::size_t>(state_base + 1)];
+      const Value step = registers[static_cast<std::size_t>(state_base + 2)];
+      const Value remaining =
+          builder.call(lua_integer_for_remaining, {start, limit, step});
+      if (!remaining.valid()) {
+        return translation_error(static_cast<std::size_t>(preparation_pc),
+                                 "unable to count guarded Lua loop iterations");
+      }
+      std::vector<Value> counted_initial_arguments = initial_loop_arguments;
+      counted_initial_arguments.push_back(remaining);
+      if (has_parameter_step) {
+        const Value zero = builder.constant(0);
+        status = builder.branch(builder.less_than(zero, step), positive_entry,
+                                {}, nonpositive_entry, {});
+        if (!status.ok()) {
+          return {status, nullptr};
+        }
+        status = builder.set_insertion_block(positive_entry);
+        if (!status.ok()) {
+          return {status, nullptr};
+        }
+        status = builder.branch(builder.less_equal(start, limit), dispatch,
+                                counted_initial_arguments, exit,
+                                skipped_loop_arguments);
+        if (!status.ok()) {
+          return {status, nullptr};
+        }
+        status = builder.set_insertion_block(nonpositive_entry);
+        if (!status.ok()) {
+          return {status, nullptr};
+        }
+        status = builder.branch(builder.less_than(step, zero), negative_entry,
+                                {}, exit, skipped_loop_arguments);
+        if (!status.ok()) {
+          return {status, nullptr};
+        }
+        status = builder.set_insertion_block(negative_entry);
+        if (!status.ok()) {
+          return {status, nullptr};
+        }
+        status = builder.branch(builder.less_equal(limit, start), dispatch,
+                                counted_initial_arguments, exit,
+                                skipped_loop_arguments);
+      } else {
+        const Value enters_loop = ascending ? builder.less_equal(start, limit)
+                                            : builder.less_equal(limit, start);
+        status =
+            builder.branch(enters_loop, dispatch, counted_initial_arguments,
+                           exit, skipped_loop_arguments);
+      }
+      if (!status.ok()) {
+        return {status, nullptr};
+      }
+
+      status = builder.set_insertion_block(dispatch);
+      if (!status.ok()) {
+        return {status, nullptr};
+      }
+      if (!builder.safepoint(static_cast<std::size_t>(preparation_pc))
+               .valid()) {
+        return translation_error(static_cast<std::size_t>(preparation_pc),
+                                 "unable to insert a guarded-loop safepoint");
+      }
+      std::vector<Value> dispatch_arguments;
+      dispatch_arguments.reserve(counted_parameter_count);
+      for (std::size_t index = 0; index < counted_parameter_count; ++index) {
+        dispatch_arguments.push_back(builder.block_parameter(dispatch, index));
+      }
+      if (unroll_guarded_loop) {
+        const Value dispatch_remaining =
+            builder.block_parameter(dispatch, carried_registers.size());
+        status = builder.branch(
+            builder.less_than(dispatch_remaining, builder.constant(0)),
+            unrolled_iterations[0], dispatch_arguments, unroll_count_check,
+            dispatch_arguments);
+      } else {
+        status = builder.jump(scalar_iteration, dispatch_arguments);
+      }
+      if (!status.ok()) {
+        return {status, nullptr};
+      }
+
+      if (unroll_guarded_loop) {
+        status = builder.set_insertion_block(unroll_count_check);
+        if (!status.ok()) {
+          return {status, nullptr};
+        }
+        std::vector<Value> checked_arguments;
+        checked_arguments.reserve(counted_parameter_count);
+        for (std::size_t index = 0; index < counted_parameter_count; ++index) {
+          checked_arguments.push_back(
+              builder.block_parameter(unroll_count_check, index));
+        }
+        const Value checked_remaining = builder.block_parameter(
+            unroll_count_check, carried_registers.size());
+        status = builder.branch(
+            builder.less_equal(builder.constant(kGuardedUnrollFactor - 1),
+                               checked_remaining),
+            unrolled_iterations[0], checked_arguments, scalar_iteration,
+            checked_arguments);
+        if (!status.ok()) {
+          return {status, nullptr};
+        }
+      }
+
+      const auto emit_iteration = [&](unijit::ir::Block iteration,
+                                      unijit::ir::Block continuation,
+                                      bool check_remaining) -> Status {
+        Status iteration_status = builder.set_insertion_block(iteration);
+        if (!iteration_status.ok()) {
+          return iteration_status;
+        }
+        std::vector<Value> iteration_registers = block_registers(iteration);
+        std::vector<std::optional<Word>> iteration_known(
+            prototype.maxstacksize);
+        iteration_status = translate_range(
+            preparation_pc + 1, plan.comparison_pc, false, state_base,
+            &iteration_registers, &iteration_known, &returned);
+        if (!iteration_status.ok()) {
+          return iteration_status;
+        }
+        const Value relation = comparison_value(iteration_registers);
+        if (!relation.valid()) {
+          return bytecode_error(
+              plan.comparison_pc,
+              "guarded numeric-loop comparison requires integer operands");
+        }
+        const Value iteration_remaining =
+            builder.block_parameter(iteration, carried_registers.size());
+        std::vector<Value> current_arguments;
+        iteration_status = counted_arguments(
+            iteration_registers, iteration_remaining, &current_arguments);
+        if (!iteration_status.ok()) {
+          return iteration_status;
+        }
+        const unijit::ir::Block action =
+            builder.create_block(counted_parameter_count);
+        const unijit::ir::Block bypass =
+            builder.create_block(counted_parameter_count);
+        if (!action.valid() || !bypass.valid()) {
+          return {StatusCode::kResourceExhausted,
+                  "unable to allocate guarded Lua iteration blocks"};
+        }
+        if (GETARG_k(prototype.code[plan.comparison_pc]) == 0) {
+          iteration_status = builder.branch(relation, action, current_arguments,
+                                            bypass, current_arguments);
+        } else {
+          iteration_status = builder.branch(relation, bypass, current_arguments,
+                                            action, current_arguments);
+        }
+        if (!iteration_status.ok()) {
+          return iteration_status;
+        }
+
+        iteration_status = builder.set_insertion_block(action);
+        if (!iteration_status.ok()) {
+          return iteration_status;
+        }
+        std::vector<Value> action_registers = block_registers(action);
+        const Value action_remaining =
+            builder.block_parameter(action, carried_registers.size());
+        if (plan.kind == GuardedBodyKind::kConditionalBody) {
+          std::vector<std::optional<Word>> action_known(prototype.maxstacksize);
+          iteration_status = translate_range(
+              plan.action_begin, plan.bypass_begin, false, state_base,
+              &action_registers, &action_known, &returned);
+          if (!iteration_status.ok()) {
+            return iteration_status;
+          }
+          std::vector<Value> action_arguments;
+          iteration_status = counted_arguments(
+              action_registers, action_remaining, &action_arguments);
+          if (iteration_status.ok()) {
+            iteration_status = builder.jump(bypass, action_arguments);
+          }
+        } else if (plan.kind == GuardedBodyKind::kBreak) {
+          std::vector<Value> break_arguments;
+          iteration_status =
+              completed_registers(action_registers, &break_arguments);
+          if (iteration_status.ok()) {
+            iteration_status = builder.jump(exit, break_arguments);
+          }
+        } else {
+          std::vector<std::optional<Word>> return_known(prototype.maxstacksize);
+          bool guarded_returned = false;
+          iteration_status = translate_range(
+              plan.action_begin, plan.bypass_begin, true, state_base,
+              &action_registers, &return_known, &guarded_returned);
+          if (iteration_status.ok() && !guarded_returned) {
+            iteration_status =
+                bytecode_error(plan.action_begin,
+                               "guarded numeric-loop return was not emitted");
+          }
+        }
+        if (!iteration_status.ok()) {
+          return iteration_status;
+        }
+
+        iteration_status = builder.set_insertion_block(bypass);
+        if (!iteration_status.ok()) {
+          return iteration_status;
+        }
+        std::vector<Value> completed_iteration = block_registers(bypass);
+        std::vector<std::optional<Word>> completed_known(
+            prototype.maxstacksize);
+        iteration_status =
+            translate_range(plan.bypass_begin, loop_pc, false, state_base,
+                            &completed_iteration, &completed_known, &returned);
+        if (!iteration_status.ok()) {
+          return iteration_status;
+        }
+        const Value current_remaining =
+            builder.block_parameter(bypass, carried_registers.size());
+        const Value current_index =
+            completed_iteration[static_cast<std::size_t>(state_base + 2)];
+        if (!current_index.valid()) {
+          return bytecode_error(
+              loop_pc, "guarded numeric loop lost its induction state");
+        }
+        const Value next_index = builder.add(current_index, step);
+        const Value next_remaining =
+            builder.subtract(current_remaining, builder.constant(1));
+        std::vector<Value> completed;
+        iteration_status = completed_registers(completed_iteration, &completed);
+        if (!iteration_status.ok()) {
+          return iteration_status;
+        }
+        std::vector<Value> next_arguments = completed;
+        for (std::size_t index = 0; index < carried_registers.size(); ++index) {
+          if (carried_registers[index] ==
+              static_cast<std::size_t>(state_base + 2)) {
+            next_arguments[index] = next_index;
+          }
+        }
+        next_arguments.push_back(next_remaining);
+        return check_remaining ? builder.branch(current_remaining, continuation,
+                                                next_arguments, exit, completed)
+                               : builder.jump(continuation, next_arguments);
+      };
+
+      if (unroll_guarded_loop) {
+        for (std::size_t index = 0; index < kGuardedUnrollFactor; ++index) {
+          const bool last = index + 1 == kGuardedUnrollFactor;
+          const unijit::ir::Block continuation =
+              last ? dispatch : unrolled_iterations[index + 1];
+          status =
+              emit_iteration(unrolled_iterations[index], continuation, last);
+          if (!status.ok()) {
+            return {status, nullptr};
+          }
+        }
+      }
+      status = emit_iteration(scalar_iteration, dispatch, true);
+      if (!status.ok()) {
+        return {status, nullptr};
+      }
+
+      status = builder.set_insertion_block(exit);
+      if (!status.ok()) {
+        return {status, nullptr};
+      }
+      std::vector<Value> exit_registers(prototype.maxstacksize);
+      std::vector<std::optional<Word>> exit_known(prototype.maxstacksize);
+      for (std::size_t index = 0; index < carried_registers.size(); ++index) {
+        exit_registers[carried_registers[index]] =
+            builder.block_parameter(exit, index);
+      }
+      status = translate_range(loop_pc + 1, prototype.sizecode, true, -1,
+                               &exit_registers, &exit_known, &returned);
+      if (!status.ok()) {
+        return {status, nullptr};
+      }
+      if (!returned) {
+        return translation_error(static_cast<std::size_t>(prototype.sizecode),
+                                 "guarded Lua numeric loop has no return");
+      }
+      return Compiler::compile(std::move(builder).build());
+    }
+
     if (has_parameter_step) {
       const bool unroll_dynamic_loop =
           optimization_level != unijit::jit::OptimizationLevel::kBaseline;
-      const std::size_t counted_parameter_count =
-          carried_registers.size() + 1;
+      const std::size_t counted_parameter_count = carried_registers.size() + 1;
       const unijit::ir::Block positive_entry = builder.create_block(0);
       const unijit::ir::Block nonpositive_entry = builder.create_block(0);
       const unijit::ir::Block negative_entry = builder.create_block(0);
@@ -1088,8 +1798,7 @@ CompilationResult compile_numeric_for_prototype(
         return values;
       };
       const auto next_arguments = [&](const std::vector<Value> &completed,
-                                      Value next_index,
-                                      Value next_remaining) {
+                                      Value next_index, Value next_remaining) {
         std::vector<Value> arguments = completed;
         for (std::size_t index = 0; index < carried_registers.size(); ++index) {
           if (carried_registers[index] ==
@@ -1102,11 +1811,10 @@ CompilationResult compile_numeric_for_prototype(
       };
 
       const Value start = registers[static_cast<std::size_t>(state_base)];
-      const Value limit =
-          registers[static_cast<std::size_t>(state_base + 1)];
+      const Value limit = registers[static_cast<std::size_t>(state_base + 1)];
       const Value step = registers[static_cast<std::size_t>(state_base + 2)];
-      const Value remaining = builder.call(
-          lua_integer_for_remaining, {start, limit, step});
+      const Value remaining =
+          builder.call(lua_integer_for_remaining, {start, limit, step});
       if (!remaining.valid()) {
         return translation_error(static_cast<std::size_t>(preparation_pc),
                                  "unable to count Lua numeric-loop iterations");
@@ -1158,23 +1866,24 @@ CompilationResult compile_numeric_for_prototype(
       if (!status.ok()) {
         return {status, nullptr};
       }
-      if (!builder.safepoint(static_cast<std::size_t>(preparation_pc)).valid()) {
+      if (!builder.safepoint(static_cast<std::size_t>(preparation_pc))
+               .valid()) {
         return translation_error(static_cast<std::size_t>(preparation_pc),
                                  "unable to insert a numeric-loop safepoint");
       }
       const std::vector<Value> dispatch_arguments =
           block_arguments(dispatch, counted_parameter_count);
-      const Value dispatch_remaining = builder.block_parameter(
-          dispatch, carried_registers.size());
+      const Value dispatch_remaining =
+          builder.block_parameter(dispatch, carried_registers.size());
       if (unroll_dynamic_loop) {
         status = builder.branch(
             builder.less_than(dispatch_remaining, builder.constant(0)),
             unrolled_loop, dispatch_arguments, unroll_count_check,
             dispatch_arguments);
       } else {
-        status = builder.branch(builder.constant(1), unrolled_loop,
-                                dispatch_arguments, scalar_loop,
-                                dispatch_arguments);
+        status =
+            builder.branch(builder.constant(1), unrolled_loop,
+                           dispatch_arguments, scalar_loop, dispatch_arguments);
       }
       if (!status.ok()) {
         return {status, nullptr};
@@ -1192,9 +1901,9 @@ CompilationResult compile_numeric_for_prototype(
         const Value seven = builder.constant(7);
         const Value has_full_group =
             builder.less_equal(seven, checked_remaining);
-        status = builder.branch(has_full_group, unrolled_loop,
-                                checked_arguments, scalar_loop,
-                                checked_arguments);
+        status =
+            builder.branch(has_full_group, unrolled_loop, checked_arguments,
+                           scalar_loop, checked_arguments);
         if (!status.ok()) {
           return {status, nullptr};
         }
@@ -1208,9 +1917,9 @@ CompilationResult compile_numeric_for_prototype(
       std::vector<std::optional<Word>> unrolled_known(prototype.maxstacksize);
       const Word loop_unroll_factor = unroll_dynamic_loop ? 8 : 1;
       for (Word iteration = 0; iteration < loop_unroll_factor; ++iteration) {
-        status = translate_range(preparation_pc + 1, loop_pc, false,
-                                 state_base, &unrolled_registers,
-                                 &unrolled_known, &returned);
+        status =
+            translate_range(preparation_pc + 1, loop_pc, false, state_base,
+                            &unrolled_registers, &unrolled_known, &returned);
         if (!status.ok()) {
           return {status, nullptr};
         }
@@ -1227,8 +1936,8 @@ CompilationResult compile_numeric_for_prototype(
         return translation_error(static_cast<std::size_t>(loop_pc),
                                  "numeric loop lost its induction state");
       }
-      const Value unrolled_remaining = builder.block_parameter(
-          unrolled_loop, carried_registers.size());
+      const Value unrolled_remaining =
+          builder.block_parameter(unrolled_loop, carried_registers.size());
       const Value continues_after_unrolled = builder.subtract(
           unrolled_remaining, builder.constant(loop_unroll_factor - 1));
       const Value next_unrolled_index = builder.add(unrolled_index, step);
@@ -1245,11 +1954,11 @@ CompilationResult compile_numeric_for_prototype(
         }
         unrolled_completed.push_back(value);
       }
-      status = builder.branch(
-          continues_after_unrolled, dispatch,
-          next_arguments(unrolled_completed, next_unrolled_index,
-                         next_unrolled_remaining),
-          exit, unrolled_completed);
+      status =
+          builder.branch(continues_after_unrolled, dispatch,
+                         next_arguments(unrolled_completed, next_unrolled_index,
+                                        next_unrolled_remaining),
+                         exit, unrolled_completed);
       if (!status.ok()) {
         return {status, nullptr};
       }
@@ -1268,8 +1977,9 @@ CompilationResult compile_numeric_for_prototype(
       const Value scalar_index =
           scalar_registers[static_cast<std::size_t>(state_base + 2)];
       if (!scalar_index.valid()) {
-        return translation_error(static_cast<std::size_t>(loop_pc),
-                                 "numeric loop lost its scalar induction state");
+        return translation_error(
+            static_cast<std::size_t>(loop_pc),
+            "numeric loop lost its scalar induction state");
       }
       const Value scalar_remaining =
           builder.block_parameter(scalar_loop, carried_registers.size());
@@ -1287,11 +1997,11 @@ CompilationResult compile_numeric_for_prototype(
         }
         scalar_completed.push_back(value);
       }
-      status = builder.branch(
-          scalar_remaining, dispatch,
-          next_arguments(scalar_completed, next_scalar_index,
-                         next_scalar_remaining),
-          exit, scalar_completed);
+      status =
+          builder.branch(scalar_remaining, dispatch,
+                         next_arguments(scalar_completed, next_scalar_index,
+                                        next_scalar_remaining),
+                         exit, scalar_completed);
       if (!status.ok()) {
         return {status, nullptr};
       }
@@ -1324,11 +2034,9 @@ CompilationResult compile_numeric_for_prototype(
     constexpr Word kUnrolledStepCount = kOptimizedUnrollFactor - 1;
     if (optimization_level != unijit::jit::OptimizationLevel::kBaseline &&
         ((ascending &&
-          loop_step <=
-              std::numeric_limits<Word>::max() / kUnrolledStepCount) ||
-         (!ascending &&
-          loop_step >=
-              std::numeric_limits<Word>::min() / kUnrolledStepCount))) {
+          loop_step <= std::numeric_limits<Word>::max() / kUnrolledStepCount) ||
+         (!ascending && loop_step >= std::numeric_limits<Word>::min() /
+                                         kUnrolledStepCount))) {
       loop_unroll_factor = kOptimizedUnrollFactor;
       unrolled_index_delta = loop_step * kUnrolledStepCount;
     }
@@ -1349,8 +2057,7 @@ CompilationResult compile_numeric_for_prototype(
                       : builder.create_block(carried_registers.size() + 1);
     const unijit::ir::Block exit =
         builder.create_block(carried_registers.size());
-    if (!dispatch.valid() || !unroll_check.valid() ||
-        !unrolled_loop.valid() ||
+    if (!dispatch.valid() || !unroll_check.valid() || !unrolled_loop.valid() ||
         (!has_unit_step && !unrolled_continue_check.valid()) ||
         !scalar_loop.valid() ||
         (!has_unit_step && !scalar_continue_check.valid()) || !exit.valid()) {
@@ -1361,11 +2068,10 @@ CompilationResult compile_numeric_for_prototype(
 
     const Value start = registers[static_cast<std::size_t>(state_base)];
     const Value limit = registers[static_cast<std::size_t>(state_base + 1)];
-    const Value enters_loop =
-        ascending ? builder.less_equal(start, limit)
-                  : builder.less_equal(limit, start);
-    status = builder.branch(enters_loop, dispatch, initial_loop_arguments,
-                            exit, skipped_loop_arguments);
+    const Value enters_loop = ascending ? builder.less_equal(start, limit)
+                                        : builder.less_equal(limit, start);
+    status = builder.branch(enters_loop, dispatch, initial_loop_arguments, exit,
+                            skipped_loop_arguments);
     if (!status.ok()) {
       return {status, nullptr};
     }
@@ -1399,8 +2105,8 @@ CompilationResult compile_numeric_for_prototype(
     const std::vector<Value> dispatch_registers = block_registers(dispatch);
     const Value dispatch_index =
         dispatch_registers[static_cast<std::size_t>(state_base + 2)];
-    const Value last_unrolled_index = builder.add(
-        dispatch_index, builder.constant(unrolled_index_delta));
+    const Value last_unrolled_index =
+        builder.add(dispatch_index, builder.constant(unrolled_index_delta));
     const Value unrolled_group_advances =
         loop_unroll_factor == 1
             ? builder.constant(1)
@@ -1409,9 +2115,9 @@ CompilationResult compile_numeric_for_prototype(
                    : builder.less_than(last_unrolled_index, dispatch_index));
     std::vector<Value> unroll_check_arguments = dispatch_arguments;
     unroll_check_arguments.push_back(last_unrolled_index);
-    status = builder.branch(unrolled_group_advances, unroll_check,
-                            unroll_check_arguments, scalar_loop,
-                            dispatch_arguments);
+    status =
+        builder.branch(unrolled_group_advances, unroll_check,
+                       unroll_check_arguments, scalar_loop, dispatch_arguments);
     if (!status.ok()) {
       return {status, nullptr};
     }
@@ -1421,16 +2127,15 @@ CompilationResult compile_numeric_for_prototype(
       return {status, nullptr};
     }
     const std::vector<Value> check_arguments = block_arguments(unroll_check);
-    const std::vector<Value> check_registers =
-        block_registers(unroll_check);
+    const std::vector<Value> check_registers = block_registers(unroll_check);
     const Value check_limit =
         check_registers[static_cast<std::size_t>(state_base + 1)];
     const Value checked_last_unrolled_index =
         builder.block_parameter(unroll_check, carried_registers.size());
     const Value has_full_unrolled_group =
-        ascending ? builder.less_equal(checked_last_unrolled_index, check_limit)
-                  : builder.less_equal(check_limit,
-                                       checked_last_unrolled_index);
+        ascending
+            ? builder.less_equal(checked_last_unrolled_index, check_limit)
+            : builder.less_equal(check_limit, checked_last_unrolled_index);
     status = builder.branch(has_full_unrolled_group, unrolled_loop,
                             check_arguments, scalar_loop, check_arguments);
     if (!status.ok()) {
@@ -1445,8 +2150,7 @@ CompilationResult compile_numeric_for_prototype(
     std::vector<std::optional<Word>> unrolled_known(prototype.maxstacksize);
     for (Word iteration = 0; iteration < loop_unroll_factor; ++iteration) {
       status = translate_range(preparation_pc + 1, loop_pc, false, state_base,
-                               &unrolled_registers, &unrolled_known,
-                               &returned);
+                               &unrolled_registers, &unrolled_known, &returned);
       if (!status.ok()) {
         return {status, nullptr};
       }
@@ -1490,8 +2194,8 @@ CompilationResult compile_numeric_for_prototype(
           unrolled_backedge[index] = next_unrolled_index;
         }
       }
-      status = builder.branch(continues_unrolled, dispatch,
-                              unrolled_backedge, exit, unrolled_completed);
+      status = builder.branch(continues_unrolled, dispatch, unrolled_backedge,
+                              exit, unrolled_completed);
       if (!status.ok()) {
         return {status, nullptr};
       }
@@ -1501,10 +2205,9 @@ CompilationResult compile_numeric_for_prototype(
                     : builder.less_than(next_unrolled_index, unrolled_index);
       std::vector<Value> unrolled_continue_arguments = unrolled_completed;
       unrolled_continue_arguments.push_back(next_unrolled_index);
-      status = builder.branch(unrolled_advance_is_safe,
-                              unrolled_continue_check,
-                              unrolled_continue_arguments, exit,
-                              unrolled_completed);
+      status =
+          builder.branch(unrolled_advance_is_safe, unrolled_continue_check,
+                         unrolled_continue_arguments, exit, unrolled_completed);
       if (!status.ok()) {
         return {status, nullptr};
       }
@@ -1519,14 +2222,13 @@ CompilationResult compile_numeric_for_prototype(
           block_registers(unrolled_continue_check);
       const Value checked_next_unrolled_index = builder.block_parameter(
           unrolled_continue_check, carried_registers.size());
-      const Value checked_unrolled_limit = unrolled_current_registers[
-          static_cast<std::size_t>(state_base + 1)];
+      const Value checked_unrolled_limit =
+          unrolled_current_registers[static_cast<std::size_t>(state_base + 1)];
       const Value continues_unrolled =
-          ascending
-              ? builder.less_equal(checked_next_unrolled_index,
-                                   checked_unrolled_limit)
-              : builder.less_equal(checked_unrolled_limit,
-                                   checked_next_unrolled_index);
+          ascending ? builder.less_equal(checked_next_unrolled_index,
+                                         checked_unrolled_limit)
+                    : builder.less_equal(checked_unrolled_limit,
+                                         checked_next_unrolled_index);
       std::vector<Value> unrolled_backedge = unrolled_current_arguments;
       for (std::size_t index = 0; index < carried_registers.size(); ++index) {
         if (carried_registers[index] ==
@@ -1534,9 +2236,8 @@ CompilationResult compile_numeric_for_prototype(
           unrolled_backedge[index] = checked_next_unrolled_index;
         }
       }
-      status = builder.branch(continues_unrolled, dispatch,
-                              unrolled_backedge, exit,
-                              unrolled_current_arguments);
+      status = builder.branch(continues_unrolled, dispatch, unrolled_backedge,
+                              exit, unrolled_current_arguments);
       if (!status.ok()) {
         return {status, nullptr};
       }
@@ -1594,9 +2295,9 @@ CompilationResult compile_numeric_for_prototype(
                     : builder.less_than(next_scalar_index, scalar_index);
       std::vector<Value> scalar_continue_arguments = scalar_completed;
       scalar_continue_arguments.push_back(next_scalar_index);
-      status = builder.branch(scalar_advance_is_safe, scalar_continue_check,
-                              scalar_continue_arguments, exit,
-                              scalar_completed);
+      status =
+          builder.branch(scalar_advance_is_safe, scalar_continue_check,
+                         scalar_continue_arguments, exit, scalar_completed);
       if (!status.ok()) {
         return {status, nullptr};
       }
@@ -1611,14 +2312,13 @@ CompilationResult compile_numeric_for_prototype(
           block_registers(scalar_continue_check);
       const Value checked_next_scalar_index = builder.block_parameter(
           scalar_continue_check, carried_registers.size());
-      const Value checked_scalar_limit = scalar_current_registers[
-          static_cast<std::size_t>(state_base + 1)];
+      const Value checked_scalar_limit =
+          scalar_current_registers[static_cast<std::size_t>(state_base + 1)];
       const Value continues_scalar =
-          ascending
-              ? builder.less_equal(checked_next_scalar_index,
-                                   checked_scalar_limit)
-              : builder.less_equal(checked_scalar_limit,
-                                   checked_next_scalar_index);
+          ascending ? builder.less_equal(checked_next_scalar_index,
+                                         checked_scalar_limit)
+                    : builder.less_equal(checked_scalar_limit,
+                                         checked_next_scalar_index);
       std::vector<Value> scalar_backedge = scalar_current_arguments;
       for (std::size_t index = 0; index < carried_registers.size(); ++index) {
         if (carried_registers[index] ==
@@ -1660,9 +2360,9 @@ CompilationResult compile_numeric_for_prototype(
   }
 }
 
-CompilationResult compile_prototype(
-    const Proto &prototype,
-    unijit::jit::OptimizationLevel optimization_level) {
+CompilationResult
+compile_prototype(const Proto &prototype,
+                  unijit::jit::OptimizationLevel optimization_level) {
   for (int pc = 0; pc < prototype.sizecode; ++pc) {
     if (GET_OPCODE(prototype.code[pc]) == OP_FORPREP) {
       return compile_numeric_for_prototype(prototype, optimization_level);
@@ -1671,9 +2371,9 @@ CompilationResult compile_prototype(
   return compile_straight_prototype(prototype, optimization_level);
 }
 
-CompilationResult compile_numeric_mode(
-    const Proto &prototype, NumericMode mode,
-    unijit::jit::OptimizationLevel optimization_level) {
+CompilationResult
+compile_numeric_mode(const Proto &prototype, NumericMode mode,
+                     unijit::jit::OptimizationLevel optimization_level) {
   return mode == NumericMode::kInteger
              ? compile_prototype(prototype, optimization_level)
              : unijit::frontend::lua55::detail::compile_float64_prototype(
@@ -1684,26 +2384,24 @@ Status cancelled_compilation_status() {
   return {StatusCode::kCancelled, "Lua optimization was cancelled"};
 }
 
-Status fail_optimization(
-    const std::shared_ptr<CompiledFunctionState> &compiled,
-    Status status) {
+Status fail_optimization(const std::shared_ptr<CompiledFunctionState> &compiled,
+                         Status status) {
   (void)compiled->code.report_optimization_failure();
   return status;
 }
 
-Status compile_optimized(
-    LuaService *service,
-    const std::shared_ptr<CompiledFunctionState> &compiled,
-    std::uint64_t generation,
-    const unijit::jit::CompilationCancellation &cancellation) {
+Status
+compile_optimized(LuaService *service,
+                  const std::shared_ptr<CompiledFunctionState> &compiled,
+                  std::uint64_t generation,
+                  const unijit::jit::CompilationCancellation &cancellation) {
   if (cancellation.stop_requested()) {
     return fail_optimization(compiled, cancelled_compilation_status());
   }
   if (compiled->prototype == nullptr || compiled->cache_key.empty()) {
     return fail_optimization(
-        compiled,
-        {StatusCode::kInvalidArgument,
-         "Lua optimized compilation has no retained prototype"});
+        compiled, {StatusCode::kInvalidArgument,
+                   "Lua optimized compilation has no retained prototype"});
   }
 
   constexpr auto kOptimized = unijit::jit::OptimizationLevel::kOptimized;
@@ -1720,9 +2418,8 @@ Status compile_optimized(
     }
     if (result.function->parameter_count() != compiled->parameter_count) {
       return fail_optimization(
-          compiled,
-          {StatusCode::kCodeGenerationFailed,
-           "Lua optimized signature differs from its baseline"});
+          compiled, {StatusCode::kCodeGenerationFailed,
+                     "Lua optimized signature differs from its baseline"});
     }
     if (cancellation.stop_requested()) {
       return fail_optimization(compiled, cancelled_compilation_status());
@@ -1739,9 +2436,8 @@ Status compile_optimized(
 
   if (optimized.parameter_count() != compiled->parameter_count) {
     return fail_optimization(
-        compiled,
-        {StatusCode::kCodeGenerationFailed,
-         "cached Lua optimized signature differs from baseline"});
+        compiled, {StatusCode::kCodeGenerationFailed,
+                   "cached Lua optimized signature differs from baseline"});
   }
   if (cancellation.stop_requested()) {
     return fail_optimization(compiled, cancelled_compilation_status());
@@ -1788,11 +2484,12 @@ void schedule_if_hot(
     request.generation = baseline.generation;
     request.estimated_bytes = estimated_bytes;
     request.priority = unijit::jit::CompilationPriority::kNormal;
-    request.job = [&service, compiled, generation = baseline.generation](
-                      const unijit::jit::CompilationCancellation &
-                          cancellation) {
-      return compile_optimized(&service, compiled, generation, cancellation);
-    };
+    request.job =
+        [&service, compiled, generation = baseline.generation](
+            const unijit::jit::CompilationCancellation &cancellation) {
+          return compile_optimized(&service, compiled, generation,
+                                   cancellation);
+        };
     unijit::jit::CompilationSubmission submission =
         service.scheduler->try_submit(std::move(request));
     if (!submission.ok()) {
@@ -1852,7 +2549,7 @@ int invoke_compiled_function(lua_State *state) {
   }
   if (compiled->mode == NumericMode::kInteger &&
       compiled->loop_hotness.has_zero_step(arguments.data(),
-                                            compiled->parameter_count)) {
+                                           compiled->parameter_count)) {
     return luaL_error(state, "'for' step is zero");
   }
 
@@ -1876,9 +2573,8 @@ int invoke_compiled_function(lua_State *state) {
   if (!invoked) {
     return luaL_error(state, "%s", invocation_error);
   }
-  compiled->code.record_backedges(
-      compiled->loop_hotness.estimate(arguments.data(),
-                                      compiled->parameter_count));
+  compiled->code.record_backedges(compiled->loop_hotness.estimate(
+      arguments.data(), compiled->parameter_count));
   schedule_if_hot(*owned->state);
   if (compiled->mode == NumericMode::kInteger) {
     setivalue(s2v(state->top.p), static_cast<lua_Integer>(value));
@@ -1898,39 +2594,39 @@ CompiledFunctionState *compiled_state_argument(lua_State *state, int index) {
   }
   auto *owned = static_cast<OwnedFunction *>(
       luaL_testudata(state, -1, kCompiledFunctionMetatable));
-  CompiledFunctionState *compiled =
-      owned == nullptr || owned->state == nullptr ? nullptr
-                                                  : owned->state->get();
+  CompiledFunctionState *compiled = owned == nullptr || owned->state == nullptr
+                                        ? nullptr
+                                        : owned->state->get();
   lua_pop(state, 1);
   return compiled;
 }
 
 const char *tier_name(unijit::jit::CodeTier tier) noexcept {
   switch (tier) {
-    case unijit::jit::CodeTier::kBaseline:
-      return "baseline";
-    case unijit::jit::CodeTier::kOptimized:
-      return "optimized";
-    default:
-      return "none";
+  case unijit::jit::CodeTier::kBaseline:
+    return "baseline";
+  case unijit::jit::CodeTier::kOptimized:
+    return "optimized";
+  default:
+    return "none";
   }
 }
 
-const char *task_state_name(
-    unijit::jit::CompilationTaskState task_state) noexcept {
+const char *
+task_state_name(unijit::jit::CompilationTaskState task_state) noexcept {
   switch (task_state) {
-    case unijit::jit::CompilationTaskState::kQueued:
-      return "queued";
-    case unijit::jit::CompilationTaskState::kRunning:
-      return "running";
-    case unijit::jit::CompilationTaskState::kSucceeded:
-      return "succeeded";
-    case unijit::jit::CompilationTaskState::kFailed:
-      return "failed";
-    case unijit::jit::CompilationTaskState::kCancelled:
-      return "cancelled";
-    default:
-      return "idle";
+  case unijit::jit::CompilationTaskState::kQueued:
+    return "queued";
+  case unijit::jit::CompilationTaskState::kRunning:
+    return "running";
+  case unijit::jit::CompilationTaskState::kSucceeded:
+    return "succeeded";
+  case unijit::jit::CompilationTaskState::kFailed:
+    return "failed";
+  case unijit::jit::CompilationTaskState::kCancelled:
+    return "cancelled";
+  default:
+    return "idle";
   }
 }
 
@@ -1974,8 +2670,7 @@ int compiled_function_stats(lua_State *state) {
   std::size_t active_ir_nodes = 0;
   {
     stats = compiled->code.stats();
-    const unijit::jit::TieredCodeSnapshot snapshot =
-        compiled->code.snapshot();
+    const unijit::jit::TieredCodeSnapshot snapshot = compiled->code.snapshot();
     const unijit::jit::CompilationStats *compilation =
         snapshot.handle.compilation_stats();
     if (compilation != nullptr) {
@@ -1983,8 +2678,7 @@ int compiled_function_stats(lua_State *state) {
       input_ir_nodes = compilation->input_ir_nodes;
       active_ir_nodes = compilation->optimized_ir_nodes;
     }
-    const unijit::jit::CompilationTicket ticket =
-        compiled->current_ticket();
+    const unijit::jit::CompilationTicket ticket = compiled->current_ticket();
     task_state = ticket.state();
     cancellation_requested = ticket.cancellation_requested();
     LuaService &service = lua_service();
@@ -2001,12 +2695,10 @@ int compiled_function_stats(lua_State *state) {
   set_metric(state, "generation", stats.generation);
   set_metric(state, "invocations", stats.hotness.invocations);
   set_metric(state, "backedges", stats.hotness.backedges);
-  set_metric(state, "compilation_attempts",
-             stats.hotness.compilation_attempts);
+  set_metric(state, "compilation_attempts", stats.hotness.compilation_attempts);
   set_metric(state, "successful_compilations",
              stats.hotness.successful_compilations);
-  set_metric(state, "failed_compilations",
-             stats.hotness.failed_compilations);
+  set_metric(state, "failed_compilations", stats.hotness.failed_compilations);
   set_metric(state, "promotions", stats.promotions);
   set_metric(state, "withdrawals", stats.withdrawals);
   set_metric(state, "osr_attempts", stats.osr_attempts);
@@ -2016,8 +2708,7 @@ int compiled_function_stats(lua_State *state) {
   set_flag(state, "cancellation_requested", cancellation_requested);
   set_flag(state, "scheduler_available", service.scheduler != nullptr);
   set_metric(state, "scheduler_queued_tasks", scheduler_stats.queued_tasks);
-  set_metric(state, "scheduler_active_workers",
-             scheduler_stats.active_workers);
+  set_metric(state, "scheduler_active_workers", scheduler_stats.active_workers);
   set_metric(state, "code_size", code_size);
   set_metric(state, "input_ir_nodes", input_ir_nodes);
   set_metric(state, "active_ir_nodes", active_ir_nodes);
@@ -2027,8 +2718,7 @@ int compiled_function_stats(lua_State *state) {
 int wait_for_compiled_function(lua_State *state) {
   if (lua_gettop(state) != 2 || !lua_isinteger(state, 2)) {
     return luaL_error(
-        state,
-        "unijit.wait expects a compiled function and integer timeout");
+        state, "unijit.wait expects a compiled function and integer timeout");
   }
   const lua_Integer timeout = lua_tointeger(state, 2);
   if (timeout < 0) {
@@ -2041,8 +2731,7 @@ int wait_for_compiled_function(lua_State *state) {
   }
   bool completed = false;
   {
-    const unijit::jit::CompilationTicket ticket =
-        compiled->current_ticket();
+    const unijit::jit::CompilationTicket ticket = compiled->current_ticket();
     completed =
         !ticket.valid() || ticket.wait_for(std::chrono::milliseconds(timeout));
   }
@@ -2061,8 +2750,7 @@ int cancel_compiled_function(lua_State *state) {
   }
   bool cancelled = false;
   {
-    const unijit::jit::CompilationTicket ticket =
-        compiled->current_ticket();
+    const unijit::jit::CompilationTicket ticket = compiled->current_ticket();
     cancelled = ticket.cancel();
   }
   lua_pushboolean(state, cancelled ? 1 : 0);
@@ -2089,16 +2777,14 @@ int compile_lua_function_mode(lua_State *state, NumericMode mode,
   {
     try {
       std::string cache_key;
-      const bool cacheable =
-          prototype_cache_key(*closure->p, mode, &cache_key);
+      const bool cacheable = prototype_cache_key(*closure->p, mode, &cache_key);
       std::shared_ptr<const PrototypeSnapshot> snapshot =
           capture_prototype(*closure->p);
       const bool tierable = cacheable && snapshot != nullptr;
       const unijit::jit::OptimizationLevel initial_level =
           tierable ? unijit::jit::OptimizationLevel::kBaseline
                    : unijit::jit::OptimizationLevel::kOptimized;
-      const std::uint64_t fingerprint =
-          cache_fingerprint(mode, initial_level);
+      const std::uint64_t fingerprint = cache_fingerprint(mode, initial_level);
       LuaService &service = lua_service();
       CodeHandle code =
           cacheable
@@ -2113,9 +2799,9 @@ int compile_lua_function_mode(lua_State *state, NumericMode mode,
                   ? service.cache(mode, initial_level)
                         .publish(cache_key, fingerprint,
                                  std::move(result.function))
-                  : service.uncached_cache.publish(
-                        "uncached-lua-prototype", fingerprint,
-                        std::move(result.function));
+                  : service.uncached_cache.publish("uncached-lua-prototype",
+                                                   fingerprint,
+                                                   std::move(result.function));
           if (publication.ok()) {
             code = std::move(publication.handle);
           } else {
@@ -2141,9 +2827,8 @@ int compile_lua_function_mode(lua_State *state, NumericMode mode,
                         "unable to publish Lua baseline: %s",
                         baseline_status.message().c_str());
         } else {
-          owned->state =
-              new (std::nothrow) std::shared_ptr<CompiledFunctionState>(
-                  std::move(compiled_state));
+          owned->state = new (std::nothrow)
+              std::shared_ptr<CompiledFunctionState>(std::move(compiled_state));
           if (owned->state == nullptr) {
             std::snprintf(error, sizeof(error),
                           "unable to allocate a Lua native-code lease");
@@ -2156,8 +2841,7 @@ int compile_lua_function_mode(lua_State *state, NumericMode mode,
       std::snprintf(error, sizeof(error),
                     "unable to allocate Lua compilation state");
     } catch (...) {
-      std::snprintf(error, sizeof(error),
-                    "unexpected Lua compilation failure");
+      std::snprintf(error, sizeof(error), "unexpected Lua compilation failure");
     }
   }
   if (!compiled) {
