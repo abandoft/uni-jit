@@ -63,8 +63,16 @@ compare_float(function(value)
   return (value + 7) * 0.5 - 3.0
 end, {{0.0}, {-100.25}, {123456.5}})
 
+compare_float(function(lhs, rhs)
+  return (lhs / rhs) / 2
+end, {{9.0, 3.0}, {-17.25, 4.5}, {1.0e12, -0.5}})
+
 compare_float(function()
   return 17.5
+end, {{}})
+
+compare_float(function()
+  return 17 / 2
 end, {{}})
 
 local float_ok, float_message = pcall(native_float_recurrence, 1.0, 2, 3.0)
