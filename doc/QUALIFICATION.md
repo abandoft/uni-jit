@@ -70,7 +70,10 @@ Every measured native result is bit-matched with the reference interpreter,
 and the retained JSON reports native code bytes, compilation latency, checksum,
 and median nanoseconds per completed source-loop iteration. Core platform
 validation runs this benchmark on hosted Linux GCC/Clang x86-64, macOS
-AArch64/x86-64, and Windows MSVC x86-64 hosts and retains one record per host.
+AArch64/x86-64, and Windows MSVC x86-64 hosts. Every host must retain at least
+a 5x speedup over the reference interpreter, emit no more than 400 native code
+bytes for the fixed 29-node workload, and retain both its raw record and
+structured gate decision.
 
 Unit tests separately force a Float64 register-cycle backedge and a ten-value
 edge that exceeds every supported floating-point register bank. They verify

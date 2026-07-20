@@ -32,6 +32,9 @@ build/benchmark/benchmark/unijit_cfg_float64_benchmark \
 ```
 
 Every native sample is checksum-matched against the CFG reference interpreter.
+Hosted platform validation rejects fewer than seven samples, a narrower
+measurement boundary, less than a 5x interpreter speedup, or more than 400
+native code bytes, and retains the structured gate decision with the raw record.
 
 ## Lua reference baseline
 
