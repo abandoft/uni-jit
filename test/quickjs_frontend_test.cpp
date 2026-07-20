@@ -131,12 +131,13 @@ int main() {
       "}"
       "sourceFunction.toString = () => 'function(a, b) { return 999; }';"
       "const native = unijit.compile(sourceFunction);"
-      "native(1.5, 4.0, 99);";
+      "const nativeCached = unijit.compile(sourceFunction);"
+      "native(1.5, 4.0, 99) + nativeCached(1.5, 4.0);";
   result = JS_Eval(context, kNativeSource, std::strlen(kNativeSource),
                    "<unijit-quickjs-native>", JS_EVAL_TYPE_GLOBAL);
   number = 0.0;
   if (JS_IsException(result) ||
-      JS_ToFloat64(context, &number, result) != 0 || number != 14.0) {
+      JS_ToFloat64(context, &number, result) != 0 || number != 28.0) {
     std::cerr << "QuickJS did not execute the compiled native closure\n";
     JS_FreeValue(context, result);
     return EXIT_FAILURE;

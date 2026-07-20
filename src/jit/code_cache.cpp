@@ -124,7 +124,7 @@ CodeHandle CodeCache::find(std::string_view key, std::uint64_t fingerprint) {
 }
 
 CodeCachePublication CodeCache::publish(
-    std::string key, std::uint64_t fingerprint,
+    std::string_view key, std::uint64_t fingerprint,
     std::unique_ptr<CompiledFunction> function) {
   if (impl_ == nullptr) {
     return {{StatusCode::kInvalidArgument, "code cache was moved from"}, {},
@@ -142,11 +142,12 @@ CodeCachePublication CodeCache::publish(
 
   const std::size_t code_bytes = function->stats().executable_mapping_size;
   try {
+    std::string owned_key(key);
     std::shared_ptr<const CompiledFunction> shared(std::move(function));
     std::lock_guard<std::mutex> lock(impl_->mutex);
     ++impl_->statistics.publications;
 
-    auto existing = impl_->entries.find(key);
+    auto existing = impl_->entries.find(owned_key);
     if (existing != impl_->entries.end() &&
         existing->second.fingerprint == fingerprint) {
       ++impl_->statistics.publication_reuses;
@@ -179,7 +180,8 @@ CodeCachePublication CodeCache::publish(
 
     Impl::Entry entry{fingerprint, code_generation, impl_->next_stamp(),
                       code_bytes, shared};
-    const auto inserted = impl_->entries.emplace(std::move(key), std::move(entry));
+    const auto inserted =
+        impl_->entries.emplace(std::move(owned_key), std::move(entry));
     if (!inserted.second) {
       ++impl_->statistics.uncached_publications;
       return {Status::ok_status(), std::move(uncached), false, false};

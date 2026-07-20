@@ -2,14 +2,17 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <new>
+#include <string>
 #include <string_view>
 #include <utility>
 
 #include "source_translator.h"
 #include "unijit/ir/function.h"
+#include "unijit/jit/code_cache.h"
 
 namespace {
 
@@ -17,13 +20,19 @@ using unijit::frontend::quickjs::TranslationResult;
 using unijit::ir::Word;
 
 constexpr std::size_t kMaximumParameters = 64;
+constexpr std::uint64_t kQuickJsCacheFingerprint = 0x554A51534C4F4F50ULL;
 JSClassID compiled_function_class_id = JS_INVALID_CLASS_ID;
 std::once_flag compiled_function_class_once;
 
 struct OwnedFunction final {
   std::size_t parameter_count{0};
-  std::unique_ptr<unijit::jit::CompiledFunction> function;
+  unijit::jit::CodeHandle function;
 };
+
+unijit::jit::CodeCache& compiled_function_cache() {
+  static unijit::jit::CodeCache cache;
+  return cache;
+}
 
 void finalize_compiled_function(JSRuntime*, JSValue value) {
   auto* owned = static_cast<OwnedFunction*>(
@@ -50,7 +59,7 @@ JSValue invoke_compiled_function(JSContext* context, JSValueConst, int argc,
                                  JSValue* function_data) {
   auto* owned = static_cast<OwnedFunction*>(
       JS_GetOpaque(function_data[0], compiled_function_class_id));
-  if (owned == nullptr || owned->function == nullptr) {
+  if (owned == nullptr || !owned->function.valid()) {
     return JS_ThrowTypeError(context, "invalid UniJIT compiled function");
   }
   if (argc < static_cast<int>(owned->parameter_count)) {
@@ -72,8 +81,8 @@ JSValue invoke_compiled_function(JSContext* context, JSValueConst, int argc,
   }
 
   Word result = 0;
-  if (owned->function->requires_context()) {
-    const unijit::ir::EvaluationResult invocation = owned->function->invoke(
+  if (owned->function.requires_context()) {
+    const unijit::ir::EvaluationResult invocation = owned->function.invoke(
         native_arguments.data(), owned->parameter_count);
     if (!invocation.ok()) {
       return JS_ThrowInternalError(
@@ -82,7 +91,7 @@ JSValue invoke_compiled_function(JSContext* context, JSValueConst, int argc,
     }
     result = invocation.value;
   } else {
-    result = owned->function->native_entry()(native_arguments.data(), nullptr);
+    result = owned->function.native_entry()(native_arguments.data(), nullptr);
   }
   return JS_NewFloat64(context, unijit::ir::unpack_float64(result));
 }
@@ -134,16 +143,33 @@ JSValue compile_with_to_string(JSContext* context, JSValueConst function_value,
     return JS_EXCEPTION;
   }
 
-  TranslationResult translation =
-      unijit::frontend::quickjs::translate_numeric_function(
-          std::string_view(source, source_size));
-  JS_FreeCString(context, source);
-  if (!translation.ok()) {
-    return JS_ThrowTypeError(context, "UniJIT rejected source at byte %zu: %s",
-                             translation.status.location(),
-                             translation.status.message().c_str());
+  const std::string_view source_view(source, source_size);
+  unijit::jit::CodeHandle code = compiled_function_cache().find(
+      source_view, kQuickJsCacheFingerprint);
+  std::size_t parameter_count = code.parameter_count();
+  if (!code.valid()) {
+    TranslationResult translation =
+        unijit::frontend::quickjs::translate_numeric_function(source_view);
+    if (!translation.ok()) {
+      JS_FreeCString(context, source);
+      return JS_ThrowTypeError(
+          context, "UniJIT rejected source at byte %zu: %s",
+          translation.status.location(), translation.status.message().c_str());
+    }
+    parameter_count = translation.parameter_count;
+    unijit::jit::CodeCachePublication publication =
+        compiled_function_cache().publish(
+            source_view, kQuickJsCacheFingerprint, std::move(translation.function));
+    JS_FreeCString(context, source);
+    if (!publication.ok()) {
+      return JS_ThrowInternalError(context, "UniJIT cache publication failed: %s",
+                                   publication.status.message().c_str());
+    }
+    code = std::move(publication.handle);
+  } else {
+    JS_FreeCString(context, source);
   }
-  if (translation.parameter_count > kMaximumParameters) {
+  if (parameter_count > kMaximumParameters) {
     return JS_ThrowTypeError(context, "compiled function has too many arguments");
   }
   if (!ensure_compiled_function_class(context)) {
@@ -156,7 +182,7 @@ JSValue compile_with_to_string(JSContext* context, JSValueConst function_value,
     return holder;
   }
   auto* owned = new (std::nothrow) OwnedFunction{
-      translation.parameter_count, std::move(translation.function)};
+      parameter_count, std::move(code)};
   if (owned == nullptr) {
     JS_FreeValue(context, holder);
     return JS_ThrowOutOfMemory(context);
@@ -166,7 +192,7 @@ JSValue compile_with_to_string(JSContext* context, JSValueConst function_value,
   JSValue data[] = {holder};
   JSValue compiled = JS_NewCFunctionData(
       context, invoke_compiled_function,
-      static_cast<int>(translation.parameter_count), 0, 1, data);
+      static_cast<int>(parameter_count), 0, 1, data);
   JS_FreeValue(context, holder);
   return compiled;
 }

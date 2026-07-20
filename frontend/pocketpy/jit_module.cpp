@@ -3,7 +3,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <new>
 #include <string_view>
 #include <utility>
@@ -12,6 +11,7 @@
 
 #include "source_translator.h"
 #include "unijit/ir/function.h"
+#include "unijit/jit/code_cache.h"
 
 namespace {
 
@@ -21,11 +21,17 @@ using unijit::ir::Word;
 constexpr char kModuleName[] = "unijit";
 constexpr char kCompiledFunctionTypeName[] = "_CompiledFunction";
 constexpr std::size_t kMaximumParameters = 64;
+constexpr std::uint64_t kPocketPyCacheFingerprint = 0x554A504B4C4F4F50ULL;
 
 struct OwnedFunction final {
   std::size_t parameter_count{0};
-  std::unique_ptr<unijit::jit::CompiledFunction> function;
+  unijit::jit::CodeHandle function;
 };
+
+unijit::jit::CodeCache &compiled_function_cache() {
+  static unijit::jit::CodeCache cache;
+  return cache;
+}
 
 static_assert(alignof(OwnedFunction) <= alignof(std::uint64_t),
               "PocketPy userdata must provide sufficient alignment");
@@ -44,14 +50,29 @@ bool reject_direct_construction(int, py_Ref) {
 }
 
 bool create_compiled_function(std::string_view source) {
-  TranslationResult translation =
-      unijit::frontend::pocketpy::translate_numeric_function(source);
-  if (!translation.ok()) {
-    return ValueError("UniJIT rejected source at byte %d: %s",
-                      static_cast<int>(translation.status.location()),
-                      translation.status.message().c_str());
+  unijit::jit::CodeHandle code = compiled_function_cache().find(
+      source, kPocketPyCacheFingerprint);
+  std::size_t parameter_count = code.parameter_count();
+  if (!code.valid()) {
+    TranslationResult translation =
+        unijit::frontend::pocketpy::translate_numeric_function(source);
+    if (!translation.ok()) {
+      return ValueError("UniJIT rejected source at byte %d: %s",
+                        static_cast<int>(translation.status.location()),
+                        translation.status.message().c_str());
+    }
+    parameter_count = translation.parameter_count;
+    unijit::jit::CodeCachePublication publication =
+        compiled_function_cache().publish(
+            source, kPocketPyCacheFingerprint,
+            std::move(translation.function));
+    if (!publication.ok()) {
+      return RuntimeError("UniJIT cache publication failed: %s",
+                          publication.status.message().c_str());
+    }
+    code = std::move(publication.handle);
   }
-  if (translation.parameter_count > kMaximumParameters) {
+  if (parameter_count > kMaximumParameters) {
     return ValueError("compiled function has too many arguments");
   }
 
@@ -61,8 +82,7 @@ bool create_compiled_function(std::string_view source) {
   }
   void *storage =
       py_newobject(py_retval(), type, 0, sizeof(OwnedFunction));
-  ::new (storage) OwnedFunction{translation.parameter_count,
-                                std::move(translation.function)};
+  ::new (storage) OwnedFunction{parameter_count, std::move(code)};
   return true;
 }
 
@@ -78,7 +98,7 @@ bool invoke_compiled_function(int argc, py_Ref argv) {
     return false;
   }
   auto *owned = static_cast<OwnedFunction *>(py_touserdata(py_arg(0)));
-  if (owned->function == nullptr) {
+  if (!owned->function.valid()) {
     return RuntimeError("invalid UniJIT compiled function");
   }
 
@@ -98,8 +118,8 @@ bool invoke_compiled_function(int argc, py_Ref argv) {
   }
 
   Word result = 0;
-  if (owned->function->requires_context()) {
-    const unijit::ir::EvaluationResult invocation = owned->function->invoke(
+  if (owned->function.requires_context()) {
+    const unijit::ir::EvaluationResult invocation = owned->function.invoke(
         native_arguments.data(), owned->parameter_count);
     if (!invocation.ok()) {
       if (invocation.status.code() == unijit::StatusCode::kRuntimeExit) {
@@ -111,8 +131,7 @@ bool invoke_compiled_function(int argc, py_Ref argv) {
     }
     result = invocation.value;
   } else {
-    result =
-        owned->function->native_entry()(native_arguments.data(), nullptr);
+    result = owned->function.native_entry()(native_arguments.data(), nullptr);
   }
   py_newfloat(py_retval(), unijit::ir::unpack_float64(result));
   return true;

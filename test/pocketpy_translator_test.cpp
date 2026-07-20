@@ -145,6 +145,8 @@ int main() {
       "import unijit\n"
       "native = unijit.compile(\"def affine(a, b): return (a + 2.5) * "
       "(b - -3)\")\n"
+      "native_cached = unijit.compile(\"def affine(a, b): return (a + 2.5) * "
+      "(b - -3)\")\n"
       "divide = unijit.compile(\"def divide(a, b): return a / b\")\n";
   if (!py_exec(kNativeSource, "<unijit-pocketpy-native>", EXEC_MODE, nullptr)) {
     py_printexc();
@@ -190,6 +192,20 @@ int main() {
   const py_Ref result = py_getglobal(py_name("result"));
   if (result == nullptr || !py_isfloat(result) || py_tofloat(result) != 28.0) {
     std::cerr << "PocketPy did not execute the compiled native callable\n";
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+
+  if (!py_exec("cached_result = native_cached(1.5, 4)",
+               "<unijit-pocketpy-cached-call>", EXEC_MODE, nullptr)) {
+    py_printexc();
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  const py_Ref cached_result = py_getglobal(py_name("cached_result"));
+  if (cached_result == nullptr || !py_isfloat(cached_result) ||
+      py_tofloat(cached_result) != 28.0) {
+    std::cerr << "PocketPy did not execute a cached native callable\n";
     py_finalize();
     return EXIT_FAILURE;
   }

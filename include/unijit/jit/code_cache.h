@@ -83,7 +83,7 @@ class CodeCache final {
   CodeHandle find(std::string_view key, std::uint64_t fingerprint);
 
   CodeCachePublication publish(
-      std::string key, std::uint64_t fingerprint,
+      std::string_view key, std::uint64_t fingerprint,
       std::unique_ptr<CompiledFunction> function);
 
   bool invalidate(std::string_view key);
