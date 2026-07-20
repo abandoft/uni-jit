@@ -45,7 +45,7 @@ bool is_binary(Opcode opcode) noexcept {
   return opcode == Opcode::kAdd || opcode == Opcode::kSubtract ||
          opcode == Opcode::kMultiply || opcode == Opcode::kFloatAdd ||
          opcode == Opcode::kFloatSubtract ||
-         opcode == Opcode::kFloatMultiply;
+         opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide;
 }
 
 PassResult transform_once(const Function& input) {
@@ -145,6 +145,11 @@ PassResult transform_once(const Function& input) {
     if (node.opcode == Opcode::kFloatMultiply) {
       mapped[index] =
           builder.float64_multiply(mapped[lhs_id], mapped[rhs_id]);
+      continue;
+    }
+    if (node.opcode == Opcode::kFloatDivide) {
+      mapped[index] =
+          builder.float64_divide(mapped[lhs_id], mapped[rhs_id]);
       continue;
     }
     if (known_constant[lhs_id] && known_constant[rhs_id]) {

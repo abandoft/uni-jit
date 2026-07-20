@@ -92,7 +92,7 @@ Value FunctionBuilder::append_binary(Opcode opcode, Value lhs, Value rhs) {
   const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
   const bool is_float =
       opcode == Opcode::kFloatAdd || opcode == Opcode::kFloatSubtract ||
-      opcode == Opcode::kFloatMultiply;
+      opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide;
   function_.nodes_.push_back(
       Node{opcode, lhs, rhs, 0,
            is_float ? ValueType::kFloat64 : ValueType::kWord});
@@ -121,6 +121,10 @@ Value FunctionBuilder::float64_subtract(Value lhs, Value rhs) {
 
 Value FunctionBuilder::float64_multiply(Value lhs, Value rhs) {
   return append_binary(Opcode::kFloatMultiply, lhs, rhs);
+}
+
+Value FunctionBuilder::float64_divide(Value lhs, Value rhs) {
+  return append_binary(Opcode::kFloatDivide, lhs, rhs);
 }
 
 Value FunctionBuilder::call(RuntimeHelper helper,

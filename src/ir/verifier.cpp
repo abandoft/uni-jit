@@ -14,13 +14,13 @@ bool is_binary(Opcode opcode) {
   return opcode == Opcode::kAdd || opcode == Opcode::kSubtract ||
          opcode == Opcode::kMultiply || opcode == Opcode::kFloatAdd ||
          opcode == Opcode::kFloatSubtract ||
-         opcode == Opcode::kFloatMultiply;
+         opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide;
 }
 
 bool is_float_binary(Opcode opcode) {
   return opcode == Opcode::kFloatAdd ||
          opcode == Opcode::kFloatSubtract ||
-         opcode == Opcode::kFloatMultiply;
+         opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide;
 }
 
 }  // namespace

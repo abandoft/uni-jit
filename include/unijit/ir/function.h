@@ -50,6 +50,7 @@ enum class Opcode : std::uint8_t {
   kFloatAdd,
   kFloatSubtract,
   kFloatMultiply,
+  kFloatDivide,
   kCall,
   kSafepoint,
 };
@@ -123,6 +124,7 @@ class FunctionBuilder final {
   Value float64_add(Value lhs, Value rhs);
   Value float64_subtract(Value lhs, Value rhs);
   Value float64_multiply(Value lhs, Value rhs);
+  Value float64_divide(Value lhs, Value rhs);
   Value call(RuntimeHelper helper, std::vector<Value> arguments,
              ValueType result_type = ValueType::kWord);
   Value safepoint(std::size_t site);

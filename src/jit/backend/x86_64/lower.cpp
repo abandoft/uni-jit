@@ -129,6 +129,11 @@ class Assembler final {
     emit_float_binary(0x59U, destination, rhs);
   }
 
+  void divide_float(int destination, int lhs, int rhs) {
+    prepare_float_binary(destination, lhs);
+    emit_float_binary(0x5EU, destination, rhs);
+  }
+
   void add(int destination, int lhs, int rhs) {
     prepare_binary(destination, lhs);
     emit_rex(rhs, destination);
@@ -495,7 +500,8 @@ LoweringResult lower_impl(const ir::Function& function) {
       }
       case ir::Opcode::kFloatAdd:
       case ir::Opcode::kFloatSubtract:
-      case ir::Opcode::kFloatMultiply: {
+      case ir::Opcode::kFloatMultiply:
+      case ir::Opcode::kFloatDivide: {
         const int lhs = load_float_operand(
             &assembler, allocation.locations[node.lhs.id()], kFloatScratch0);
         const int rhs = load_float_operand(
@@ -507,8 +513,10 @@ LoweringResult lower_impl(const ir::Function& function) {
           assembler.add_float(target, lhs, rhs);
         } else if (node.opcode == ir::Opcode::kFloatSubtract) {
           assembler.subtract_float(target, lhs, rhs);
-        } else {
+        } else if (node.opcode == ir::Opcode::kFloatMultiply) {
           assembler.multiply_float(target, lhs, rhs);
+        } else {
+          assembler.divide_float(target, lhs, rhs);
         }
         if (!destination.in_register()) {
           assembler.store_float(target, kRsp, spill_offset(destination));
