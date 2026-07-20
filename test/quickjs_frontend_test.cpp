@@ -6,6 +6,7 @@
 #include <quickjs.h>
 
 #include "source_translator.h"
+#include "unijit_quickjs.h"
 #include "unijit/ir/function.h"
 
 int main() {
@@ -29,8 +30,6 @@ int main() {
                       JS_ToFloat64(context, &number, result) == 0 &&
                       number == 42.0;
   JS_FreeValue(context, result);
-  JS_FreeContext(context);
-  JS_FreeRuntime(runtime);
 
   if (!passed) {
     std::cerr << "stock QuickJS embedding smoke test failed\n";
@@ -66,6 +65,42 @@ int main() {
       return EXIT_FAILURE;
     }
   }
+
+  if (unijit_quickjs_install(context) != 0) {
+    std::cerr << "unable to install the UniJIT QuickJS module\n";
+    return EXIT_FAILURE;
+  }
+  constexpr char kNativeSource[] =
+      "const native = unijit.compile(function(a, b) {"
+      "  return (a + 2.5) * (b - -3);"
+      "});"
+      "native(1.5, 4.0, 99);";
+  result = JS_Eval(context, kNativeSource, std::strlen(kNativeSource),
+                   "<unijit-quickjs-native>", JS_EVAL_TYPE_GLOBAL);
+  number = 0.0;
+  if (JS_IsException(result) ||
+      JS_ToFloat64(context, &number, result) != 0 || number != 28.0) {
+    std::cerr << "QuickJS did not execute the compiled native closure\n";
+    JS_FreeValue(context, result);
+    return EXIT_FAILURE;
+  }
+  JS_FreeValue(context, result);
+
+  constexpr char kGuardSource[] = "native('1.5', 4.0);";
+  result = JS_Eval(context, kGuardSource, std::strlen(kGuardSource),
+                   "<unijit-quickjs-guard>", JS_EVAL_TYPE_GLOBAL);
+  if (!JS_IsException(result)) {
+    std::cerr << "QuickJS native closure accepted a non-Number argument\n";
+    JS_FreeValue(context, result);
+    return EXIT_FAILURE;
+  }
+  JS_FreeValue(context, result);
+  JSValue exception = JS_GetException(context);
+  JS_FreeValue(context, exception);
+
+  JS_RunGC(runtime);
+  JS_FreeContext(context);
+  JS_FreeRuntime(runtime);
   std::cout << "stock QuickJS embedding smoke test passed\n";
   return EXIT_SUCCESS;
 }

@@ -39,9 +39,13 @@ set_target_properties(unijit_quickjs_reference PROPERTIES
   C_VISIBILITY_PRESET hidden
   POSITION_INDEPENDENT_CODE ON)
 
-add_library(unijit_quickjs_frontend STATIC source_translator.cpp)
+add_library(unijit_quickjs_frontend STATIC
+  jit_module.cpp
+  source_translator.cpp)
 target_include_directories(unijit_quickjs_frontend
   PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+target_include_directories(unijit_quickjs_frontend SYSTEM
+  PUBLIC "${UNIJIT_QUICKJS_INCLUDE_DIR}")
 target_compile_features(unijit_quickjs_frontend PRIVATE cxx_std_17)
 target_link_libraries(unijit_quickjs_frontend
   PUBLIC UniJIT::unijit unijit_quickjs_reference)
@@ -56,6 +60,12 @@ if(MSVC)
 else()
   target_compile_options(unijit_quickjs_frontend PRIVATE
     -Wall -Wextra -Wpedantic)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(unijit_quickjs_frontend PRIVATE
+      -Wno-c99-extensions -Wno-c++20-designator)
+  elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    target_compile_options(unijit_quickjs_frontend PRIVATE -Wno-pedantic)
+  endif()
   if(UNIJIT_WARNINGS_AS_ERRORS)
     target_compile_options(unijit_quickjs_frontend PRIVATE -Werror)
   endif()
@@ -79,6 +89,12 @@ if(UNIJIT_BUILD_TESTS)
   else()
     target_compile_options(unijit_quickjs_tests PRIVATE
       -Wall -Wextra -Wpedantic)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+      target_compile_options(unijit_quickjs_tests PRIVATE
+        -Wno-c99-extensions -Wno-c++20-designator)
+    elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+      target_compile_options(unijit_quickjs_tests PRIVATE -Wno-pedantic)
+    endif()
     if(UNIJIT_WARNINGS_AS_ERRORS)
       target_compile_options(unijit_quickjs_tests PRIVATE -Werror)
     endif()
