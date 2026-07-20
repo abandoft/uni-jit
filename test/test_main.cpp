@@ -332,6 +332,24 @@ void test_safepoint_ir_and_interpreter() {
   auto compilation = Compiler::compile(function);
   expect(compilation.ok(), "safepoint IR must compile to native code");
   if (compilation.ok()) {
+    const unijit::jit::StackMapRecord* stack_map =
+        compilation.function->stack_map(42);
+    expect(stack_map != nullptr &&
+               stack_map->kind == unijit::jit::StackMapKind::kSafepoint &&
+               stack_map->native_offset <
+                   compilation.function->stats().code_size &&
+               stack_map->frame_size <=
+                   compilation.function->stats().spill_slots * sizeof(Word) +
+                       15 &&
+               compilation.function->stats().stack_map_count == 1 &&
+               compilation.function->stats().stack_map_value_count == 1 &&
+               stack_map->live_values.size() == 1 &&
+               stack_map->live_values[0].type ==
+                   unijit::ir::ValueType::kWord &&
+               stack_map->live_values[0].frame_offset <
+                   stack_map->frame_size,
+           "straight-line safepoints must publish canonical live-value stack maps");
+
     context.request_interrupt();
     const auto native_interrupted =
         compilation.function->invoke(nullptr, 0, &context);
@@ -565,11 +583,27 @@ void test_float64_nonzero_guard() {
   }
   const auto* default_deoptimization =
       compilation.function->deoptimization_record(77);
+  const auto* stack_map = compilation.function->stack_map(77);
   expect(default_deoptimization != nullptr &&
              default_deoptimization->reason ==
                  unijit::runtime::DeoptimizationReason::kGuardFailed &&
              default_deoptimization->recovery.size() == 1,
          "generic guards must receive default reconstruction metadata");
+  expect(stack_map != nullptr &&
+             stack_map->kind == unijit::jit::StackMapKind::kGuard &&
+             stack_map->native_offset <
+                 compilation.function->stats().code_size &&
+             compilation.function->stats().stack_map_count == 1 &&
+             compilation.function->stats().stack_map_value_count == 2 &&
+             stack_map->live_values.size() == 2 &&
+             std::all_of(stack_map->live_values.begin(),
+                         stack_map->live_values.end(),
+                         [stack_map](const unijit::jit::StackMapValue& value) {
+                           return value.type ==
+                                      unijit::ir::ValueType::kFloat64 &&
+                                  value.frame_offset < stack_map->frame_size;
+                         }),
+         "Float64 guards must retain every live typed value in canonical frame slots");
 
   const std::array<Word, 2> valid = {unijit::ir::pack_float64(9.0),
                                      unijit::ir::pack_float64(3.0)};
@@ -704,8 +738,11 @@ void test_deoptimization_reconstruction() {
   const auto publication = cache.publish(
       "deoptimization-fixture", 1, std::move(compilation.function));
   expect(publication.ok() &&
-             publication.handle.deoptimization_record(113) != nullptr,
-         "code-cache leases must retain deoptimization metadata");
+             publication.handle.deoptimization_record(113) != nullptr &&
+             publication.handle.stack_maps() != nullptr &&
+             publication.handle.stack_maps()->size() == 1 &&
+             publication.handle.stack_map(113) != nullptr,
+         "code-cache leases must retain deoptimization and stack-map metadata");
   const auto cached_reconstruction =
       publication.handle.reconstruct_deoptimization(
           113, arguments.data(), arguments.size(), context);
@@ -760,11 +797,44 @@ void test_constant_float64_nonzero_guard_elimination() {
          "eliminated guards must not require a managed execution context");
   expect(compilation.function->deoptimization_table().empty(),
          "eliminated guards must not retain stale deoptimization metadata");
+  expect(compilation.function->stack_maps().empty(),
+         "eliminated guards must not retain stale stack maps");
   const std::array<Word, 1> arguments = {unijit::ir::pack_float64(9.0)};
   const auto result =
       compilation.function->invoke(arguments.data(), arguments.size());
   expect(result.ok() && unijit::ir::unpack_float64(result.value) == 4.5,
          "constant-guard elimination must preserve the quotient");
+}
+
+void test_runtime_exit_site_identity() {
+  FunctionBuilder straight_builder(
+      std::vector<unijit::ir::ValueType>{
+          unijit::ir::ValueType::kFloat64});
+  const Value straight_parameter = straight_builder.parameter(0);
+  expect(straight_builder.guard_float64_nonzero(straight_parameter, 91)
+             .valid() &&
+             straight_builder.safepoint(91).valid() &&
+             straight_builder.set_return(straight_parameter).ok() &&
+             !unijit::ir::verify(std::move(straight_builder).build()).ok(),
+         "straight-line runtime exits must have unique stack-map sites");
+
+  unijit::ir::ControlFlowBuilder control_builder(0);
+  expect(control_builder.safepoint(92).valid() &&
+             control_builder.safepoint(92).valid() &&
+             control_builder.set_return(control_builder.constant(0)).ok() &&
+             !unijit::ir::verify(std::move(control_builder).build()).ok(),
+         "CFG runtime exits must have unique stack-map sites");
+
+  FunctionBuilder assumed_builder(0);
+  expect(assumed_builder.safepoint(93).valid() &&
+             assumed_builder.set_return(assumed_builder.constant(0)).ok(),
+         "assumption collision fixture must contain a safepoint");
+  auto assumption = std::make_shared<unijit::runtime::Assumption>();
+  unijit::runtime::AssumptionSet assumptions;
+  expect(assumptions.add(assumption, 93, 0).ok() &&
+             !Compiler::compile(std::move(assumed_builder).build(), assumptions)
+                  .ok(),
+         "assumptions and explicit runtime exits must not share a site");
 }
 
 void test_verifier_rejects_mixed_arithmetic() {
@@ -1605,6 +1675,30 @@ void test_control_flow_safepoint() {
   auto compilation = Compiler::compile(function);
   expect(compilation.ok(), "CFG safepoint loop must compile");
   if (compilation.ok()) {
+    const unijit::jit::StackMapRecord* stack_map =
+        compilation.function->stack_map(314);
+    expect(stack_map != nullptr &&
+               stack_map->kind == unijit::jit::StackMapKind::kSafepoint &&
+               stack_map->native_offset <
+                   compilation.function->stats().code_size &&
+               compilation.function->stats().stack_map_count == 1 &&
+               compilation.function->stats().stack_map_value_count == 4 &&
+               stack_map->live_values.size() == 4 &&
+               stack_map->find(remaining) != nullptr &&
+               stack_map->find(sum) != nullptr &&
+               stack_map->find(zero) != nullptr &&
+               stack_map->find(one) != nullptr &&
+               stack_map->find(safepoint) == nullptr &&
+               std::all_of(
+                   stack_map->live_values.begin(),
+                   stack_map->live_values.end(),
+                   [stack_map](const unijit::jit::StackMapValue& value) {
+                     return value.type == unijit::ir::ValueType::kWord &&
+                            value.frame_offset ==
+                                value.value.id() * sizeof(Word) &&
+                            value.frame_offset < stack_map->frame_size;
+                   }),
+           "CFG safepoints must publish precise loop-live canonical stack maps");
     expect(compilation.function->requires_context(),
            "compiled CFG safepoints must require an execution context");
     context.request_interrupt();
@@ -1630,6 +1724,35 @@ void test_control_flow_safepoint() {
     expect(compilation.function->native_entry()(args.data(), nullptr) == 10,
            "null execution contexts must bypass CFG safepoints");
   }
+}
+
+void test_control_flow_stack_map_edge_liveness() {
+  unijit::ir::ControlFlowBuilder builder(1);
+  const unijit::ir::Block exit = builder.create_block(1);
+  const Value parameter = builder.parameter(0);
+  expect(builder.safepoint(315).valid() &&
+             builder.jump(exit, {parameter}).ok(),
+         "edge-liveness fixture must poll before passing its value");
+  expect(builder.set_insertion_block(exit).ok(),
+         "edge-liveness exit block must exist");
+  const Value result = builder.block_parameter(exit, 0);
+  expect(builder.set_return(result).ok(),
+         "edge-liveness exit block must return its parameter");
+  const unijit::ir::ControlFlowFunction function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "edge-liveness CFG must verify");
+
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "edge-liveness CFG must compile");
+  if (!compilation.ok()) {
+    return;
+  }
+  const unijit::jit::StackMapRecord* stack_map =
+      compilation.function->stack_map(315);
+  expect(stack_map != nullptr && stack_map->live_values.size() == 1 &&
+             stack_map->find(parameter) != nullptr &&
+             stack_map->find(result) == nullptr,
+         "CFG stack maps must translate live successor parameters to edge arguments");
 }
 
 void test_assumption_invalidation() {
@@ -2262,6 +2385,7 @@ int main() {
   test_float64_nonzero_guard();
   test_deoptimization_reconstruction();
   test_constant_float64_nonzero_guard_elimination();
+  test_runtime_exit_site_identity();
   test_verifier_rejects_mixed_arithmetic();
   test_float64_spill_path();
   test_float64_preserves_host_abi();
@@ -2284,6 +2408,7 @@ int main() {
   test_control_flow_preserves_nonlocal_merge_state();
   test_control_flow_rejects_non_dominating_value();
   test_control_flow_safepoint();
+  test_control_flow_stack_map_edge_liveness();
   test_assumption_invalidation();
   test_hotness_and_tiered_switching();
   test_compilation_scheduler();

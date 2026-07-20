@@ -75,7 +75,11 @@ int main() {
   auto guarded_publication = cache.publish(
       "package-consumer-guard", 2, std::move(guarded_compilation.function));
   if (!guarded_publication.ok() ||
-      guarded_publication.handle.deoptimization_record(17) == nullptr) {
+      guarded_publication.handle.deoptimization_record(17) == nullptr ||
+      guarded_publication.handle.stack_maps() == nullptr ||
+      guarded_publication.handle.stack_map(17) == nullptr ||
+      guarded_publication.handle.compilation_stats() == nullptr ||
+      guarded_publication.handle.compilation_stats()->stack_map_count != 1) {
     return 11;
   }
   const std::array<unijit::ir::Word, 1> zero = {
