@@ -20,6 +20,19 @@ compilation latency, optimized IR size, native code size, median execution
 latencies, and checksums. Generated results stay under `build/`; curated
 release reports will be committed separately with their environment manifest.
 
+The CFG Float64 benchmark keeps four loop-carried values live while native
+addition, subtraction, multiplication, and division update them. It reports
+latency per completed loop iteration and native code size, making register-bank
+transport changes directly comparable without a language-runtime boundary:
+
+```sh
+build/benchmark/benchmark/unijit_cfg_float64_benchmark \
+  --loop-iterations 1000 --warmup 100 --invocations 1000 --samples 7 \
+  > build/benchmark/cfg-float64.json
+```
+
+Every native sample is checksum-matched against the CFG reference interpreter.
+
 ## Lua reference baseline
 
 The pinned Lua 5.5 interpreter is compiled directly by CMake. LuaJIT's native
