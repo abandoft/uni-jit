@@ -1,6 +1,7 @@
 add_library(unijit
   ir/function.cpp
   ir/interpreter.cpp
+  ir/optimizer.cpp
   ir/verifier.cpp
   jit/compiler.cpp
   jit/executable_memory.cpp
