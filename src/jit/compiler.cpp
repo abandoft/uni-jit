@@ -734,7 +734,11 @@ Status validate_function_limits(
             "compilation exceeds the CFG block limit",
             function.blocks().size()};
   }
-  std::size_t arguments = 0;
+  std::size_t arguments = function.call_arguments().size();
+  if (arguments > limits.maximum_ir_arguments) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the CFG argument limit", arguments};
+  }
   for (std::size_t index = 0; index < function.blocks().size(); ++index) {
     const ir::ControlTerminator& terminator =
         function.blocks()[index].terminator;

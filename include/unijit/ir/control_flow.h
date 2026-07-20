@@ -50,6 +50,7 @@ enum class ControlOpcode : std::uint8_t {
   kFloatLessEqual,
   kLessThan,
   kLessEqual,
+  kCall,
   kGuardFloatNonzero,
   kSafepoint,
 };
@@ -60,6 +61,8 @@ struct ControlNode final {
   Value rhs;
   Word immediate{0};
   ValueType type{ValueType::kWord};
+  std::uint32_t argument_begin{0};
+  std::uint32_t argument_count{0};
 };
 
 struct ControlEdge final {
@@ -111,6 +114,9 @@ public:
   }
   Block entry_block() const noexcept { return entry_block_; }
   const std::vector<ControlNode> &nodes() const noexcept { return nodes_; }
+  const std::vector<Value> &call_arguments() const noexcept {
+    return call_arguments_;
+  }
   const std::vector<BasicBlock> &blocks() const noexcept { return blocks_; }
 
 private:
@@ -120,6 +126,7 @@ private:
   std::vector<ValueType> parameter_types_;
   Block entry_block_;
   std::vector<ControlNode> nodes_;
+  std::vector<Value> call_arguments_;
   std::vector<BasicBlock> blocks_;
 };
 
@@ -151,6 +158,8 @@ public:
   Value float64_less_equal(Value lhs, Value rhs);
   Value less_than(Value lhs, Value rhs);
   Value less_equal(Value lhs, Value rhs);
+  Value call(RuntimeHelper helper, std::vector<Value> arguments,
+             ValueType result_type = ValueType::kWord);
   Value guard_float64_nonzero(Value value, std::size_t site);
   Value safepoint(std::size_t site);
 

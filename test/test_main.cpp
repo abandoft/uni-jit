@@ -2029,6 +2029,54 @@ void test_control_flow_counted_loop() {
   }
 }
 
+void test_control_flow_runtime_helper_ir() {
+  using unijit::ir::ControlFlowBuilder;
+  using unijit::ir::ControlFlowInterpreter;
+  using unijit::ir::ValueType;
+
+  ControlFlowBuilder builder(
+      {ValueType::kFloat64, ValueType::kFloat64});
+  const Value live = builder.float64_add(builder.parameter(0),
+                                         builder.float64_constant(0.5));
+  const Value called = builder.call(float_runtime_helper,
+                                    {live, builder.parameter(1)},
+                                    ValueType::kFloat64);
+  const Value result = builder.float64_add(live, called);
+  expect(builder.set_return(result).ok(),
+         "CFG runtime-call fixture must record its result");
+  const auto function = std::move(builder).build();
+  expect(function.call_arguments().size() == 2 &&
+             unijit::ir::verify(function).ok(),
+         "CFG runtime calls must retain verified flattened arguments");
+
+  const std::array<Word, 2> arguments = {
+      unijit::ir::pack_float64(3.5),
+      unijit::ir::pack_float64(-2.0)};
+  runtime_call_count = 0;
+  const auto interpreted = ControlFlowInterpreter::evaluate(
+      function, arguments.data(), arguments.size());
+  expect(interpreted.ok() &&
+             interpreted.value == unijit::ir::pack_float64(-4.0) &&
+             runtime_call_count == 1,
+         "CFG interpreter must execute typed helpers and preserve live values");
+
+  ControlFlowBuilder null_builder(0);
+  const Value invalid = null_builder.call(nullptr, {});
+  expect(null_builder.set_return(invalid).ok() &&
+             !unijit::ir::verify(std::move(null_builder).build()).ok(),
+         "CFG verifier must reject a null runtime helper");
+
+  ControlFlowBuilder terminated_builder(0);
+  const Value existing = terminated_builder.constant(7);
+  expect(terminated_builder.set_return(existing).ok() &&
+             !terminated_builder.call(sum_runtime_helper, {existing}).valid(),
+         "terminated CFG blocks must reject runtime calls");
+  const auto terminated = std::move(terminated_builder).build();
+  expect(terminated.call_arguments().empty() &&
+             unijit::ir::verify(terminated).ok(),
+         "failed CFG call construction must roll back flattened arguments");
+}
+
 void test_control_flow_float64_loop() {
   using unijit::ir::ValueType;
   unijit::ir::ControlFlowBuilder builder(
@@ -3518,6 +3566,7 @@ int main() {
   test_optimization_pipeline();
   test_optimization_exit_state_mapping();
   test_float64_constant_folding();
+  test_control_flow_runtime_helper_ir();
   test_control_flow_counted_loop();
   test_control_flow_float64_loop();
   test_control_flow_float64_guard_deoptimization();

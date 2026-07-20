@@ -38,6 +38,7 @@ bool is_binary(ControlOpcode opcode) {
   case ControlOpcode::kParameter:
   case ControlOpcode::kBlockParameter:
   case ControlOpcode::kConstant:
+  case ControlOpcode::kCall:
   case ControlOpcode::kGuardFloatNonzero:
   case ControlOpcode::kSafepoint:
     return false;
@@ -218,6 +219,9 @@ Status verify_impl(const ControlFlowFunction &function) {
     return dominates[use_block][definition_block] != false;
   };
 
+  std::vector<bool> claimed_call_arguments(function.call_arguments().size(),
+                                           false);
+
   for (std::size_t block_index = 0; block_index < blocks.size();
        ++block_index) {
     const BasicBlock &block = blocks[block_index];
@@ -226,11 +230,40 @@ Status verify_impl(const ControlFlowFunction &function) {
       const Value value = block.instructions[instruction_index];
       const ControlNode &node = nodes[value.id()];
       if (node.opcode == ControlOpcode::kConstant) {
+        if (node.argument_begin != 0 || node.argument_count != 0) {
+          return invalid_control_flow(value.id(),
+                                      "constant has runtime-call arguments");
+        }
+        continue;
+      }
+      if (node.opcode == ControlOpcode::kCall) {
+        const std::size_t begin = node.argument_begin;
+        const std::size_t count = node.argument_count;
+        if (node.lhs.valid() || node.rhs.valid() ||
+            unpack_runtime_helper(node.immediate) == nullptr ||
+            begin > function.call_arguments().size() ||
+            count > function.call_arguments().size() - begin) {
+          return invalid_control_flow(value.id(),
+                                      "control-flow runtime call is malformed");
+        }
+        for (std::size_t argument_index = 0; argument_index < count;
+             ++argument_index) {
+          const std::size_t flat_index = begin + argument_index;
+          const Value argument = function.call_arguments()[flat_index];
+          if (claimed_call_arguments[flat_index] ||
+              !available(argument, block_index, instruction_index)) {
+            return invalid_control_flow(
+                value.id(),
+                "runtime call argument is duplicated or unavailable");
+          }
+          claimed_call_arguments[flat_index] = true;
+        }
         continue;
       }
       if (node.opcode == ControlOpcode::kGuardFloatNonzero) {
         if (node.immediate < 0 || node.rhs.valid() ||
             node.type != ValueType::kWord ||
+            node.argument_begin != 0 || node.argument_count != 0 ||
             !available(node.lhs, block_index, instruction_index) ||
             function.value_type(node.lhs) != ValueType::kFloat64) {
           return invalid_control_flow(
@@ -249,7 +282,8 @@ Status verify_impl(const ControlFlowFunction &function) {
       }
       if (node.opcode == ControlOpcode::kSafepoint) {
         if (node.immediate < 0 || node.lhs.valid() || node.rhs.valid() ||
-            node.type != ValueType::kWord) {
+            node.type != ValueType::kWord || node.argument_begin != 0 ||
+            node.argument_count != 0) {
           return invalid_control_flow(value.id(),
                                       "control-flow safepoint is malformed");
         }
@@ -268,7 +302,8 @@ Status verify_impl(const ControlFlowFunction &function) {
         return invalid_control_flow(value.id(), "unknown control-flow opcode");
       }
       if (!available(node.lhs, block_index, instruction_index) ||
-          !available(node.rhs, block_index, instruction_index)) {
+          !available(node.rhs, block_index, instruction_index) ||
+          node.argument_begin != 0 || node.argument_count != 0) {
         return invalid_control_flow(
             value.id(), "SSA operand does not dominate its instruction");
       }
@@ -341,6 +376,12 @@ Status verify_impl(const ControlFlowFunction &function) {
       return invalid_control_flow(
           block_index, "branch argument is unavailable in its block");
     }
+  }
+  if (std::find(claimed_call_arguments.begin(),
+                claimed_call_arguments.end(), false) !=
+      claimed_call_arguments.end()) {
+    return invalid_control_flow(
+        0, "control-flow graph contains unreferenced call arguments");
   }
   return Status::ok_status();
 }
@@ -550,6 +591,28 @@ Value ControlFlowBuilder::less_equal(Value lhs, Value rhs) {
   return append_binary(ControlOpcode::kLessEqual, lhs, rhs);
 }
 
+Value ControlFlowBuilder::call(RuntimeHelper helper,
+                               std::vector<Value> arguments,
+                               ValueType result_type) {
+  if (arguments.size() > std::numeric_limits<std::uint32_t>::max() ||
+      function_.call_arguments_.size() >
+          std::numeric_limits<std::uint32_t>::max() - arguments.size()) {
+    return {};
+  }
+  const auto argument_begin =
+      static_cast<std::uint32_t>(function_.call_arguments_.size());
+  const auto argument_count = static_cast<std::uint32_t>(arguments.size());
+  function_.call_arguments_.insert(function_.call_arguments_.end(),
+                                   arguments.begin(), arguments.end());
+  const Value result = append_node(
+      ControlNode{ControlOpcode::kCall, {}, {}, pack_runtime_helper(helper),
+                  result_type, argument_begin, argument_count});
+  if (!result.valid()) {
+    function_.call_arguments_.resize(argument_begin);
+  }
+  return result;
+}
+
 Value ControlFlowBuilder::guard_float64_nonzero(Value value,
                                                 std::size_t site) {
   if (site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {
@@ -691,6 +754,7 @@ ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
 
   try {
     std::vector<Word> values(function.nodes().size(), 0);
+    std::vector<Word> helper_arguments;
     const BasicBlock &entry = function.blocks()[function.entry_block().id()];
     for (std::size_t index = 0; index < entry.parameters.size(); ++index) {
       values[entry.parameters[index].id()] = args[index];
@@ -706,6 +770,17 @@ ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
         const ControlNode &node = function.nodes()[value.id()];
         if (node.opcode == ControlOpcode::kConstant) {
           values[value.id()] = node.immediate;
+        } else if (node.opcode == ControlOpcode::kCall) {
+          helper_arguments.resize(node.argument_count);
+          for (std::size_t argument_index = 0;
+               argument_index < node.argument_count; ++argument_index) {
+            const Value argument = function.call_arguments()[
+                static_cast<std::size_t>(node.argument_begin) +
+                argument_index];
+            helper_arguments[argument_index] = values[argument.id()];
+          }
+          values[value.id()] = unpack_runtime_helper(node.immediate)(
+              helper_arguments.data(), helper_arguments.size());
         } else if (node.opcode == ControlOpcode::kGuardFloatNonzero) {
           values[value.id()] = 0;
           const Word guarded = values[node.lhs.id()];

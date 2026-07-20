@@ -14,7 +14,8 @@ namespace {
 constexpr std::size_t kMaximumStackMapValues = 256U * 1024U;
 
 template <typename Visitor>
-void visit_control_operands(const ir::ControlNode& node, Visitor&& visitor) {
+void visit_control_operands(const ir::ControlFlowFunction& function,
+                            const ir::ControlNode& node, Visitor&& visitor) {
   switch (node.opcode) {
     case ir::ControlOpcode::kAdd:
     case ir::ControlOpcode::kSubtract:
@@ -32,6 +33,12 @@ void visit_control_operands(const ir::ControlNode& node, Visitor&& visitor) {
       break;
     case ir::ControlOpcode::kGuardFloatNonzero:
       visitor(node.lhs);
+      break;
+    case ir::ControlOpcode::kCall:
+      for (std::size_t index = 0; index < node.argument_count; ++index) {
+        visitor(function.call_arguments()[
+            static_cast<std::size_t>(node.argument_begin) + index]);
+      }
       break;
     case ir::ControlOpcode::kParameter:
     case ir::ControlOpcode::kBlockParameter:
@@ -222,6 +229,14 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kGuardFloatNonzero:
           note_local_use(node.lhs);
           break;
+        case ir::ControlOpcode::kCall:
+          for (std::size_t argument_index = 0;
+               argument_index < node.argument_count; ++argument_index) {
+            note_local_use(function.call_arguments()[
+                static_cast<std::size_t>(node.argument_begin) +
+                argument_index]);
+          }
+          break;
         case ir::ControlOpcode::kParameter:
         case ir::ControlOpcode::kBlockParameter:
         case ir::ControlOpcode::kConstant:
@@ -333,6 +348,16 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
           break;
         case ir::ControlOpcode::kGuardFloatNonzero:
           note_nonlocal_use(block_index, node.lhs);
+          break;
+        case ir::ControlOpcode::kCall:
+          for (std::size_t argument_index = 0;
+               argument_index < node.argument_count; ++argument_index) {
+            note_nonlocal_use(
+                block_index,
+                function.call_arguments()[
+                    static_cast<std::size_t>(node.argument_begin) +
+                    argument_index]);
+          }
           break;
         case ir::ControlOpcode::kParameter:
         case ir::ControlOpcode::kBlockParameter:
@@ -516,7 +541,7 @@ StackMapLiveness plan_control_stack_map_liveness_impl(
     ValueSet defined(value_count, false);
     for (const ir::Value value : block.instructions) {
       const ir::ControlNode& node = function.nodes()[value.id()];
-      visit_control_operands(node,
+      visit_control_operands(function, node,
                              [&](ir::Value operand) {
                                note_use(&uses[block_index], defined, operand);
                              });
@@ -619,7 +644,7 @@ StackMapLiveness plan_control_stack_map_liveness_impl(
       const ir::Value value = block.instructions[reverse - 1];
       const ir::ControlNode& node = function.nodes()[value.id()];
       live[value.id()] = false;
-      visit_control_operands(node,
+      visit_control_operands(function, node,
                              [&](ir::Value operand) { live[operand.id()] = true; });
       const StackMapRequirement* requirement =
           node.opcode == ir::ControlOpcode::kSafepoint ||

@@ -1170,6 +1170,10 @@ LoweringResult lower_control_flow_impl(
             }
           }
           break;
+        case ir::ControlOpcode::kCall:
+          return {{StatusCode::kCodeGenerationFailed,
+                   "RISC-V CFG runtime calls are not lowered"},
+                  {}, 0};
         case ir::ControlOpcode::kGuardFloatNonzero: {
           const int source = load_control_float(
               &assembler, allocation, node.lhs, block_index, kFloatScratch0);
