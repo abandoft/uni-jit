@@ -9,7 +9,8 @@ struct Proto;
 
 namespace unijit::frontend::lua55::detail {
 
-jit::CompilationResult compile_float64_prototype(const Proto& prototype);
+jit::CompilationResult compile_float64_prototype(
+    const Proto& prototype, jit::OptimizationLevel optimization_level);
 
 }  // namespace unijit::frontend::lua55::detail
 

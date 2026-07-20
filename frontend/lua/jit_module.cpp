@@ -143,7 +143,9 @@ bool valid_destination(const std::vector<Value> &registers, int index) {
   return index >= 0 && static_cast<std::size_t>(index) < registers.size();
 }
 
-CompilationResult compile_straight_prototype(const Proto &prototype) {
+CompilationResult compile_straight_prototype(
+    const Proto &prototype,
+    unijit::jit::OptimizationLevel optimization_level) {
   if (isvararg(&prototype)) {
     return translation_error(0, "vararg Lua functions are not supported");
   }
@@ -341,7 +343,9 @@ CompilationResult compile_straight_prototype(const Proto &prototype) {
       return translation_error(static_cast<std::size_t>(prototype.sizecode),
                                "Lua function has no supported return");
     }
-    return Compiler::compile(std::move(builder).build());
+    return Compiler::compile(
+        std::move(builder).build(),
+        unijit::jit::CompilationOptions{optimization_level});
   } catch (const std::bad_alloc &) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate Lua frontend translation state"},
@@ -349,7 +353,9 @@ CompilationResult compile_straight_prototype(const Proto &prototype) {
   }
 }
 
-CompilationResult compile_numeric_for_prototype(const Proto &prototype) {
+CompilationResult compile_numeric_for_prototype(
+    const Proto &prototype,
+    unijit::jit::OptimizationLevel optimization_level) {
   if (isvararg(&prototype)) {
     return translation_error(0, "vararg Lua functions are not supported");
   }
@@ -652,7 +658,9 @@ CompilationResult compile_numeric_for_prototype(const Proto &prototype) {
         carried_registers.push_back(index);
       }
     }
-    constexpr Word kLoopUnrollFactor = 8;
+    const Word loop_unroll_factor =
+        optimization_level == unijit::jit::OptimizationLevel::kBaseline ? 1
+                                                                         : 8;
     const unijit::ir::Block dispatch =
         builder.create_block(carried_registers.size());
     const unijit::ir::Block unroll_check =
@@ -720,7 +728,7 @@ CompilationResult compile_numeric_for_prototype(const Proto &prototype) {
     const Value dispatch_index =
         dispatch_registers[static_cast<std::size_t>(state_base + 2)];
     const Value maximum_unrolled_start = builder.constant(
-        std::numeric_limits<Word>::max() - (kLoopUnrollFactor - 1));
+        std::numeric_limits<Word>::max() - (loop_unroll_factor - 1));
     const Value unroll_cannot_overflow =
         builder.less_equal(dispatch_index, maximum_unrolled_start);
     status = builder.branch(unroll_cannot_overflow, unroll_check,
@@ -742,7 +750,7 @@ CompilationResult compile_numeric_for_prototype(const Proto &prototype) {
     const Value check_limit =
         check_registers[static_cast<std::size_t>(state_base + 1)];
     const Value last_unrolled_index = builder.add(
-        check_index, builder.constant(kLoopUnrollFactor - 1));
+        check_index, builder.constant(loop_unroll_factor - 1));
     const Value has_full_unrolled_group =
         builder.less_equal(last_unrolled_index, check_limit);
     status = builder.branch(has_full_unrolled_group, unrolled_loop,
@@ -757,14 +765,14 @@ CompilationResult compile_numeric_for_prototype(const Proto &prototype) {
     }
     std::vector<Value> unrolled_registers = block_registers(unrolled_loop);
     std::vector<std::optional<Word>> unrolled_known(prototype.maxstacksize);
-    for (Word iteration = 0; iteration < kLoopUnrollFactor; ++iteration) {
+    for (Word iteration = 0; iteration < loop_unroll_factor; ++iteration) {
       status = translate_range(preparation_pc + 1, loop_pc, false, state_base,
                                &unrolled_registers, &unrolled_known,
                                &returned);
       if (!status.ok()) {
         return {status, nullptr};
       }
-      if (iteration + 1 < kLoopUnrollFactor) {
+      if (iteration + 1 < loop_unroll_factor) {
         unrolled_registers[static_cast<std::size_t>(state_base + 2)] =
             builder.add(
                 unrolled_registers[static_cast<std::size_t>(state_base + 2)],
@@ -879,13 +887,15 @@ CompilationResult compile_numeric_for_prototype(const Proto &prototype) {
   }
 }
 
-CompilationResult compile_prototype(const Proto &prototype) {
+CompilationResult compile_prototype(
+    const Proto &prototype,
+    unijit::jit::OptimizationLevel optimization_level) {
   for (int pc = 0; pc < prototype.sizecode; ++pc) {
     if (GET_OPCODE(prototype.code[pc]) == OP_FORPREP) {
-      return compile_numeric_for_prototype(prototype);
+      return compile_numeric_for_prototype(prototype, optimization_level);
     }
   }
-  return compile_straight_prototype(prototype);
+  return compile_straight_prototype(prototype, optimization_level);
 }
 
 int destroy_compiled_function(lua_State *state) {
@@ -996,9 +1006,12 @@ int compile_lua_function_mode(lua_State *state, NumericMode mode,
     if (!code.valid()) {
       CompilationResult result =
           mode == NumericMode::kInteger
-              ? compile_prototype(*closure->p)
+              ? compile_prototype(
+                    *closure->p,
+                    unijit::jit::OptimizationLevel::kOptimized)
               : unijit::frontend::lua55::detail::compile_float64_prototype(
-                    *closure->p);
+                    *closure->p,
+                    unijit::jit::OptimizationLevel::kOptimized);
       if (result.ok()) {
         unijit::jit::CodeCachePublication publication =
             cacheable

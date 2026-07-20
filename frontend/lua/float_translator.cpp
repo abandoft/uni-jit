@@ -62,7 +62,8 @@ Value append_float_binary(FunctionBuilder* builder, OpCode opcode, Value lhs,
 
 }  // namespace
 
-CompilationResult compile_float64_prototype(const Proto& prototype) {
+CompilationResult compile_float64_prototype(
+    const Proto& prototype, jit::OptimizationLevel optimization_level) {
   if (isvararg(&prototype)) {
     return translation_error(0, "vararg Lua functions are not supported");
   }
@@ -296,7 +297,8 @@ CompilationResult compile_float64_prototype(const Proto& prototype) {
       return translation_error(static_cast<std::size_t>(prototype.sizecode),
                                "Lua function has no supported return");
     }
-    return Compiler::compile(std::move(builder).build());
+    return Compiler::compile(std::move(builder).build(),
+                             jit::CompilationOptions{optimization_level});
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate Lua Float64 translation state"},
