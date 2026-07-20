@@ -96,12 +96,15 @@ class CountedLoopParser final {
         initial_values.size(), ir::ValueType::kFloat64);
     const ir::Block header = builder_->create_block(loop_types);
     const ir::Block body = builder_->create_block(0);
+    const ir::Block update = builder_->create_block(loop_types);
     const ir::Block exit = builder_->create_block(loop_types);
-    if (!header.valid() || !body.valid() || !exit.valid() ||
+    if (!header.valid() || !body.valid() || !update.valid() || !exit.valid() ||
         !builder_->jump(header, initial_values).ok() ||
         !builder_->set_insertion_block(header).ok()) {
       return fail(invalid("unable to create counted-loop control flow"));
     }
+    continue_target_ = update;
+    break_target_ = exit;
     install_loop_parameters(header);
     const std::vector<ir::Value> header_values = loop_values();
 
@@ -121,6 +124,11 @@ class CountedLoopParser final {
                                : status_);
     }
 
+    if (!builder_->jump(update, loop_values()).ok() ||
+        !builder_->set_insertion_block(update).ok()) {
+      return fail(invalid("unable to enter counted-loop update"));
+    }
+    install_loop_parameters(update);
     Symbol& induction = symbols_[induction_symbol];
     induction.value = builder_->float64_add(
         induction.value, builder_->float64_constant(1.0));
@@ -411,6 +419,37 @@ class CountedLoopParser final {
       return false;
     }
 
+    skip_space();
+    const bool breaks = matches_keyword("break");
+    const bool continues = !breaks && matches_keyword("continue");
+    if (breaks || continues) {
+      const std::vector<ir::Value> incoming = loop_values();
+      const std::vector<ir::ValueType> types(
+          incoming.size(), ir::ValueType::kFloat64);
+      const ir::Block fallthrough = builder_->create_block(types);
+      if (!fallthrough.valid() ||
+          !consume_keyword(breaks ? "break" : "continue") || !consume(';') ||
+          !consume('}')) {
+        return false;
+      }
+      skip_space();
+      if (matches_keyword("else")) {
+        invalid("break/continue guards cannot have an else arm");
+        return false;
+      }
+      const ir::Block transfer = breaks ? break_target_ : continue_target_;
+      if (!transfer.valid() ||
+          !builder_
+               ->branch(condition, transfer, incoming, fallthrough, incoming)
+               .ok() ||
+          !builder_->set_insertion_block(fallthrough).ok()) {
+        invalid("unable to construct break/continue guard");
+        return false;
+      }
+      install_loop_parameters(fallthrough);
+      return true;
+    }
+
     const std::vector<ir::Value> incoming = loop_values();
     const std::vector<ir::ValueType> types(
         incoming.size(), ir::ValueType::kFloat64);
@@ -638,6 +677,8 @@ class CountedLoopParser final {
   std::vector<std::string> parameter_names_;
   std::vector<Symbol> symbols_;
   std::vector<std::size_t> loop_symbol_indices_;
+  ir::Block continue_target_;
+  ir::Block break_target_;
   std::unique_ptr<ir::ControlFlowBuilder> builder_;
 };
 
