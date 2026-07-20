@@ -82,9 +82,10 @@ ratios are emitted.
 ## QuickJS, V8 Jitless, and V8 target comparison
 
 The JavaScript target runner executes one checked-in source file in stock
-QuickJS, the UniJIT QuickJS closure, V8 Jitless, and normal V8. The measured
-loop lives inside JavaScript in every engine, and all results must have the
-same Float64 bit pattern:
+QuickJS, the UniJIT QuickJS closure, V8 Jitless, and normal V8. UniJIT compiles
+the complete numeric loop, including its recurrence state and reset branches,
+while the other engines execute the same source loop. Each sample crosses its
+callable boundary once, and all results must have the same Float64 bit pattern:
 
 ```sh
 cmake -S . -B build/quickjs -G Ninja \
@@ -106,8 +107,10 @@ artifact.
 
 The Python target runner executes one checked-in workload in PocketPy, the
 UniJIT PocketPy callable, CPython 3.14.6 with JIT disabled, and CPython 3.14.6
-with JIT enabled. The measured loop lives inside Python in every engine, and
-all results must have the same Float64 bit pattern:
+with JIT enabled. UniJIT compiles the complete range loop and its conditional
+state updates, while the other engines execute the same source loop. Each
+sample crosses its callable boundary once, and all results must have the same
+Float64 bit pattern:
 
 ```sh
 cmake -S . -B build/pocketpy -G Ninja \

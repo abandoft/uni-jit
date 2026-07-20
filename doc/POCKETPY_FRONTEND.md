@@ -44,7 +44,7 @@ The VM garbage collector releases it through the type destructor. The internal
 callable type is final and rejects direct construction, so an object with
 uninitialized native ownership cannot be created from script.
 
-## Initial specialization contract
+## Specialization contract
 
 The first tier accepts one conventional `def` with zero to 64 unique ASCII
 parameter names and exactly one `return` expression. The expression may contain
@@ -60,12 +60,22 @@ PocketPy's `ZeroDivisionError("float division by zero")`. This narrow contract
 prevents fallback-free native code from silently changing unsupported Python
 behavior.
 
+The counted-loop tier accepts four-space-indented numeric functions with
+Float64 local initializers, one `for name in range(count)` loop, arithmetic or
+augmented assignments, and ordered `if`/`else` arms that update loop locals.
+Mutable state is carried through typed CFG block parameters, branches merge via
+SSA edges, and every backedge polls an execution-context safepoint. Calls,
+nested loops, `break`, `continue`, and loop division are currently rejected;
+division stays out of this tier until CFG exits can reproduce PocketPy's
+checked exception semantics.
+
 ## Reproducible CPython JIT target benchmark
 
 PocketPy, UniJIT, and CPython execute the same
-`benchmark/pocketpy/numeric_call.py` workload. Timing surrounds a
-language-level loop that calls the selected kernel, so the comparison does not
-include one C-to-VM transition per measured iteration. The CPython driver
+`benchmark/pocketpy/numeric_call.py` workload. PocketPy and both CPython modes
+run the source loop, while UniJIT compiles that complete loop into CFG native
+code; the measured region has one callable boundary per sample rather than one
+boundary per iteration. The CPython driver
 requires exactly 3.14.6, verifies that `sys._jit` is available, and rejects a
 process whose actual mode disagrees with `PYTHON_JIT=0` or `PYTHON_JIT=1`:
 

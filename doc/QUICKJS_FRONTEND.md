@@ -30,7 +30,7 @@ Every declared argument must be a JavaScript Number. Missing or non-Number
 arguments throw a `TypeError`; extra arguments follow ordinary JavaScript
 fixed-parameter behavior and are ignored. Results are returned as Numbers.
 
-## Initial specialization contract
+## Specialization contract
 
 The first tier accepts conventional `function` source with zero to 64 unique
 ASCII parameter names and a body containing exactly one `return` expression.
@@ -43,6 +43,15 @@ statements, and coercive operands are rejected with a source byte position.
 This strict boundary prevents silently compiling semantics that the current IR
 cannot represent.
 
+The counted-loop tier additionally accepts a conventional body with Float64
+`let` initializers, one unit-increment `for` loop, arithmetic assignments, and
+ordered `if`/`else` comparisons whose arms update loop locals. Every mutable
+value becomes a typed CFG block parameter, conditional updates merge through
+SSA edges, and the loop backedge polls an execution-context safepoint. Calls,
+object access, coercion, `break`, `continue`, and nested loops remain rejected.
+This tier is intended for complete numeric recurrences rather than repeatedly
+crossing the VM boundary for a single arithmetic expression.
+
 At installation, the module captures the original
 `Function.prototype.toString` callable. Per-function `toString` overrides and
 later prototype mutation therefore cannot substitute different source for the
@@ -52,9 +61,10 @@ through a QuickJS class object and releases it from the class finalizer.
 ## Reproducible V8 target benchmark
 
 The embedded benchmark and Node execute the same
-`benchmark/quickjs/numeric_call.js` source. Timing surrounds a language-level
-loop that calls the selected kernel, so the comparison does not include one
-C++-to-VM transition per measured iteration. Every QuickJS, UniJIT, V8
+`benchmark/quickjs/numeric_call.js` source. Stock QuickJS and both V8 modes run
+the source loop, while UniJIT compiles that complete loop into CFG native code;
+the measured region therefore has one callable boundary per sample rather than
+one boundary per iteration. Every QuickJS, UniJIT, V8
 Jitless, and V8 sample must produce the same Float64 bit pattern:
 
 ```sh
@@ -72,6 +82,6 @@ python3 benchmark/quickjs/run_v8.py \
 
 The record includes the exact UniJIT and QuickJS revisions, Node and V8
 versions, host OS and architecture, measurement policy, medians, checksums,
-and UniJIT ratios against both V8 modes. This remains one numeric kernel rather
+and UniJIT ratios against both V8 modes. This remains one numeric loop rather
 than a whole-language performance claim; CI retains every target record for
 trend analysis.
