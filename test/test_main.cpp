@@ -264,6 +264,46 @@ void test_float64_ir_and_interpreter() {
   }
 }
 
+void test_float64_division() {
+  FunctionBuilder builder(
+      std::vector<unijit::ir::ValueType>(2,
+                                         unijit::ir::ValueType::kFloat64));
+  const Value quotient =
+      builder.float64_divide(builder.parameter(0), builder.parameter(1));
+  expect(builder.set_return(quotient).ok(),
+         "Float64 division fixture must record its result");
+  const Function function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "typed Float64 division must pass verification");
+
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "Float64 division must compile to native code");
+  if (!compilation.ok()) {
+    return;
+  }
+
+  constexpr std::array<std::array<double, 2>, 6> kSamples = {{
+      {{9.0, 3.0}},
+      {{-7.5, 2.5}},
+      {{0.0, -3.0}},
+      {{-0.0, 7.0}},
+      {{1.0e-300, 2.0}},
+      {{std::numeric_limits<double>::max(), 2.0}},
+  }};
+  for (const auto& sample : kSamples) {
+    const std::array<Word, 2> arguments = {
+        unijit::ir::pack_float64(sample[0]),
+        unijit::ir::pack_float64(sample[1])};
+    const auto interpreted =
+        Interpreter::evaluate(function, arguments.data(), arguments.size());
+    const auto native =
+        compilation.function->invoke(arguments.data(), arguments.size());
+    expect(interpreted.ok() && native.ok() &&
+               native.value == interpreted.value,
+           "native Float64 division must match the interpreter bits");
+  }
+}
+
 void test_verifier_rejects_mixed_arithmetic() {
   FunctionBuilder builder(
       std::vector<unijit::ir::ValueType>{unijit::ir::ValueType::kFloat64});
@@ -825,6 +865,7 @@ int main() {
   test_safepoint_ir_and_interpreter();
   test_differential_arithmetic();
   test_float64_ir_and_interpreter();
+  test_float64_division();
   test_verifier_rejects_mixed_arithmetic();
   test_float64_spill_path();
   test_float64_preserves_host_abi();
