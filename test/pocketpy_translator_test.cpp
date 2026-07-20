@@ -105,6 +105,7 @@ int main() {
           zero_division_arguments.size(), division_context);
   const auto *recovered_lhs = reconstructed_division.frame.find(0);
   const auto *recovered_divisor = reconstructed_division.frame.find(2);
+  const auto *recovered_operand = reconstructed_division.frame.find(3);
   if (division_record == nullptr ||
       division_record->reason !=
           unijit::runtime::DeoptimizationReason::kDivisionByZero ||
@@ -113,7 +114,9 @@ int main() {
       recovered_lhs == nullptr ||
       recovered_lhs->value != zero_division_arguments[0] ||
       recovered_divisor == nullptr ||
-      recovered_divisor->value != zero_division_arguments[1]) {
+      recovered_divisor->value != zero_division_arguments[1] ||
+      recovered_operand == nullptr ||
+      recovered_operand->value != unijit::ir::pack_float64(10.0)) {
     std::cerr << "PocketPy division exit did not reconstruct its frame\n";
     return EXIT_FAILURE;
   }
@@ -247,13 +250,19 @@ int main() {
             loop_division_site, zero_arguments.data(), zero_arguments.size(),
             context);
     const auto *divisor = reconstruction.frame.find(2);
+    const auto *quotient_state = reconstruction.frame.find(3);
+    const auto *iteration_state = reconstruction.frame.find(4);
     if (exit.ok() ||
         exit.status.code() != unijit::StatusCode::kRuntimeExit ||
         exit.status.location() != loop_division_site ||
         !reconstruction.ok() ||
         reconstruction.frame.reason !=
             unijit::runtime::DeoptimizationReason::kDivisionByZero ||
-        divisor == nullptr || divisor->value != zero_arguments[1]) {
+        divisor == nullptr || divisor->value != zero_arguments[1] ||
+        quotient_state == nullptr ||
+        quotient_state->value != unijit::ir::pack_float64(12.0) ||
+        iteration_state == nullptr ||
+        iteration_state->value != unijit::ir::pack_float64(0.0)) {
       std::cerr << "PocketPy loop division did not reconstruct signed zero\n";
       return EXIT_FAILURE;
     }

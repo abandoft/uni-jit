@@ -53,6 +53,8 @@ int main() {
       std::vector<unijit::ir::ValueType>(1,
                                          unijit::ir::ValueType::kFloat64));
   const auto divisor = guarded_builder.parameter(0);
+  const auto snapshot = guarded_builder.float64_add(
+      divisor, guarded_builder.float64_constant(2.5));
   if (!guarded_builder.guard_float64_nonzero(divisor, 17).valid() ||
       !guarded_builder.set_return(divisor).ok()) {
     return 8;
@@ -61,8 +63,11 @@ int main() {
   record.site = 17;
   record.resume_offset = 9;
   record.reason = unijit::runtime::DeoptimizationReason::kDivisionByZero;
-  record.recovery = {unijit::runtime::RecoveryOperation::argument(
-      0, unijit::ir::ValueType::kFloat64, 0)};
+  record.recovery = {
+      unijit::runtime::RecoveryOperation::argument(
+          0, unijit::ir::ValueType::kFloat64, 0),
+      unijit::runtime::RecoveryOperation::captured_value(
+          1, unijit::ir::ValueType::kFloat64, snapshot)};
   unijit::runtime::DeoptimizationTable metadata;
   if (!metadata.add(record).ok()) {
     return 9;
@@ -93,10 +98,11 @@ int main() {
   const auto captured =
       guarded_publication.handle.reconstruct_stack_map(context);
   const auto *recovered = reconstructed.frame.find(0);
+  const auto *recovered_snapshot = reconstructed.frame.find(1);
   if (guarded_result.ok() || !reconstructed.ok() || recovered == nullptr ||
-      recovered->value != zero[0] || !captured.ok() ||
-      captured.capture.values.size() != 1 ||
-      captured.capture.values[0].value_bits != zero[0]) {
+      recovered->value != zero[0] || recovered_snapshot == nullptr ||
+      recovered_snapshot->value != unijit::ir::pack_float64(2.5) ||
+      !captured.ok() || captured.capture.values.size() != 2) {
     return 12;
   }
 
