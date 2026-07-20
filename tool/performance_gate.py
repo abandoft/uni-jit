@@ -98,6 +98,68 @@ def evaluate(
     }
 
 
+def evaluate_cfg_float64(
+    document: dict[str, Any], minimum_speedup: float, maximum_code_bytes: float
+) -> dict[str, Any]:
+    expected_schema = "unijit.cfg-float64-benchmark.v1"
+    if document.get("schema") != expected_schema:
+        raise GateError(
+            f"expected {expected_schema}, found {document.get('schema')!r}"
+        )
+    if document.get("benchmark") != "float64_register_residency":
+        raise GateError("CFG performance gate requires the register-residency workload")
+    if document.get("measurement_boundary") != "native_cfg_loop_iteration":
+        raise GateError("CFG performance gate requires the native loop-iteration boundary")
+    if document.get("architecture") not in {"aarch64", "x86_64", "riscv64"}:
+        raise GateError("CFG performance record has an unsupported architecture")
+
+    samples = number_at(document, "samples")
+    loop_iterations = number_at(document, "loop_iterations")
+    speedup = number_at(document, "speedup")
+    code_bytes = number_at(document, "native_code_bytes")
+    number_at(document, "native_median_ns_per_loop_iteration")
+    number_at(document, "interpreter_median_ns_per_loop_iteration")
+    if samples < 7:
+        raise GateError("CFG performance gate requires at least seven samples")
+    if loop_iterations < 1000:
+        raise GateError("CFG performance gate requires at least 1,000 loop iterations")
+    if not math.isfinite(minimum_speedup) or minimum_speedup <= 0:
+        raise GateError("minimum CFG speedup must be finite and positive")
+    if not math.isfinite(maximum_code_bytes) or maximum_code_bytes <= 0:
+        raise GateError("maximum CFG code size must be finite and positive")
+
+    failures: list[str] = []
+    if speedup < minimum_speedup:
+        failures.append(
+            f"CFG speedup {speedup:.6f} is below {minimum_speedup:.6f}"
+        )
+    if code_bytes > maximum_code_bytes:
+        failures.append(
+            f"CFG native code size {code_bytes:.0f} exceeds "
+            f"{maximum_code_bytes:.0f} bytes"
+        )
+    if failures:
+        raise GateError("; ".join(failures))
+
+    return {
+        "schema": "unijit.performance-gate.v1",
+        "target": "cfg-float64",
+        "passed": True,
+        "source_schema": expected_schema,
+        "measurement_boundary": "native_cfg_loop_iteration",
+        "requirements": {
+            "interpreter_speedup": {
+                "minimum": minimum_speedup,
+                "observed": speedup,
+            },
+            "native_code_bytes": {
+                "maximum": maximum_code_bytes,
+                "observed": code_bytes,
+            },
+        },
+    }
+
+
 def load_record(path: Path) -> dict[str, Any]:
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -132,10 +194,23 @@ def main() -> int:
         "--minimum-cpython-jit-speedup", type=float, default=1.10
     )
 
+    cfg_float64 = subparsers.add_parser("cfg-float64")
+    cfg_float64.add_argument("record", type=Path)
+    cfg_float64.add_argument("--minimum-speedup", type=float, default=5.0)
+    cfg_float64.add_argument(
+        "--maximum-native-code-bytes", type=float, default=400.0
+    )
+
     arguments = parser.parse_args()
     try:
         document = load_record(arguments.record)
-        if arguments.target == "lua":
+        if arguments.target == "cfg-float64":
+            result = evaluate_cfg_float64(
+                document,
+                arguments.minimum_speedup,
+                arguments.maximum_native_code_bytes,
+            )
+        elif arguments.target == "lua":
             thresholds = {
                 "stock_lua": arguments.minimum_stock_speedup,
                 "luajit": arguments.minimum_luajit_speedup,
@@ -145,13 +220,14 @@ def main() -> int:
                 "stock_quickjs": arguments.minimum_stock_speedup,
                 "v8_jitless": arguments.minimum_v8_jitless_speedup,
             }
-        else:
+        elif arguments.target == "pocketpy":
             thresholds = {
                 "stock_pocketpy": arguments.minimum_stock_speedup,
                 "cpython": arguments.minimum_cpython_speedup,
                 "cpython_jit": arguments.minimum_cpython_jit_speedup,
             }
-        result = evaluate(arguments.target, document, thresholds)
+        if arguments.target != "cfg-float64":
+            result = evaluate(arguments.target, document, thresholds)
     except GateError as error:
         print(
             json.dumps(

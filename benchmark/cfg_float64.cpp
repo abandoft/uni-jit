@@ -239,6 +239,8 @@ int main(int argc, char** argv) {
             << "{\n"
             << "  \"schema\": \"unijit.cfg-float64-benchmark.v1\",\n"
             << "  \"benchmark\": \"float64_register_residency\",\n"
+            << "  \"measurement_boundary\": "
+               "\"native_cfg_loop_iteration\",\n"
             << "  \"architecture\": \"" << architecture() << "\",\n"
             << "  \"loop_iterations\": " << options.loop_iterations << ",\n"
             << "  \"warmup_invocations\": " << options.warmup << ",\n"

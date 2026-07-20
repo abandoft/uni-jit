@@ -9,10 +9,47 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tool"))
 
-from performance_gate import GateError, evaluate  # noqa: E402
+from performance_gate import GateError, evaluate, evaluate_cfg_float64  # noqa: E402
 
 
 class PerformanceGateTest(unittest.TestCase):
+    def cfg_record(self) -> dict[str, object]:
+        return {
+            "schema": "unijit.cfg-float64-benchmark.v1",
+            "benchmark": "float64_register_residency",
+            "measurement_boundary": "native_cfg_loop_iteration",
+            "architecture": "x86_64",
+            "loop_iterations": 1000,
+            "samples": 7,
+            "native_code_bytes": 363,
+            "native_median_ns_per_loop_iteration": 3.5,
+            "interpreter_median_ns_per_loop_iteration": 55.0,
+            "speedup": 15.7,
+        }
+
+    def test_cfg_float64_target_passes(self) -> None:
+        result = evaluate_cfg_float64(self.cfg_record(), 5.0, 400.0)
+        self.assertEqual(result["target"], "cfg-float64")
+        self.assertTrue(result["passed"])
+
+    def test_cfg_float64_target_rejects_code_growth(self) -> None:
+        record = self.cfg_record()
+        record["native_code_bytes"] = 401
+        with self.assertRaisesRegex(GateError, "code size"):
+            evaluate_cfg_float64(record, 5.0, 400.0)
+
+    def test_cfg_float64_target_rejects_slow_native_code(self) -> None:
+        record = self.cfg_record()
+        record["speedup"] = 4.99
+        with self.assertRaisesRegex(GateError, "speedup"):
+            evaluate_cfg_float64(record, 5.0, 400.0)
+
+    def test_cfg_float64_target_rejects_short_sampling(self) -> None:
+        record = self.cfg_record()
+        record["samples"] = 3
+        with self.assertRaisesRegex(GateError, "seven samples"):
+            evaluate_cfg_float64(record, 5.0, 400.0)
+
     def test_lua_target_passes(self) -> None:
         result = evaluate(
             "lua",
