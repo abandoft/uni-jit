@@ -304,6 +304,79 @@ void test_float64_division() {
   }
 }
 
+void test_float64_nonzero_guard() {
+  FunctionBuilder builder(
+      std::vector<unijit::ir::ValueType>(2,
+                                         unijit::ir::ValueType::kFloat64));
+  const Value guard = builder.guard_float64_nonzero(builder.parameter(1), 77);
+  expect(guard.valid(), "Float64 nonzero guard must produce an effect value");
+  const Value quotient =
+      builder.float64_divide(builder.parameter(0), builder.parameter(1));
+  expect(builder.set_return(quotient).ok(),
+         "guarded Float64 division fixture must record its result");
+  const Function function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "Float64 nonzero guard must pass verification");
+
+  const auto optimization = unijit::ir::Optimizer::run(function);
+  expect(optimization.ok() &&
+             std::any_of(optimization.function.nodes().begin(),
+                         optimization.function.nodes().end(),
+                         [](const unijit::ir::Node& node) {
+                           return node.opcode ==
+                                  unijit::ir::Opcode::kGuardFloatNonzero;
+                         }),
+         "optimizer must preserve a dead-result Float64 guard");
+
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "Float64 nonzero guard must compile to native code");
+  if (!compilation.ok()) {
+    return;
+  }
+
+  const std::array<Word, 2> valid = {unijit::ir::pack_float64(9.0),
+                                     unijit::ir::pack_float64(3.0)};
+  const auto interpreted =
+      Interpreter::evaluate(function, valid.data(), valid.size());
+  const auto native = compilation.function->invoke(valid.data(), valid.size());
+  expect(interpreted.ok() && native.ok() &&
+             unijit::ir::unpack_float64(native.value) == 3.0,
+         "a nonzero Float64 divisor must pass the guard");
+
+  constexpr std::array<double, 2> kZeroes = {0.0, -0.0};
+  for (double zero : kZeroes) {
+    const std::array<Word, 2> invalid = {unijit::ir::pack_float64(9.0),
+                                         unijit::ir::pack_float64(zero)};
+    unijit::runtime::ExecutionContext interpreter_context;
+    const auto rejected_by_interpreter = Interpreter::evaluate(
+        function, invalid.data(), invalid.size(), &interpreter_context);
+    expect(!rejected_by_interpreter.ok() &&
+               rejected_by_interpreter.status.code() ==
+                   unijit::StatusCode::kRuntimeExit &&
+               rejected_by_interpreter.status.location() == 77 &&
+               interpreter_context.exit_reason() ==
+                   unijit::runtime::ExitReason::kRuntime,
+           "interpreter guard must reject both signed Float64 zeroes");
+
+    const auto rejected_with_local_context =
+        compilation.function->invoke(invalid.data(), invalid.size());
+    expect(!rejected_with_local_context.ok() &&
+               rejected_with_local_context.status.code() ==
+                   unijit::StatusCode::kRuntimeExit &&
+               rejected_with_local_context.status.location() == 77,
+           "managed invocation must diagnose a guard without caller context");
+
+    unijit::runtime::ExecutionContext native_context;
+    const auto rejected_by_native = compilation.function->invoke(
+        invalid.data(), invalid.size(), &native_context);
+    expect(!rejected_by_native.ok() &&
+               native_context.exit_reason() ==
+                   unijit::runtime::ExitReason::kRuntime &&
+               native_context.exit_site() == 77,
+           "native guard must publish its stable exit site");
+  }
+}
+
 void test_verifier_rejects_mixed_arithmetic() {
   FunctionBuilder builder(
       std::vector<unijit::ir::ValueType>{unijit::ir::ValueType::kFloat64});
@@ -891,6 +964,7 @@ int main() {
   test_differential_arithmetic();
   test_float64_ir_and_interpreter();
   test_float64_division();
+  test_float64_nonzero_guard();
   test_verifier_rejects_mixed_arithmetic();
   test_float64_spill_path();
   test_float64_preserves_host_abi();
