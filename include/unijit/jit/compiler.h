@@ -123,6 +123,9 @@ class Compiler final {
   static CompilationResult compile(const ir::ControlFlowFunction& function);
   static CompilationResult compile(
       const ir::ControlFlowFunction& function,
+      const runtime::DeoptimizationTable& deoptimization_table);
+  static CompilationResult compile(
+      const ir::ControlFlowFunction& function,
       const runtime::AssumptionSet& assumptions);
   static CompilationResult compile(
       const ir::ControlFlowFunction& function,

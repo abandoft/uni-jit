@@ -50,6 +50,7 @@ enum class ControlOpcode : std::uint8_t {
   kFloatLessEqual,
   kLessThan,
   kLessEqual,
+  kGuardFloatNonzero,
   kSafepoint,
 };
 
@@ -142,6 +143,7 @@ public:
   Value float64_less_equal(Value lhs, Value rhs);
   Value less_than(Value lhs, Value rhs);
   Value less_equal(Value lhs, Value rhs);
+  Value guard_float64_nonzero(Value value, std::size_t site);
   Value safepoint(std::size_t site);
 
   Status set_return(Value value);

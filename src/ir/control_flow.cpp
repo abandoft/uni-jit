@@ -38,6 +38,7 @@ bool is_binary(ControlOpcode opcode) {
   case ControlOpcode::kParameter:
   case ControlOpcode::kBlockParameter:
   case ControlOpcode::kConstant:
+  case ControlOpcode::kGuardFloatNonzero:
   case ControlOpcode::kSafepoint:
     return false;
   }
@@ -223,6 +224,16 @@ Status verify_impl(const ControlFlowFunction &function) {
       const Value value = block.instructions[instruction_index];
       const ControlNode &node = nodes[value.id()];
       if (node.opcode == ControlOpcode::kConstant) {
+        continue;
+      }
+      if (node.opcode == ControlOpcode::kGuardFloatNonzero) {
+        if (node.immediate < 0 || node.rhs.valid() ||
+            node.type != ValueType::kWord ||
+            !available(node.lhs, block_index, instruction_index) ||
+            function.value_type(node.lhs) != ValueType::kFloat64) {
+          return invalid_control_flow(
+              value.id(), "control-flow Float64 guard is malformed");
+        }
         continue;
       }
       if (node.opcode == ControlOpcode::kSafepoint) {
@@ -509,6 +520,15 @@ Value ControlFlowBuilder::less_equal(Value lhs, Value rhs) {
   return append_binary(ControlOpcode::kLessEqual, lhs, rhs);
 }
 
+Value ControlFlowBuilder::guard_float64_nonzero(Value value,
+                                                std::size_t site) {
+  if (site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {
+    return {};
+  }
+  return append_node(ControlNode{ControlOpcode::kGuardFloatNonzero, value, {},
+                                 static_cast<Word>(site), ValueType::kWord});
+}
+
 Value ControlFlowBuilder::safepoint(std::size_t site) {
   if (site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {
     return {};
@@ -656,6 +676,20 @@ ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
         const ControlNode &node = function.nodes()[value.id()];
         if (node.opcode == ControlOpcode::kConstant) {
           values[value.id()] = node.immediate;
+        } else if (node.opcode == ControlOpcode::kGuardFloatNonzero) {
+          values[value.id()] = 0;
+          const Word guarded = values[node.lhs.id()];
+          if (unpack_float64(guarded) == 0.0) {
+            const auto site = static_cast<std::size_t>(node.immediate);
+            if (context != nullptr) {
+              context->record_exit(runtime::ExitReason::kRuntime, site,
+                                   guarded);
+            }
+            return {{StatusCode::kRuntimeExit,
+                     "control-flow Float64 guard requested a runtime exit",
+                     site},
+                    0};
+          }
         } else if (node.opcode == ControlOpcode::kSafepoint) {
           values[value.id()] = 0;
           if (context != nullptr && context->exit_poll_requested()) {

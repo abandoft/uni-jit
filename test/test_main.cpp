@@ -1152,6 +1152,107 @@ void test_control_flow_float64_loop() {
   }
 }
 
+void test_control_flow_float64_guard_deoptimization() {
+  using unijit::ir::ValueType;
+  constexpr std::size_t kGuardSite = 313;
+  unijit::ir::ControlFlowBuilder builder(
+      std::vector<ValueType>{ValueType::kFloat64, ValueType::kFloat64});
+  const Value divisor = builder.parameter(1);
+  expect(builder.guard_float64_nonzero(divisor, kGuardSite).valid(),
+         "CFG Float64 guard must produce an effect value");
+  const Value quotient =
+      builder.float64_divide(builder.parameter(0), divisor);
+  expect(builder.set_return(quotient).ok(),
+         "guarded CFG division fixture must record its result");
+  const unijit::ir::ControlFlowFunction function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "CFG Float64 nonzero guard must pass verification");
+
+  unijit::runtime::DeoptimizationRecord record;
+  record.site = kGuardSite;
+  record.resume_offset = 77;
+  record.reason = unijit::runtime::DeoptimizationReason::kDivisionByZero;
+  record.recovery = {
+      unijit::runtime::RecoveryOperation::argument(
+          0, ValueType::kFloat64, 0),
+      unijit::runtime::RecoveryOperation::argument(
+          1, ValueType::kFloat64, 1),
+      unijit::runtime::RecoveryOperation::exit_value(
+          2, ValueType::kFloat64)};
+  unijit::runtime::DeoptimizationTable metadata;
+  expect(metadata.add(record).ok(),
+         "CFG guard reconstruction metadata must be accepted");
+
+  auto compilation = Compiler::compile(function, metadata);
+  expect(compilation.ok(),
+         "CFG Float64 guard must compile with deoptimization metadata");
+  if (!compilation.ok()) {
+    return;
+  }
+  const auto* compiled_record =
+      compilation.function->deoptimization_record(kGuardSite);
+  expect(compilation.function->requires_context() &&
+             compiled_record != nullptr &&
+             compiled_record->resume_offset == 77 &&
+             compiled_record->reason ==
+                 unijit::runtime::DeoptimizationReason::kDivisionByZero,
+         "compiled CFG guard must retain its diagnosed exit metadata");
+
+  const std::array<Word, 2> valid = {
+      unijit::ir::pack_float64(9.0), unijit::ir::pack_float64(3.0)};
+  const auto interpreted = unijit::ir::ControlFlowInterpreter::evaluate(
+      function, valid.data(), valid.size());
+  const auto native =
+      compilation.function->invoke(valid.data(), valid.size());
+  expect(interpreted.ok() && native.ok() &&
+             native.value == unijit::ir::pack_float64(3.0) &&
+             native.value == interpreted.value,
+         "a nonzero CFG divisor must pass interpreter and native guards");
+
+  constexpr std::array<double, 2> kZeroes = {0.0, -0.0};
+  for (double zero : kZeroes) {
+    const std::array<Word, 2> invalid = {
+        unijit::ir::pack_float64(9.0), unijit::ir::pack_float64(zero)};
+    unijit::runtime::ExecutionContext interpreter_context;
+    const auto interpreter_exit =
+        unijit::ir::ControlFlowInterpreter::evaluate(
+            function, invalid.data(), invalid.size(), 100,
+            &interpreter_context);
+    expect(!interpreter_exit.ok() &&
+               interpreter_exit.status.code() ==
+                   unijit::StatusCode::kRuntimeExit &&
+               interpreter_exit.status.location() == kGuardSite &&
+               interpreter_context.exit_value() == invalid[1],
+           "CFG interpreter guard must retain either signed zero divisor");
+
+    unijit::runtime::ExecutionContext native_context;
+    const auto native_exit = compilation.function->invoke(
+        invalid.data(), invalid.size(), &native_context);
+    const auto reconstruction =
+        compilation.function->reconstruct_deoptimization(
+            kGuardSite, invalid.data(), invalid.size(), native_context);
+    const auto* recovered_lhs = reconstruction.frame.find(0);
+    const auto* recovered_divisor = reconstruction.frame.find(2);
+    expect(!native_exit.ok() &&
+               native_exit.status.code() == unijit::StatusCode::kRuntimeExit &&
+               native_exit.status.location() == kGuardSite &&
+               native_context.exit_value() == invalid[1] &&
+               reconstruction.ok() &&
+               reconstruction.frame.resume_offset == 77 &&
+               recovered_lhs != nullptr && recovered_lhs->value == invalid[0] &&
+               recovered_divisor != nullptr &&
+               recovered_divisor->value == invalid[1],
+           "native CFG guard must reconstruct exact arguments and exit bits");
+  }
+
+  unijit::ir::ControlFlowBuilder malformed(1);
+  const Value invalid_guard =
+      malformed.guard_float64_nonzero(malformed.parameter(0), 1);
+  expect(malformed.set_return(invalid_guard).ok() &&
+             !unijit::ir::verify(std::move(malformed).build()).ok(),
+         "CFG verifier must reject a Float64 guard over a Word operand");
+}
+
 void test_control_flow_rejects_mixed_edge_types() {
   using unijit::ir::ValueType;
   unijit::ir::ControlFlowBuilder builder(0);
@@ -2053,6 +2154,7 @@ int main() {
   test_float64_constant_folding();
   test_control_flow_counted_loop();
   test_control_flow_float64_loop();
+  test_control_flow_float64_guard_deoptimization();
   test_control_flow_rejects_mixed_edge_types();
   test_control_flow_float64_comparisons();
   test_control_flow_merge();

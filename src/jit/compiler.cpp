@@ -34,6 +34,16 @@ bool has_guard_site(const ir::Function& function, std::size_t site) noexcept {
                      });
 }
 
+bool has_guard_site(const ir::ControlFlowFunction& function,
+                    std::size_t site) noexcept {
+  return std::any_of(function.nodes().begin(), function.nodes().end(),
+                     [site](const ir::ControlNode& node) {
+                       return node.opcode ==
+                                  ir::ControlOpcode::kGuardFloatNonzero &&
+                              static_cast<std::size_t>(node.immediate) == site;
+                     });
+}
+
 template <typename FunctionType>
 Status append_assumption_deoptimization(
     const FunctionType& function,
@@ -160,16 +170,54 @@ DeoptimizationPreparation prepare_deoptimization(
     return {validation, {}};
   }
   for (const runtime::DeoptimizationRecord& record : requested.records()) {
-    if (assumptions.find(record.site) == nullptr) {
+    if (!has_guard_site(function, record.site) &&
+        assumptions.find(record.site) == nullptr) {
       return {{StatusCode::kInvalidArgument,
                "CFG deoptimization metadata does not identify an exit site",
                record.site},
               {}};
     }
   }
+  for (const runtime::AssumptionDependency& dependency :
+       assumptions.dependencies()) {
+    if (has_guard_site(function, dependency.site)) {
+      return {{StatusCode::kInvalidArgument,
+               "assumption and CFG runtime guard sites must be distinct",
+               dependency.site},
+              {}};
+    }
+  }
 
   runtime::DeoptimizationTable result;
   try {
+    for (const ir::ControlNode& node : function.nodes()) {
+      if (node.opcode != ir::ControlOpcode::kGuardFloatNonzero) {
+        continue;
+      }
+      const std::size_t site = static_cast<std::size_t>(node.immediate);
+      if (result.find(site) != nullptr) {
+        continue;
+      }
+      const runtime::DeoptimizationRecord* supplied = requested.find(site);
+      if (supplied != nullptr) {
+        const Status addition = result.add(*supplied);
+        if (!addition.ok()) {
+          return {addition, {}};
+        }
+        continue;
+      }
+
+      runtime::DeoptimizationRecord fallback;
+      fallback.site = site;
+      fallback.resume_offset = site;
+      fallback.reason = runtime::DeoptimizationReason::kGuardFailed;
+      fallback.recovery.push_back(runtime::RecoveryOperation::exit_value(
+          function.parameter_count(), ir::ValueType::kFloat64));
+      const Status addition = result.add(fallback);
+      if (!addition.ok()) {
+        return {addition, {}};
+      }
+    }
     const Status assumptions_status = append_assumption_deoptimization(
         function, assumptions, requested, &result);
     if (!assumptions_status.ok()) {
@@ -415,6 +463,12 @@ CompilationResult Compiler::compile(const ir::ControlFlowFunction& function) {
 
 CompilationResult Compiler::compile(
     const ir::ControlFlowFunction& function,
+    const runtime::DeoptimizationTable& deoptimization_table) {
+  return compile(function, deoptimization_table, runtime::AssumptionSet{});
+}
+
+CompilationResult Compiler::compile(
+    const ir::ControlFlowFunction& function,
     const runtime::AssumptionSet& assumptions) {
   return compile(function, runtime::DeoptimizationTable{}, assumptions);
 }
@@ -463,7 +517,8 @@ CompilationResult Compiler::compile(
     const bool requires_context = !assumptions.empty() || std::any_of(
         function.nodes().begin(), function.nodes().end(),
         [](const ir::ControlNode& node) {
-          return node.opcode == ir::ControlOpcode::kSafepoint;
+          return node.opcode == ir::ControlOpcode::kSafepoint ||
+                 node.opcode == ir::ControlOpcode::kGuardFloatNonzero;
         });
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
         std::move(implementation), function.parameter_count(), stats,

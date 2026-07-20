@@ -172,6 +172,9 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
           note_local_use(node.lhs);
           note_local_use(node.rhs);
           break;
+        case ir::ControlOpcode::kGuardFloatNonzero:
+          note_local_use(node.lhs);
+          break;
         case ir::ControlOpcode::kParameter:
         case ir::ControlOpcode::kBlockParameter:
         case ir::ControlOpcode::kConstant:
@@ -258,6 +261,9 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kLessEqual:
           note_nonlocal_use(block_index, node.lhs);
           note_nonlocal_use(block_index, node.rhs);
+          break;
+        case ir::ControlOpcode::kGuardFloatNonzero:
+          note_nonlocal_use(block_index, node.lhs);
           break;
         case ir::ControlOpcode::kParameter:
         case ir::ControlOpcode::kBlockParameter:
