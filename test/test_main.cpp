@@ -1,12 +1,16 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <random>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -17,6 +21,7 @@
 #include "unijit/ir/interpreter.h"
 #include "unijit/ir/optimizer.h"
 #include "unijit/jit/code_cache.h"
+#include "unijit/jit/compilation_scheduler.h"
 #include "unijit/jit/compiler.h"
 #include "unijit/jit/tiering.h"
 
@@ -1750,6 +1755,252 @@ void test_hotness_and_tiered_switching() {
          "concurrent tier switching must retain safe immutable snapshots");
 }
 
+void test_compilation_scheduler() {
+  using namespace std::chrono_literals;
+  using unijit::jit::CompilationPriority;
+  using unijit::jit::CompilationRequest;
+  using unijit::jit::CompilationScheduler;
+  using unijit::jit::CompilationSchedulerOptions;
+  using unijit::jit::CompilationTaskState;
+  using unijit::jit::SchedulerShutdownMode;
+
+  auto invalid_workers = CompilationScheduler::create(
+      CompilationSchedulerOptions{257, 1, 1});
+  auto invalid_capacity = CompilationScheduler::create(
+      CompilationSchedulerOptions{1, 0, 1});
+  expect(!invalid_workers.ok() && !invalid_capacity.ok(),
+         "scheduler creation must reject unsafe resource limits");
+
+  auto creation = CompilationScheduler::create(
+      CompilationSchedulerOptions{1, 2, 2});
+  expect(creation.ok(), "bounded compilation scheduler must start");
+  if (!creation.ok()) {
+    return;
+  }
+  auto& scheduler = *creation.scheduler;
+
+  std::mutex gate_mutex;
+  std::condition_variable gate;
+  bool release_blocker = false;
+  std::atomic<bool> blocker_started{false};
+  const auto blocker = scheduler.try_submit(CompilationRequest{
+      "scheduler/blocker", 1, 1, CompilationPriority::kNormal,
+      [&](const unijit::jit::CompilationCancellation& cancellation) {
+        blocker_started.store(true, std::memory_order_release);
+        std::unique_lock<std::mutex> lock(gate_mutex);
+        gate.wait(lock, [&] {
+          return release_blocker || cancellation.stop_requested();
+        });
+        return cancellation.stop_requested()
+                   ? unijit::Status{unijit::StatusCode::kCancelled,
+                                    "blocker cancelled"}
+                   : unijit::Status::ok_status();
+      }});
+  expect(blocker.ok() && blocker.enqueued &&
+             blocker.ticket.result().code() ==
+                 unijit::StatusCode::kUnavailable,
+         "accepted compilation must expose a pending ticket");
+  for (std::size_t spin = 0; spin < 1000000 &&
+                             !blocker_started.load(std::memory_order_acquire);
+       ++spin) {
+    std::this_thread::yield();
+  }
+  expect(blocker_started.load(std::memory_order_acquire),
+         "scheduler worker must begin the blocking fixture");
+
+  std::mutex order_mutex;
+  std::vector<int> execution_order;
+  const auto background = scheduler.try_submit(CompilationRequest{
+      "scheduler/background", 7, 1, CompilationPriority::kBackground,
+      [&](const unijit::jit::CompilationCancellation&) {
+        std::lock_guard<std::mutex> lock(order_mutex);
+        execution_order.push_back(1);
+        return unijit::Status::ok_status();
+      }});
+  const auto urgent = scheduler.try_submit(CompilationRequest{
+      "scheduler/urgent", 7, 1, CompilationPriority::kUrgent,
+      [&](const unijit::jit::CompilationCancellation&) {
+        std::lock_guard<std::mutex> lock(order_mutex);
+        execution_order.push_back(2);
+        return unijit::Status::ok_status();
+      }});
+  const auto duplicate = scheduler.try_submit(CompilationRequest{
+      "scheduler/background", 7, 1, CompilationPriority::kUrgent,
+      [](const unijit::jit::CompilationCancellation&) {
+        return unijit::Status{unijit::StatusCode::kCodeGenerationFailed,
+                              "deduplicated job must not execute"};
+      }});
+  const auto rejected = scheduler.try_submit(CompilationRequest{
+      "scheduler/rejected", 1, 1, CompilationPriority::kNormal,
+      [](const unijit::jit::CompilationCancellation&) {
+        return unijit::Status::ok_status();
+      }});
+  const auto timed_out = scheduler.submit_for(
+      CompilationRequest{
+          "scheduler/timed-out", 1, 1, CompilationPriority::kNormal,
+          [](const unijit::jit::CompilationCancellation&) {
+            return unijit::Status::ok_status();
+          }},
+      10ms);
+  expect(background.ok() && urgent.ok() && duplicate.ok() &&
+             duplicate.deduplicated && !duplicate.enqueued &&
+             duplicate.ticket.id() == background.ticket.id(),
+         "scheduler must deduplicate the same identity and generation");
+  expect(!rejected.ok() &&
+             rejected.status.code() ==
+                 unijit::StatusCode::kResourceExhausted &&
+             !timed_out.ok() &&
+             timed_out.status.code() ==
+                 unijit::StatusCode::kDeadlineExceeded,
+         "bounded admission must reject or time out under backpressure");
+  expect(!scheduler.wait_idle_for(1ms),
+         "busy scheduler must not report an idle state");
+
+  expect(background.ticket.cancel() &&
+             background.ticket.wait().code() ==
+                 unijit::StatusCode::kCancelled &&
+             background.ticket.state() == CompilationTaskState::kCancelled,
+         "queued cancellation must complete its ticket immediately");
+  const auto normal = scheduler.try_submit(CompilationRequest{
+      "scheduler/normal", 8, 1, CompilationPriority::kNormal,
+      [&](const unijit::jit::CompilationCancellation&) {
+        std::lock_guard<std::mutex> lock(order_mutex);
+        execution_order.push_back(3);
+        return unijit::Status::ok_status();
+      }});
+  expect(normal.ok(),
+         "queued cancellation must immediately release admission capacity");
+
+  unijit::jit::CompilationSubmission throwing;
+  std::thread blocked_submitter([&] {
+    throwing = scheduler.submit_for(
+        CompilationRequest{
+            "scheduler/throwing", 1, 1, CompilationPriority::kBackground,
+            [](const unijit::jit::CompilationCancellation&) -> unijit::Status {
+              throw std::runtime_error("fixture");
+            }},
+        1s);
+  });
+  for (std::size_t spin = 0;
+       spin < 1000000 && scheduler.stats().submission_waits != 2; ++spin) {
+    std::this_thread::yield();
+  }
+  {
+    std::lock_guard<std::mutex> lock(gate_mutex);
+    release_blocker = true;
+  }
+  gate.notify_all();
+  blocked_submitter.join();
+  expect(throwing.ok(),
+         "blocking submission must acquire capacity when cancellation wakes it");
+  expect(blocker.ticket.wait().ok() && urgent.ticket.wait().ok() &&
+             normal.ticket.wait().ok() &&
+             throwing.ticket.wait().code() ==
+                 unijit::StatusCode::kCodeGenerationFailed &&
+             throwing.ticket.state() == CompilationTaskState::kFailed,
+         "scheduler must isolate job exceptions and complete other work");
+  scheduler.wait_idle();
+  expect(execution_order.size() == 2 && execution_order[0] == 2 &&
+             execution_order[1] == 3,
+         "weighted scheduler must select urgent work before normal work");
+
+  expect(scheduler.shutdown(SchedulerShutdownMode::kDrain).ok() &&
+             scheduler.shutdown(SchedulerShutdownMode::kDrain).ok() &&
+             !scheduler.accepting(),
+         "draining shutdown must be deterministic and idempotent");
+  const auto closed = scheduler.try_submit(CompilationRequest{
+      "scheduler/closed", 1, 1, CompilationPriority::kNormal,
+      [](const unijit::jit::CompilationCancellation&) {
+        return unijit::Status::ok_status();
+      }});
+  const auto statistics = scheduler.stats();
+  expect(!closed.ok() &&
+             closed.status.code() == unijit::StatusCode::kUnavailable &&
+             statistics.submitted == 5 && statistics.deduplicated == 1 &&
+             statistics.started == 4 && statistics.succeeded == 3 &&
+             statistics.failed == 1 && statistics.cancelled == 1 &&
+             statistics.rejected_capacity == 1 &&
+             statistics.rejected_closed == 1 &&
+             statistics.submission_waits == 2 &&
+             statistics.submission_timeouts == 1 &&
+             statistics.peak_queued_tasks == 2 &&
+             statistics.peak_queued_bytes == 2 &&
+             statistics.queued_tasks == 0 &&
+             statistics.active_workers == 0,
+         "scheduler telemetry must reconcile its complete lifecycle");
+
+  auto cancellation_creation = CompilationScheduler::create(
+      CompilationSchedulerOptions{1, 2, 2});
+  expect(cancellation_creation.ok(),
+         "cancellation scheduler fixture must start");
+  if (!cancellation_creation.ok()) {
+    return;
+  }
+  auto& cancellation_scheduler = *cancellation_creation.scheduler;
+  std::atomic<bool> running_started{false};
+  const auto running = cancellation_scheduler.try_submit(CompilationRequest{
+      "scheduler/running-cancel", 1, 1, CompilationPriority::kNormal,
+      [&](const unijit::jit::CompilationCancellation& cancellation) {
+        running_started.store(true, std::memory_order_release);
+        while (!cancellation.stop_requested()) {
+          std::this_thread::yield();
+        }
+        return unijit::Status{unijit::StatusCode::kCancelled,
+                              "cooperative cancellation"};
+      }});
+  for (std::size_t spin = 0; spin < 1000000 &&
+                             !running_started.load(std::memory_order_acquire);
+       ++spin) {
+    std::this_thread::yield();
+  }
+  expect(running.ticket.cancel() && running.ticket.cancellation_requested() &&
+             running.ticket.wait().code() ==
+                 unijit::StatusCode::kCancelled &&
+             cancellation_scheduler
+                 .shutdown(SchedulerShutdownMode::kCancel)
+                 .ok(),
+         "running jobs must observe cooperative ticket cancellation");
+
+  auto shutdown_creation = CompilationScheduler::create(
+      CompilationSchedulerOptions{1, 2, 2});
+  expect(shutdown_creation.ok(), "cancel-shutdown fixture must start");
+  if (!shutdown_creation.ok()) {
+    return;
+  }
+  auto& shutdown_scheduler = *shutdown_creation.scheduler;
+  std::atomic<bool> shutdown_running{false};
+  std::atomic<bool> queued_executed{false};
+  const auto active = shutdown_scheduler.try_submit(CompilationRequest{
+      "scheduler/shutdown-active", 1, 1, CompilationPriority::kNormal,
+      [&](const unijit::jit::CompilationCancellation& cancellation) {
+        shutdown_running.store(true, std::memory_order_release);
+        while (!cancellation.stop_requested()) {
+          std::this_thread::yield();
+        }
+        return unijit::Status::ok_status();
+      }});
+  for (std::size_t spin = 0; spin < 1000000 &&
+                             !shutdown_running.load(std::memory_order_acquire);
+       ++spin) {
+    std::this_thread::yield();
+  }
+  const auto queued = shutdown_scheduler.try_submit(CompilationRequest{
+      "scheduler/shutdown-queued", 1, 1, CompilationPriority::kNormal,
+      [&](const unijit::jit::CompilationCancellation&) {
+        queued_executed.store(true, std::memory_order_release);
+        return unijit::Status::ok_status();
+      }});
+  expect(active.ok() && queued.ok() &&
+             shutdown_scheduler.shutdown(SchedulerShutdownMode::kCancel).ok() &&
+             active.ticket.wait().code() ==
+                 unijit::StatusCode::kCancelled &&
+             queued.ticket.wait().code() ==
+                 unijit::StatusCode::kCancelled &&
+             !queued_executed.load(std::memory_order_acquire) &&
+             shutdown_scheduler.stats().cancelled == 2,
+         "cancel shutdown must stop queued admission and join active work");
+}
+
 void test_control_flow_execution_budget() {
   unijit::ir::ControlFlowBuilder builder(0);
   const unijit::ir::Block loop = builder.create_block(0);
@@ -1811,6 +2062,7 @@ int main() {
   test_control_flow_safepoint();
   test_assumption_invalidation();
   test_hotness_and_tiered_switching();
+  test_compilation_scheduler();
   test_control_flow_execution_budget();
   test_control_flow_builder_rejects_edge_arity();
 
