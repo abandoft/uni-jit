@@ -1,5 +1,9 @@
 ## 0.1.6
 
+- Added a public thread-safe bounded LRU native-code cache with fingerprinted identities, generation tokens, executable-mapping byte budgets, lifecycle telemetry, precise invalidation, and copyable execution leases that remain safe across replacement, eviction, clearing, and cache destruction.
+- Integrated exact-source native-code reuse into the stock QuickJS and PocketPy adapters while retaining compiled mappings through runtime-owned callable leases.
+- Added safe Lua 5.5 numeric-prototype caching over the numeric mode, prototype shape, complete instruction stream, and exact numeric constant bits, with isolated integer and Float64 domains and an uncached fallback for unsupported prototype shapes.
+- Added execution-context safepoints to Lua 5.5 numeric-loop backedges so cached long-running functions remain cooperatively interruptible.
 - Added complete QuickJS numeric counted-loop compilation with Float64 local state, arithmetic assignments, ordered conditional resets, SSA merges, backedge safepoints, GC-owned native invocation, and a bit-exact target benchmark that exceeds V8 Jitless on the validated workload.
 - Added complete PocketPy `range(count)` numeric-loop compilation with indentation validation, Float64 local state, conditional updates, SSA merges, backedge safepoints, GC-owned native invocation, and a bit-exact target benchmark that exceeds CPython 3.14.6 interpreter and JIT modes on the validated workload.
 - Fixed CFG compilation metadata so functions containing safepoints always receive an execution context through the safe invocation API.
