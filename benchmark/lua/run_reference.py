@@ -56,19 +56,22 @@ def main() -> int:
     for executable in (arguments.lua, arguments.luajit):
         if not executable.is_file():
             parser.error(f"runtime not found: {executable}")
+    script = arguments.script.resolve()
+    if not script.is_file():
+        parser.error(f"workload not found: {script}")
     if min(arguments.warmup, arguments.iterations, arguments.samples) <= 0:
         parser.error("iteration and sample counts must be positive")
 
     stock = run_engine(
         arguments.lua,
-        arguments.script,
+        script,
         arguments.warmup,
         arguments.iterations,
         arguments.samples,
     )
     luajit = run_engine(
         arguments.luajit,
-        arguments.script,
+        script,
         arguments.warmup,
         arguments.iterations,
         arguments.samples,
@@ -85,7 +88,7 @@ def main() -> int:
         "schema": "unijit.lua-reference-comparison.v1",
         "system": platform.system().lower(),
         "machine": platform.machine().lower(),
-        "workload_source": str(arguments.script.relative_to(ROOT)),
+        "workload_source": str(script.relative_to(ROOT)),
         "lua_revision": revision(ROOT / "third/lua"),
         "luajit_revision": revision(ROOT / "third/luajit"),
         "stock_lua": stock,
