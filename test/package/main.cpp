@@ -16,7 +16,10 @@ int main() {
     return 1;
   }
   const auto function = std::move(builder).build();
-  auto compilation = unijit::jit::Compiler::compile(function);
+  auto compilation = unijit::jit::Compiler::compile(
+      function,
+      unijit::jit::CompilationOptions{
+          unijit::jit::OptimizationLevel::kBaseline});
   if (!compilation.ok()) {
     return 2;
   }
