@@ -4,3 +4,6 @@
 [submodule "third/luajit"]
 	path = third/luajit
 	url = https://github.com/LuaJIT/LuaJIT.git
+[submodule "third/sljit"]
+	path = third/sljit
+	url = https://github.com/zherczeg/sljit.git
