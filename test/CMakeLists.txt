@@ -17,6 +17,13 @@ if(UNIJIT_BUILD_QUALIFICATION_TESTS)
     unijit_code_cache_stress PRIVATE UniJIT::unijit Threads::Threads)
   target_compile_features(unijit_code_cache_stress PRIVATE cxx_std_17)
 
+  add_executable(
+    unijit_compilation_scheduler_stress compilation_scheduler_stress.cpp)
+  target_link_libraries(
+    unijit_compilation_scheduler_stress PRIVATE UniJIT::unijit Threads::Threads)
+  target_compile_features(
+    unijit_compilation_scheduler_stress PRIVATE cxx_std_17)
+
   add_executable(unijit_differential_fuzz differential_fuzz.cpp)
   target_link_libraries(unijit_differential_fuzz PRIVATE UniJIT::unijit)
   target_compile_features(unijit_differential_fuzz PRIVATE cxx_std_17)
@@ -24,10 +31,14 @@ if(UNIJIT_BUILD_QUALIFICATION_TESTS)
     target_compile_options(
       unijit_code_cache_stress PRIVATE /W4 /permissive-)
     target_compile_options(
+      unijit_compilation_scheduler_stress PRIVATE /W4 /permissive-)
+    target_compile_options(
       unijit_differential_fuzz PRIVATE /W4 /permissive-)
   else()
     target_compile_options(
       unijit_code_cache_stress PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(
+      unijit_compilation_scheduler_stress PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(
       unijit_differential_fuzz PRIVATE -Wall -Wextra -Wpedantic)
   endif()
@@ -47,9 +58,17 @@ if(UNIJIT_BUILD_QUALIFICATION_TESTS)
             --programs 128
             --inputs 64
             --nodes 48)
+  add_test(
+    NAME unijit.qualification.compilation_scheduler_stress
+    COMMAND unijit_compilation_scheduler_stress
+            --producers 8
+            --submissions 4096
+            --identities 128
+            --workers 4)
   set_tests_properties(
     unijit.qualification.code_cache_stress
     unijit.qualification.differential_fuzz
+    unijit.qualification.compilation_scheduler_stress
     PROPERTIES LABELS qualification TIMEOUT 180)
 endif()
 
