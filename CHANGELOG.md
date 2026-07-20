@@ -1,5 +1,8 @@
 ## 0.1.6
 
+- Added explicit verified baseline and optimized straight-line compilation levels so latency-sensitive frontends can skip optimizer work initially without bypassing guards, deoptimization metadata, native allocation, or W^X publication.
+- Integrated live PocketPy tiering with retained exact source, independent baseline and optimized caches, atomic single-compiler promotion after 64 successful calls, expected-generation publication, delayed failure retry, and direct single-tier CFG loops.
+- Added PocketPy tier telemetry for active generation, hotness, compilation outcomes, switches, code size, and IR size, retained the exact attempted code lease for race-safe exit reconstruction, and verified `ZeroDivisionError` recovery after optimized promotion.
 - Added public saturating invocation and backedge hotness profiles with configurable thresholds, atomic single-compiler claims, cumulative telemetry, and retry delay after failed compilation to prevent claim storms.
 - Added assumption-free baseline and replaceable optimized tier publication through immutable atomically acquired snapshots, opaque generations, signature validation, late-result rejection, safe concurrent promotion, preallocated allocation-free withdrawal, and retained execution leases.
 - Added automatic optimized-tier withdrawal on assumption deoptimization plus an explicit restartable baseline-retry policy, with concurrent switching, stale snapshot, fallback, telemetry, ThreadSanitizer, and installed-package coverage.
