@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "unijit/ir/function.h"
@@ -22,14 +23,20 @@ enum class RecoverySource : std::uint8_t {
   kArgument = 0,
   kConstant,
   kExitValue,
+  kCapturedValue,
 };
 
 struct RecoveryOperation final {
+  static constexpr std::size_t kUnresolvedCaptureIndex =
+      std::numeric_limits<std::size_t>::max();
+
   std::size_t slot{0};
   ir::ValueType type{ir::ValueType::kWord};
   RecoverySource source{RecoverySource::kConstant};
   std::size_t argument_index{0};
   ir::Word constant{0};
+  ir::Value source_value;
+  std::size_t capture_index{kUnresolvedCaptureIndex};
 
   static RecoveryOperation argument(std::size_t slot, ir::ValueType type,
                                     std::size_t argument_index) noexcept;
@@ -38,6 +45,14 @@ struct RecoveryOperation final {
                                           ir::Word value) noexcept;
   static RecoveryOperation exit_value(std::size_t slot,
                                       ir::ValueType type) noexcept;
+  static RecoveryOperation captured_value(std::size_t slot,
+                                          ir::ValueType type,
+                                          ir::Value value) noexcept;
+
+  bool capture_resolved() const noexcept {
+    return source == RecoverySource::kCapturedValue &&
+           capture_index != kUnresolvedCaptureIndex;
+  }
 };
 
 struct DeoptimizationRecord final {

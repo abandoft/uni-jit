@@ -14,7 +14,8 @@ bool valid_value_type(ir::ValueType type) noexcept {
 bool valid_recovery_source(RecoverySource source) noexcept {
   return source == RecoverySource::kArgument ||
          source == RecoverySource::kConstant ||
-         source == RecoverySource::kExitValue;
+         source == RecoverySource::kExitValue ||
+         source == RecoverySource::kCapturedValue;
 }
 
 bool valid_deoptimization_reason(DeoptimizationReason reason) noexcept {
@@ -29,17 +30,41 @@ bool valid_deoptimization_reason(DeoptimizationReason reason) noexcept {
 RecoveryOperation RecoveryOperation::argument(
     std::size_t slot, ir::ValueType type,
     std::size_t argument_index) noexcept {
-  return {slot, type, RecoverySource::kArgument, argument_index, 0};
+  RecoveryOperation operation;
+  operation.slot = slot;
+  operation.type = type;
+  operation.source = RecoverySource::kArgument;
+  operation.argument_index = argument_index;
+  return operation;
 }
 
 RecoveryOperation RecoveryOperation::constant_value(
     std::size_t slot, ir::ValueType type, ir::Word value) noexcept {
-  return {slot, type, RecoverySource::kConstant, 0, value};
+  RecoveryOperation operation;
+  operation.slot = slot;
+  operation.type = type;
+  operation.source = RecoverySource::kConstant;
+  operation.constant = value;
+  return operation;
 }
 
 RecoveryOperation RecoveryOperation::exit_value(
     std::size_t slot, ir::ValueType type) noexcept {
-  return {slot, type, RecoverySource::kExitValue, 0, 0};
+  RecoveryOperation operation;
+  operation.slot = slot;
+  operation.type = type;
+  operation.source = RecoverySource::kExitValue;
+  return operation;
+}
+
+RecoveryOperation RecoveryOperation::captured_value(
+    std::size_t slot, ir::ValueType type, ir::Value value) noexcept {
+  RecoveryOperation operation;
+  operation.slot = slot;
+  operation.type = type;
+  operation.source = RecoverySource::kCapturedValue;
+  operation.source_value = value;
+  return operation;
 }
 
 const RecoveredValue* ReconstructedFrame::find(
@@ -63,7 +88,9 @@ Status DeoptimizationTable::add(const DeoptimizationRecord& record) {
   for (std::size_t index = 0; index < record.recovery.size(); ++index) {
     const RecoveryOperation& operation = record.recovery[index];
     if (!valid_value_type(operation.type) ||
-        !valid_recovery_source(operation.source)) {
+        !valid_recovery_source(operation.source) ||
+        (operation.source == RecoverySource::kCapturedValue &&
+         !operation.source_value.valid())) {
       return {StatusCode::kInvalidArgument,
               "deoptimization recovery operation is malformed", index};
     }
@@ -154,6 +181,19 @@ ReconstructionResult DeoptimizationTable::reconstruct(
           break;
         case RecoverySource::kExitValue:
           value = context.exit_value();
+          break;
+        case RecoverySource::kCapturedValue:
+          if (!operation.capture_resolved()) {
+            return {{StatusCode::kInvalidArgument,
+                     "deoptimization captured value is unresolved", site},
+                    {}};
+          }
+          if (operation.capture_index >= context.captured_value_count()) {
+            return {{StatusCode::kInvalidArgument,
+                     "deoptimization captured value is unavailable", site},
+                    {}};
+          }
+          value = context.captured_values()[operation.capture_index];
           break;
       }
       frame.values.push_back({operation.slot, operation.type, value});
