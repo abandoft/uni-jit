@@ -24,6 +24,26 @@ using unijit::ir::Word;
 using unijit::jit::Compiler;
 
 int failures = 0;
+std::size_t runtime_call_count = 0;
+
+Word sum_runtime_helper(const Word* arguments, std::size_t count) {
+  ++runtime_call_count;
+  Word result = 0;
+  for (std::size_t index = 0; index < count; ++index) {
+    result += arguments[index];
+  }
+  return result;
+}
+
+Word float_runtime_helper(const Word* arguments, std::size_t count) {
+  ++runtime_call_count;
+  if (count != 2) {
+    return unijit::ir::pack_float64(0.0);
+  }
+  return unijit::ir::pack_float64(
+      unijit::ir::unpack_float64(arguments[0]) *
+      unijit::ir::unpack_float64(arguments[1]));
+}
 
 void expect(bool condition, const std::string& message) {
   if (!condition) {
@@ -202,6 +222,97 @@ void test_float64_spill_path() {
   const auto native = compilation.function->invoke(args.data(), args.size());
   expect(native.ok() && expected.ok() && native.value == expected.value,
          "spilled native Float64 values must match the interpreter bits");
+}
+
+void test_runtime_helper_call() {
+  FunctionBuilder builder(2);
+  const Value live = builder.add(builder.parameter(0), builder.constant(5));
+  const Value called = builder.call(
+      sum_runtime_helper, {live, builder.parameter(1), builder.constant(7)});
+  const Value result = builder.multiply(live, called);
+  expect(builder.set_return(result).ok(),
+         "runtime-call fixture must record its result");
+  const Function function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "runtime helper call must satisfy SSA verification");
+
+  const std::array<Word, 2> args = {3, 4};
+  runtime_call_count = 0;
+  const auto interpreted =
+      Interpreter::evaluate(function, args.data(), args.size());
+  expect(interpreted.ok() && interpreted.value == 152 &&
+             runtime_call_count == 1,
+         "interpreter must execute runtime helpers with ordered arguments");
+
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "runtime helper call must compile to native code");
+  if (!compilation.ok()) {
+    return;
+  }
+  runtime_call_count = 0;
+  const auto native = compilation.function->invoke(args.data(), args.size());
+  expect(native.ok() && native.value == interpreted.value &&
+             runtime_call_count == 1,
+         "native runtime call must preserve live values and helper effects");
+}
+
+void test_effectful_dead_runtime_call() {
+  FunctionBuilder builder(0);
+  const Value ignored = builder.call(sum_runtime_helper, {});
+  (void)ignored;
+  expect(builder.set_return(builder.constant(42)).ok(),
+         "effectful-call fixture must record a return");
+  const Function function = std::move(builder).build();
+  const auto optimization = unijit::ir::Optimizer::run(function);
+  expect(optimization.ok(), "optimizer must accept an effectful runtime call");
+
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "dead-result runtime call must remain compilable");
+  if (!compilation.ok()) {
+    return;
+  }
+  runtime_call_count = 0;
+  const auto result = compilation.function->invoke(nullptr, 0);
+  expect(result.ok() && result.value == 42 && runtime_call_count == 1,
+         "optimizer must preserve runtime calls whose result is dead");
+}
+
+void test_float64_runtime_helper_call() {
+  FunctionBuilder builder(
+      std::vector<unijit::ir::ValueType>(2,
+                                         unijit::ir::ValueType::kFloat64));
+  const Value live =
+      builder.float64_add(builder.parameter(0), builder.float64_constant(0.5));
+  const Value called = builder.call(
+      float_runtime_helper, {live, builder.parameter(1)},
+      unijit::ir::ValueType::kFloat64);
+  const Value result = builder.float64_add(live, called);
+  expect(builder.set_return(result).ok(),
+         "Float64 runtime call must record its result");
+  const Function function = std::move(builder).build();
+  const std::array<Word, 2> args = {unijit::ir::pack_float64(3.5),
+                                    unijit::ir::pack_float64(-2.0)};
+  const auto interpreted =
+      Interpreter::evaluate(function, args.data(), args.size());
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "Float64 runtime helper call must compile");
+  if (!compilation.ok()) {
+    return;
+  }
+  runtime_call_count = 0;
+  const auto native = compilation.function->invoke(args.data(), args.size());
+  expect(native.ok() && interpreted.ok() && native.value == interpreted.value &&
+             runtime_call_count == 1,
+         "native Float64 call must preserve live FP registers and result bits");
+}
+
+void test_verifier_rejects_null_runtime_helper() {
+  FunctionBuilder builder(0);
+  const Value invalid = builder.call(nullptr, {});
+  expect(builder.set_return(invalid).ok(),
+         "null-helper fixture must contain a return");
+  expect(!unijit::ir::verify(std::move(builder).build()).ok(),
+         "verifier must reject a null runtime helper target");
 }
 
 void test_spill_path() {
@@ -507,6 +618,10 @@ int main() {
   test_float64_ir_and_interpreter();
   test_verifier_rejects_mixed_arithmetic();
   test_float64_spill_path();
+  test_runtime_helper_call();
+  test_effectful_dead_runtime_call();
+  test_float64_runtime_helper_call();
+  test_verifier_rejects_null_runtime_helper();
   test_spill_path();
   test_argument_validation();
   test_optimization_pipeline();
