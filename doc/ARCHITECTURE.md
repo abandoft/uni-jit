@@ -136,6 +136,14 @@ invalid code. Cache lookup and publication retire stale generations without
 revoking memory-safe execution leases. The contract is specified in
 `doc/ASSUMPTIONS.md`.
 
+Tiered publication builds on that boundary with saturating invocation and
+backedge profiles, atomic single-compiler claims, retry delay after compilation
+failure, and immutable baseline/optimized state snapshots. Expected-generation
+checks reject late compiler results, while readers switch without taking the
+publication mutex. Assumption exits withdraw the affected optimized generation;
+only frontends that explicitly declare a computation restartable may request
+automatic baseline retry. The contract is specified in `doc/TIERING.md`.
+
 Code is created writable, populated, instruction-cache synchronized, and only
 then published executable. Published code is never writable. A bounded,
 thread-safe LRU cache publishes immutable functions behind copyable execution

@@ -69,6 +69,11 @@ memory-safe but their managed invocation exits through deoptimization. See
 ordering. An incoming function whose dependency is already invalid receives an
 owned uncached handle and is never made lookup-visible.
 
+The cache owns mappings and identity; `TieredCode` separately owns which leased
+generation receives new invocations. This separation allows an optimized tier
+to be withdrawn atomically while snapshots already executing it retain safe
+mapping ownership. See [TIERING.md](TIERING.md).
+
 The current implementation uses shared immutable ownership. Epoch-based
 reclamation may later reduce reference-count traffic without changing the
 public lease and invalidation contract.

@@ -41,6 +41,13 @@ site, reconstruct the entry frame, verify invalidation quiescence, replace the
 stale cache generation, and preserve an independent sticky interrupt. This path
 is included in the dedicated ThreadSanitizer job.
 
+The same runtime suite races four invocation threads against repeated optimized
+publication and withdrawal. It requires every immutable snapshot to return the
+baseline-equivalent value, rejects late compiler generations, verifies failed
+compilation retry delay, and exercises explicit restartable fallback after an
+assumption exit. The installed-package consumer compiles against the public
+tiering API as an external project.
+
 ## Performance gates
 
 `tool/performance_gate.py` consumes retained benchmark JSON instead of parsing
