@@ -1,9 +1,13 @@
 #include "unijit_pocketpy.h"
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <new>
 #include <string>
 #include <string_view>
@@ -14,6 +18,7 @@
 #include "source_translator.h"
 #include "unijit/ir/function.h"
 #include "unijit/jit/code_cache.h"
+#include "unijit/jit/compilation_scheduler.h"
 #include "unijit/jit/tiering.h"
 
 namespace {
@@ -30,29 +35,70 @@ constexpr std::uint64_t kPocketPyOptimizedFingerprint =
     0x554A504B4F505449ULL;
 constexpr unijit::jit::TieringThresholds kPocketPyTieringThresholds{
     64, std::numeric_limits<std::uint64_t>::max(), 64};
+constexpr std::size_t kPocketPySchedulerBytes = 8U * 1024U * 1024U;
 
-struct OwnedFunction final {
-  OwnedFunction(std::size_t parameters, std::string retained_source,
-                bool supports_tiering)
-      : parameter_count(parameters),
-        source(std::move(retained_source)),
+struct CompiledFunctionState final {
+  CompiledFunctionState(std::uint64_t id, std::size_t parameters,
+                        std::string retained_source, bool supports_tiering)
+      : parameter_count(parameters), source(std::move(retained_source)),
         tierable(supports_tiering),
+        scheduling_identity("pocketpy:" + std::to_string(id)),
         code(kPocketPyTieringThresholds) {}
+
+  void retain_ticket(unijit::jit::CompilationTicket retained) {
+    std::lock_guard<std::mutex> lock(ticket_mutex);
+    ticket = std::move(retained);
+  }
+
+  unijit::jit::CompilationTicket current_ticket() const {
+    std::lock_guard<std::mutex> lock(ticket_mutex);
+    return ticket;
+  }
 
   std::size_t parameter_count;
   std::string source;
   bool tierable;
+  std::string scheduling_identity;
   unijit::jit::TieredCode code;
+  mutable std::mutex ticket_mutex;
+  unijit::jit::CompilationTicket ticket;
 };
 
-unijit::jit::CodeCache &baseline_function_cache() {
-  static unijit::jit::CodeCache cache;
-  return cache;
-}
+struct OwnedFunction final {
+  std::shared_ptr<CompiledFunctionState> state;
+};
 
-unijit::jit::CodeCache &optimized_function_cache() {
-  static unijit::jit::CodeCache cache;
-  return cache;
+struct PocketPyService final {
+  PocketPyService() {
+    unijit::jit::CompilationSchedulerOptions options;
+    options.worker_count = 1;
+    options.maximum_queued_tasks = 64;
+    options.maximum_queued_bytes = kPocketPySchedulerBytes;
+    unijit::jit::CompilationSchedulerCreation creation =
+        unijit::jit::CompilationScheduler::create(options);
+    scheduler_status = std::move(creation.status);
+    scheduler = std::move(creation.scheduler);
+  }
+
+  std::uint64_t allocate_identity() noexcept {
+    std::uint64_t current =
+        next_identity.fetch_add(1, std::memory_order_relaxed);
+    if (current == 0) {
+      current = next_identity.fetch_add(1, std::memory_order_relaxed);
+    }
+    return current;
+  }
+
+  unijit::jit::CodeCache baseline_cache;
+  unijit::jit::CodeCache optimized_cache;
+  unijit::Status scheduler_status;
+  std::unique_ptr<unijit::jit::CompilationScheduler> scheduler;
+  std::atomic<std::uint64_t> next_identity{1};
+};
+
+PocketPyService &pocketpy_service() {
+  static PocketPyService service;
+  return service;
 }
 
 static_assert(alignof(OwnedFunction) <= alignof(std::uint64_t),
@@ -64,6 +110,9 @@ py_Type compiled_function_type() {
 
 void destroy_compiled_function(void *userdata) {
   auto *owned = static_cast<OwnedFunction *>(userdata);
+  if (owned->state != nullptr) {
+    (void)owned->state->current_ticket().cancel();
+  }
   owned->~OwnedFunction();
 }
 
@@ -71,56 +120,120 @@ bool reject_direct_construction(int, py_Ref) {
   return TypeError("UniJIT compiled functions cannot be constructed directly");
 }
 
-void report_failed_optimization(OwnedFunction *owned) {
-  (void)owned->code.report_optimization_failure();
+unijit::Status cancelled_compilation_status() {
+  return {unijit::StatusCode::kCancelled,
+          "PocketPy optimization was cancelled"};
 }
 
-void promote_if_hot(OwnedFunction *owned) {
-  if (!owned->tierable || !owned->code.try_begin_optimization()) {
-    return;
+unijit::Status
+fail_optimization(const std::shared_ptr<CompiledFunctionState> &state,
+                  unijit::Status status) {
+  (void)state->code.report_optimization_failure();
+  return status;
+}
+
+unijit::Status
+compile_optimized(PocketPyService *service,
+                  const std::shared_ptr<CompiledFunctionState> &state,
+                  std::uint64_t generation,
+                  const unijit::jit::CompilationCancellation &cancellation) {
+  if (cancellation.stop_requested()) {
+    return fail_optimization(state, cancelled_compilation_status());
   }
 
-  const unijit::jit::TieredCodeSnapshot baseline = owned->code.snapshot();
-  if (baseline.tier != unijit::jit::CodeTier::kBaseline) {
-    report_failed_optimization(owned);
-    return;
-  }
-
-  unijit::jit::CodeHandle optimized = optimized_function_cache().find(
-      owned->source, kPocketPyOptimizedFingerprint);
+  unijit::jit::CodeHandle optimized = service->optimized_cache.find(
+      state->source, kPocketPyOptimizedFingerprint);
   if (!optimized.valid()) {
     TranslationResult translation =
         unijit::frontend::pocketpy::translate_numeric_function(
-            owned->source, unijit::jit::OptimizationLevel::kOptimized);
-    if (!translation.ok() ||
-        translation.parameter_count != owned->parameter_count) {
-      report_failed_optimization(owned);
-      return;
+            state->source, unijit::jit::OptimizationLevel::kOptimized);
+    if (!translation.ok()) {
+      return fail_optimization(state, std::move(translation.status));
+    }
+    if (translation.parameter_count != state->parameter_count) {
+      return fail_optimization(
+          state, {unijit::StatusCode::kCodeGenerationFailed,
+                  "PocketPy optimized signature differs from its baseline"});
+    }
+    if (cancellation.stop_requested()) {
+      return fail_optimization(state, cancelled_compilation_status());
     }
     unijit::jit::CodeCachePublication publication =
-        optimized_function_cache().publish(
-            owned->source, kPocketPyOptimizedFingerprint,
-            std::move(translation.function));
+        service->optimized_cache.publish(state->source,
+                                         kPocketPyOptimizedFingerprint,
+                                         std::move(translation.function));
     if (!publication.ok()) {
-      report_failed_optimization(owned);
-      return;
+      return fail_optimization(state, std::move(publication.status));
     }
     optimized = std::move(publication.handle);
   }
 
-  const unijit::Status promotion = owned->code.publish_optimized(
-      std::move(optimized), baseline.generation);
+  if (optimized.parameter_count() != state->parameter_count) {
+    return fail_optimization(
+        state, {unijit::StatusCode::kCodeGenerationFailed,
+                "cached PocketPy optimized signature differs from baseline"});
+  }
+  if (cancellation.stop_requested()) {
+    return fail_optimization(state, cancelled_compilation_status());
+  }
+  const unijit::Status promotion =
+      state->code.publish_optimized(std::move(optimized), generation);
   if (!promotion.ok()) {
-    report_failed_optimization(owned);
+    return fail_optimization(state, promotion);
+  }
+  return unijit::Status::ok_status();
+}
+
+void schedule_if_hot(
+    const std::shared_ptr<CompiledFunctionState> &state) noexcept {
+  if (!state->tierable || !state->code.try_begin_optimization()) {
+    return;
+  }
+  const unijit::jit::TieredCodeSnapshot baseline = state->code.snapshot();
+  if (baseline.tier != unijit::jit::CodeTier::kBaseline) {
+    (void)state->code.report_optimization_failure();
+    return;
+  }
+
+  try {
+    PocketPyService &service = pocketpy_service();
+    if (service.scheduler == nullptr) {
+      (void)state->code.report_optimization_failure();
+      return;
+    }
+    const std::size_t maximum = std::numeric_limits<std::size_t>::max();
+    const std::size_t estimated_bytes = state->source.size() > maximum - 4096U
+                                            ? maximum
+                                            : state->source.size() + 4096U;
+    unijit::jit::CompilationRequest request;
+    request.identity = state->scheduling_identity;
+    request.generation = baseline.generation;
+    request.estimated_bytes = estimated_bytes;
+    request.priority = unijit::jit::CompilationPriority::kNormal;
+    request.job =
+        [&service, state, generation = baseline.generation](
+            const unijit::jit::CompilationCancellation &cancellation) {
+          return compile_optimized(&service, state, generation, cancellation);
+        };
+    unijit::jit::CompilationSubmission submission =
+        service.scheduler->try_submit(std::move(request));
+    if (!submission.ok()) {
+      (void)state->code.report_optimization_failure();
+      return;
+    }
+    state->retain_ticket(std::move(submission.ticket));
+  } catch (...) {
+    (void)state->code.report_optimization_failure();
   }
 }
 
 bool create_compiled_function(std::string_view source) {
   try {
+    PocketPyService &service = pocketpy_service();
     const bool tierable =
         unijit::frontend::pocketpy::supports_tiered_translation(source);
-    unijit::jit::CodeHandle baseline = baseline_function_cache().find(
-        source, kPocketPyBaselineFingerprint);
+    unijit::jit::CodeHandle baseline =
+        service.baseline_cache.find(source, kPocketPyBaselineFingerprint);
     std::size_t parameter_count = baseline.parameter_count();
     if (!baseline.valid()) {
       TranslationResult translation =
@@ -134,9 +247,8 @@ bool create_compiled_function(std::string_view source) {
       }
       parameter_count = translation.parameter_count;
       unijit::jit::CodeCachePublication publication =
-          baseline_function_cache().publish(
-              source, kPocketPyBaselineFingerprint,
-              std::move(translation.function));
+          service.baseline_cache.publish(source, kPocketPyBaselineFingerprint,
+                                         std::move(translation.function));
       if (!publication.ok()) {
         return RuntimeError("UniJIT cache publication failed: %s",
                             publication.status.message().c_str());
@@ -147,9 +259,11 @@ bool create_compiled_function(std::string_view source) {
       return ValueError("compiled function has too many arguments");
     }
 
-    OwnedFunction owned(parameter_count, std::string(source), tierable);
+    auto state = std::make_shared<CompiledFunctionState>(
+        service.allocate_identity(), parameter_count, std::string(source),
+        tierable);
     const unijit::Status baseline_status =
-        owned.code.publish_baseline(std::move(baseline));
+        state->code.publish_baseline(std::move(baseline));
     if (!baseline_status.ok()) {
       return RuntimeError("UniJIT baseline publication failed: %s",
                           baseline_status.message().c_str());
@@ -159,9 +273,8 @@ bool create_compiled_function(std::string_view source) {
     if (type == 0) {
       return RuntimeError("UniJIT is not installed in the current VM");
     }
-    void *storage =
-        py_newobject(py_retval(), type, 0, sizeof(OwnedFunction));
-    ::new (storage) OwnedFunction(std::move(owned));
+    void *storage = py_newobject(py_retval(), type, 0, sizeof(OwnedFunction));
+    ::new (storage) OwnedFunction{std::move(state)};
     return true;
   } catch (const std::bad_alloc &) {
     return RuntimeError("unable to allocate UniJIT compiled-function state");
@@ -180,18 +293,19 @@ bool invoke_compiled_function(int argc, py_Ref argv) {
     return false;
   }
   auto *owned = static_cast<OwnedFunction *>(py_touserdata(py_arg(0)));
-  if (!owned->code.snapshot().valid()) {
+  if (owned->state == nullptr || !owned->state->code.snapshot().valid()) {
     return RuntimeError("invalid UniJIT compiled function");
   }
+  const std::shared_ptr<CompiledFunctionState> state = owned->state;
 
   const int argument_count = argc - 1;
-  if (argument_count != static_cast<int>(owned->parameter_count)) {
+  if (argument_count != static_cast<int>(state->parameter_count)) {
     return TypeError("compiled function expects %d arguments, got %d",
-                     static_cast<int>(owned->parameter_count), argument_count);
+                     static_cast<int>(state->parameter_count), argument_count);
   }
 
   std::array<Word, kMaximumParameters> native_arguments{};
-  for (std::size_t index = 0; index < owned->parameter_count; ++index) {
+  for (std::size_t index = 0; index < state->parameter_count; ++index) {
     double number = 0.0;
     if (!py_castfloat(py_arg(static_cast<int>(index) + 1), &number)) {
       return false;
@@ -200,8 +314,8 @@ bool invoke_compiled_function(int argc, py_Ref argv) {
   }
 
   unijit::runtime::ExecutionContext context;
-  const unijit::jit::TieredInvocationResult invocation = owned->code.invoke(
-      native_arguments.data(), owned->parameter_count, &context);
+  const unijit::jit::TieredInvocationResult invocation = state->code.invoke(
+      native_arguments.data(), state->parameter_count, &context);
   if (!invocation.ok()) {
     if (invocation.result.status.code() ==
         unijit::StatusCode::kRuntimeExit) {
@@ -209,13 +323,13 @@ bool invoke_compiled_function(int argc, py_Ref argv) {
       if (invocation.attempted_handle.valid()) {
         const unijit::runtime::ReconstructionResult reconstruction =
             invocation.attempted_handle.reconstruct_deoptimization(
-                site, native_arguments.data(), owned->parameter_count,
+                site, native_arguments.data(), state->parameter_count,
                 context);
         if (reconstruction.ok() &&
             reconstruction.frame.reason ==
                 unijit::runtime::DeoptimizationReason::kDivisionByZero) {
           const unijit::runtime::RecoveredValue *divisor =
-              reconstruction.frame.find(owned->parameter_count);
+              reconstruction.frame.find(state->parameter_count);
           if (divisor != nullptr &&
               divisor->type == unijit::ir::ValueType::kFloat64 &&
               unijit::ir::unpack_float64(divisor->value) == 0.0) {
@@ -232,7 +346,7 @@ bool invoke_compiled_function(int argc, py_Ref argv) {
                             invocation.result.status.location()),
                         invocation.result.status.message().c_str());
   }
-  promote_if_hot(owned);
+  schedule_if_hot(state);
   py_newfloat(py_retval(),
               unijit::ir::unpack_float64(invocation.result.value));
   return true;
@@ -279,6 +393,23 @@ const char *tier_name(unijit::jit::CodeTier tier) noexcept {
   }
 }
 
+const char *task_state_name(unijit::jit::CompilationTaskState state) noexcept {
+  switch (state) {
+  case unijit::jit::CompilationTaskState::kQueued:
+    return "queued";
+  case unijit::jit::CompilationTaskState::kRunning:
+    return "running";
+  case unijit::jit::CompilationTaskState::kSucceeded:
+    return "succeeded";
+  case unijit::jit::CompilationTaskState::kFailed:
+    return "failed";
+  case unijit::jit::CompilationTaskState::kCancelled:
+    return "cancelled";
+  default:
+    return "idle";
+  }
+}
+
 bool compiled_function_stats(int argc, py_Ref argv) {
   if (argc != 1) {
     return TypeError("unijit.stats() expects 1 argument, got %d", argc);
@@ -292,14 +423,23 @@ bool compiled_function_stats(int argc, py_Ref argv) {
   }
   const auto *owned =
       static_cast<const OwnedFunction *>(py_touserdata(py_arg(0)));
-  const unijit::jit::TieredCodeStats stats = owned->code.stats();
-  const unijit::jit::TieredCodeSnapshot snapshot = owned->code.snapshot();
+  if (owned->state == nullptr) {
+    return RuntimeError("invalid UniJIT compiled function");
+  }
+  const std::shared_ptr<CompiledFunctionState> state = owned->state;
+  const unijit::jit::TieredCodeStats stats = state->code.stats();
+  const unijit::jit::TieredCodeSnapshot snapshot = state->code.snapshot();
   const unijit::jit::CompilationStats *compilation =
       snapshot.handle.compilation_stats();
+  const unijit::jit::CompilationTicket ticket = state->current_ticket();
+  PocketPyService &service = pocketpy_service();
+  const unijit::jit::CompilationSchedulerStats scheduler_stats =
+      service.scheduler == nullptr ? unijit::jit::CompilationSchedulerStats{}
+                                   : service.scheduler->stats();
 
   py_newdict(py_retval());
   return set_text(py_retval(), "active_tier", tier_name(stats.active_tier)) &&
-         set_flag(py_retval(), "tierable", owned->tierable) &&
+         set_flag(py_retval(), "tierable", state->tierable) &&
          set_metric(py_retval(), "generation", stats.generation) &&
          set_metric(py_retval(), "invocations", stats.hotness.invocations) &&
          set_metric(py_retval(), "compilation_attempts",
@@ -310,6 +450,16 @@ bool compiled_function_stats(int argc, py_Ref argv) {
                     stats.hotness.failed_compilations) &&
          set_metric(py_retval(), "promotions", stats.promotions) &&
          set_metric(py_retval(), "withdrawals", stats.withdrawals) &&
+         set_text(py_retval(), "compilation_state",
+                  task_state_name(ticket.state())) &&
+         set_flag(py_retval(), "cancellation_requested",
+                  ticket.cancellation_requested()) &&
+         set_flag(py_retval(), "scheduler_available",
+                  service.scheduler != nullptr) &&
+         set_metric(py_retval(), "scheduler_queued_tasks",
+                    scheduler_stats.queued_tasks) &&
+         set_metric(py_retval(), "scheduler_active_workers",
+                    scheduler_stats.active_workers) &&
          set_metric(py_retval(), "code_size",
                     compilation == nullptr ? 0 : compilation->code_size) &&
          set_metric(py_retval(), "input_ir_nodes",
@@ -318,6 +468,53 @@ bool compiled_function_stats(int argc, py_Ref argv) {
          set_metric(py_retval(), "active_ir_nodes",
                     compilation == nullptr ? 0
                                            : compilation->optimized_ir_nodes);
+}
+
+bool wait_for_compiled_function(int argc, py_Ref argv) {
+  if (argc != 2) {
+    return TypeError("unijit.wait() expects 2 arguments, got %d", argc);
+  }
+  const py_Type type = compiled_function_type();
+  if (type == 0) {
+    return RuntimeError("UniJIT is not installed in the current VM");
+  }
+  if (!py_checktype(py_arg(0), type) || !py_checkint(py_arg(1))) {
+    return false;
+  }
+  const py_i64 timeout = py_toint(py_arg(1));
+  if (timeout < 0) {
+    return ValueError("unijit.wait() timeout cannot be negative");
+  }
+  const auto *owned =
+      static_cast<const OwnedFunction *>(py_touserdata(py_arg(0)));
+  if (owned->state == nullptr) {
+    return RuntimeError("invalid UniJIT compiled function");
+  }
+  const unijit::jit::CompilationTicket ticket = owned->state->current_ticket();
+  const bool completed =
+      !ticket.valid() || ticket.wait_for(std::chrono::milliseconds(timeout));
+  py_newbool(py_retval(), completed);
+  return true;
+}
+
+bool cancel_compiled_function(int argc, py_Ref argv) {
+  if (argc != 1) {
+    return TypeError("unijit.cancel() expects 1 argument, got %d", argc);
+  }
+  const py_Type type = compiled_function_type();
+  if (type == 0) {
+    return RuntimeError("UniJIT is not installed in the current VM");
+  }
+  if (!py_checktype(py_arg(0), type)) {
+    return false;
+  }
+  const auto *owned =
+      static_cast<const OwnedFunction *>(py_touserdata(py_arg(0)));
+  if (owned->state == nullptr) {
+    return RuntimeError("invalid UniJIT compiled function");
+  }
+  py_newbool(py_retval(), owned->state->current_ticket().cancel());
+  return true;
 }
 
 bool compile_from_python(int argc, py_Ref argv) {
@@ -347,8 +544,10 @@ extern "C" int unijit_pocketpy_install(void) {
   if (module != nullptr) {
     const py_Ref compile = py_getdict(module, py_name("compile"));
     const py_Ref stats = py_getdict(module, py_name("stats"));
-    return compile != nullptr && stats != nullptr &&
-                   compiled_function_type() != 0
+    const py_Ref wait = py_getdict(module, py_name("wait"));
+    const py_Ref cancel = py_getdict(module, py_name("cancel"));
+    return compile != nullptr && stats != nullptr && wait != nullptr &&
+                   cancel != nullptr && compiled_function_type() != 0
                ? 0
                : -1;
   }
@@ -361,5 +560,7 @@ extern "C" int unijit_pocketpy_install(void) {
   py_tpsetfinal(type);
   py_bindfunc(module, "compile", compile_from_python);
   py_bindfunc(module, "stats", compiled_function_stats);
+  py_bindfunc(module, "wait", wait_for_compiled_function);
+  py_bindfunc(module, "cancel", cancel_compiled_function);
   return 0;
 }
