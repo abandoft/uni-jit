@@ -1,5 +1,7 @@
 ## 0.1.2
 
+- Added guarded compilation of one structured Lua 5.5 numeric `for` loop with
+  loop-carried CFG values, zero-iteration semantics, and a three-engine test.
 - Added range-checked native CFG lowering on AArch64, x86-64, and RISC-V 64,
   including parallel block-argument copies for loop backedges.
 - Added CFG SSA with explicit block parameters, dominance verification, and a

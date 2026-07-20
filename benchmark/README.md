@@ -68,3 +68,8 @@ python3 benchmark/lua/run_integer.py \
 The runner requires exact checksums across all three engines and records the
 UniJIT, Lua, and LuaJIT revisions. Results describe this narrow integer
 workload only; they are not presented as whole-language performance.
+
+Passing `--script benchmark/lua/integer_loop.lua` to the same runner measures
+an entire 1,000-iteration Lua numeric loop compiled through CFG SSA. Reported
+latency is normalized per inner-loop iteration, and the exact three-engine
+checksum requirement remains in force.

@@ -37,11 +37,18 @@ returns. Arithmetic is accepted only when the corresponding Lua metamethod
 fallback instruction is structurally present. Runtime integer guards make
 that fallback unreachable in the specialized closure.
 
-Varargs, branches, calls, tables, floating-point values, upvalue access, and
-all other opcodes are rejected at compile time with the bytecode position.
-This is an explicit capability boundary rather than a silent semantic
-fallback. Later frontend tiers will add guarded exits and deoptimization for
-the broader Lua language.
+Varargs, general branches, calls, tables, floating-point values, upvalue
+access, and all other opcodes are rejected at compile time with the bytecode
+position. This is an explicit capability boundary rather than a silent
+semantic fallback. Later frontend tiers will add guarded exits and
+deoptimization for the broader Lua language.
+
+The first CFG path also accepts one structured numeric `for` loop when its
+start and step are integer constants and the step is exactly 1. The limit is a
+guarded runtime integer. Loop-carried Lua registers become explicit CFG block
+parameters, and a bytecode liveness scan avoids carrying dead setup
+registers. Zero-iteration loops and signed limits preserve stock Lua results;
+nested loops, non-unit steps, and early returns are rejected for now.
 
 The compiled closure owns its executable allocation through a Lua userdata
 upvalue. Its finalizer is idempotent, so collection and adversarial repeated
