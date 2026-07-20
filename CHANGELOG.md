@@ -1,3 +1,7 @@
+## 0.1.4
+
+- Added IEEE-754 Float64 division to typed SSA and every native backend, with guarded Lua 5.5 and QuickJS frontend support.
+
 ## 0.1.3
 
 - Added an isolated PocketPy 2.1.8 build, strict Python numeric-source translation, GC-owned guarded native callables, and a checksum-verified stock-versus-UniJIT call benchmark.

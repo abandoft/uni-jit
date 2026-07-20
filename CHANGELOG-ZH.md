@@ -1,3 +1,7 @@
+## 0.1.4
+
+- 为类型化 SSA 与全部原生后端新增 IEEE-754 Float64 除法，并接入受守卫保护的 Lua 5.5 和 QuickJS 前端。
+
 ## 0.1.3
 
 - 新增隔离的 PocketPy 2.1.8 构建、严格 Python 数值源码翻译、由 GC 管理生命周期的受守卫原生 callable，以及带校验和的 stock/UniJIT 调用基准。
