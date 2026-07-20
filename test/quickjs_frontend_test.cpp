@@ -161,6 +161,47 @@ int main() {
     return EXIT_FAILURE;
   }
 
+  constexpr char kLoopControlSource[] =
+      "function gatedSum(count) {"
+      "  let sum = 0.0;"
+      "  for (let iteration = 0; iteration < count; iteration++) {"
+      "    if (iteration >= 8.0) { break; }"
+      "    if (iteration < 3.0) { continue; }"
+      "    sum += iteration;"
+      "  }"
+      "  return sum;"
+      "}";
+  const auto loop_control =
+      unijit::frontend::quickjs::translate_numeric_function(
+          kLoopControlSource);
+  const std::array<unijit::ir::Word, 1> loop_control_arguments = {
+      unijit::ir::pack_float64(100.0)};
+  const auto loop_control_result =
+      loop_control.ok()
+          ? loop_control.function->invoke(loop_control_arguments.data(),
+                                          loop_control_arguments.size())
+          : unijit::ir::EvaluationResult{};
+  if (!loop_control.ok() || !loop_control_result.ok() ||
+      loop_control_result.value != unijit::ir::pack_float64(25.0)) {
+    std::cerr << "QuickJS break/continue loop semantics were not preserved: "
+              << loop_control.status.message() << '\n';
+    return EXIT_FAILURE;
+  }
+  constexpr char kRejectedControlElse[] =
+      "function rejected(count) {"
+      "  let sum = 0.0;"
+      "  for (let iteration = 0; iteration < count; iteration++) {"
+      "    if (iteration > 2.0) { break; } else { sum += iteration; }"
+      "  }"
+      "  return sum;"
+      "}";
+  if (unijit::frontend::quickjs::translate_numeric_function(
+          kRejectedControlElse)
+          .ok()) {
+    std::cerr << "QuickJS accepted a break guard with an else arm\n";
+    return EXIT_FAILURE;
+  }
+
   constexpr std::array<const char*, 4> kRejectedSources = {
       "function(a, a) { return a; }",
       "function(a) { return external + a; }",
