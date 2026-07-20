@@ -658,7 +658,7 @@ ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
           values[value.id()] = node.immediate;
         } else if (node.opcode == ControlOpcode::kSafepoint) {
           values[value.id()] = 0;
-          if (context != nullptr && context->interrupt_requested()) {
+          if (context != nullptr && context->exit_poll_requested()) {
             const auto site = static_cast<std::size_t>(node.immediate);
             context->record_exit(runtime::ExitReason::kSafepoint, site);
             return {{StatusCode::kExecutionInterrupted,

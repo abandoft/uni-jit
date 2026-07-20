@@ -8,6 +8,7 @@
 #include "unijit/ir/control_flow.h"
 #include "unijit/ir/function.h"
 #include "unijit/ir/interpreter.h"
+#include "unijit/runtime/assumption.h"
 #include "unijit/runtime/deoptimization.h"
 #include "unijit/runtime/execution_context.h"
 #include "unijit/status.h"
@@ -46,6 +47,9 @@ class CompiledFunction final {
   NativeEntry native_entry() const noexcept;
   std::size_t parameter_count() const noexcept { return parameter_count_; }
   bool requires_context() const noexcept { return requires_context_; }
+  const runtime::AssumptionSet& assumptions() const noexcept {
+    return assumptions_;
+  }
 
   const runtime::DeoptimizationTable& deoptimization_table() const noexcept {
     return deoptimization_table_;
@@ -68,13 +72,15 @@ class CompiledFunction final {
 
   CompiledFunction(std::unique_ptr<Impl> impl, std::size_t parameter_count,
                    CompilationStats stats, bool requires_context,
-                   runtime::DeoptimizationTable deoptimization_table) noexcept;
+                   runtime::DeoptimizationTable deoptimization_table,
+                   runtime::AssumptionSet assumptions) noexcept;
 
   std::unique_ptr<Impl> impl_;
   std::size_t parameter_count_{0};
   CompilationStats stats_;
   bool requires_context_{false};
   runtime::DeoptimizationTable deoptimization_table_;
+  runtime::AssumptionSet assumptions_;
 };
 
 struct CompilationResult final {
@@ -90,7 +96,21 @@ class Compiler final {
   static CompilationResult compile(
       const ir::Function& function,
       const runtime::DeoptimizationTable& deoptimization_table);
+  static CompilationResult compile(
+      const ir::Function& function,
+      const runtime::AssumptionSet& assumptions);
+  static CompilationResult compile(
+      const ir::Function& function,
+      const runtime::DeoptimizationTable& deoptimization_table,
+      const runtime::AssumptionSet& assumptions);
   static CompilationResult compile(const ir::ControlFlowFunction& function);
+  static CompilationResult compile(
+      const ir::ControlFlowFunction& function,
+      const runtime::AssumptionSet& assumptions);
+  static CompilationResult compile(
+      const ir::ControlFlowFunction& function,
+      const runtime::DeoptimizationTable& deoptimization_table,
+      const runtime::AssumptionSet& assumptions);
 };
 
 }  // namespace unijit::jit

@@ -33,18 +33,76 @@ bool has_guard_site(const ir::Function& function, std::size_t site) noexcept {
                      });
 }
 
+template <typename FunctionType>
+Status append_assumption_deoptimization(
+    const FunctionType& function,
+    const runtime::AssumptionSet& assumptions,
+    const runtime::DeoptimizationTable& requested,
+    runtime::DeoptimizationTable* result) {
+  const runtime::AssumptionDependency* invalid = assumptions.first_invalid();
+  if (invalid != nullptr) {
+    return {StatusCode::kInvalidArgument,
+            "cannot compile against an invalidated assumption",
+            invalid->site};
+  }
+  for (const runtime::AssumptionDependency& dependency :
+       assumptions.dependencies()) {
+    const runtime::DeoptimizationRecord* supplied =
+        requested.find(dependency.site);
+    if (supplied != nullptr) {
+      if (supplied->reason !=
+          runtime::DeoptimizationReason::kAssumptionInvalidated) {
+        return {StatusCode::kInvalidArgument,
+                "assumption exit metadata has the wrong semantic reason",
+                dependency.site};
+      }
+      const Status addition = result->add(*supplied);
+      if (!addition.ok()) {
+        return addition;
+      }
+      continue;
+    }
+
+    runtime::DeoptimizationRecord fallback;
+    fallback.site = dependency.site;
+    fallback.resume_offset = dependency.resume_offset;
+    fallback.reason =
+        runtime::DeoptimizationReason::kAssumptionInvalidated;
+    for (std::size_t index = 0; index < function.parameter_count(); ++index) {
+      fallback.recovery.push_back(runtime::RecoveryOperation::argument(
+          index, function.parameter_type(index), index));
+    }
+    const Status addition = result->add(fallback);
+    if (!addition.ok()) {
+      return addition;
+    }
+  }
+  return Status::ok_status();
+}
+
 DeoptimizationPreparation prepare_deoptimization(
     const ir::Function& input, const ir::Function& optimized,
-    const runtime::DeoptimizationTable& requested) {
+    const runtime::DeoptimizationTable& requested,
+    const runtime::AssumptionSet& assumptions) {
   const Status validation = requested.validate(input.parameter_count());
   if (!validation.ok()) {
     return {validation, {}};
   }
   for (const runtime::DeoptimizationRecord& record : requested.records()) {
-    if (!has_guard_site(input, record.site)) {
+    if (!has_guard_site(input, record.site) &&
+        assumptions.find(record.site) == nullptr) {
       return {{StatusCode::kInvalidArgument,
-               "deoptimization metadata does not identify a runtime guard",
+               "deoptimization metadata does not identify an exit site",
                record.site},
+              {}};
+    }
+  }
+  for (const runtime::AssumptionDependency& dependency :
+       assumptions.dependencies()) {
+    if (has_guard_site(input, dependency.site)) {
+      return {{StatusCode::kInvalidArgument,
+               "assumption and runtime guard sites must be distinct",
+               dependency.site},
               {}};
     }
   }
@@ -79,10 +137,47 @@ DeoptimizationPreparation prepare_deoptimization(
         return {addition, {}};
       }
     }
+    const Status assumptions_status = append_assumption_deoptimization(
+        input, assumptions, requested, &result);
+    if (!assumptions_status.ok()) {
+      return {assumptions_status, {}};
+    }
     return {Status::ok_status(), std::move(result)};
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
              "unable to prepare deoptimization metadata"},
+            {}};
+  }
+}
+
+DeoptimizationPreparation prepare_deoptimization(
+    const ir::ControlFlowFunction& function,
+    const runtime::DeoptimizationTable& requested,
+    const runtime::AssumptionSet& assumptions) {
+  const Status validation = requested.validate(function.parameter_count());
+  if (!validation.ok()) {
+    return {validation, {}};
+  }
+  for (const runtime::DeoptimizationRecord& record : requested.records()) {
+    if (assumptions.find(record.site) == nullptr) {
+      return {{StatusCode::kInvalidArgument,
+               "CFG deoptimization metadata does not identify an exit site",
+               record.site},
+              {}};
+    }
+  }
+
+  runtime::DeoptimizationTable result;
+  try {
+    const Status assumptions_status = append_assumption_deoptimization(
+        function, assumptions, requested, &result);
+    if (!assumptions_status.ok()) {
+      return {assumptions_status, {}};
+    }
+    return {Status::ok_status(), std::move(result)};
+  } catch (const std::bad_alloc&) {
+    return {{StatusCode::kResourceExhausted,
+             "unable to prepare CFG deoptimization metadata"},
             {}};
   }
 }
@@ -123,12 +218,14 @@ CompiledFunction::CompiledFunction(std::unique_ptr<Impl> impl,
                                    CompilationStats stats,
                                    bool requires_context,
                                    runtime::DeoptimizationTable
-                                       deoptimization_table) noexcept
+                                       deoptimization_table,
+                                   runtime::AssumptionSet assumptions) noexcept
     : impl_(std::move(impl)),
       parameter_count_(parameter_count),
       stats_(stats),
       requires_context_(requires_context),
-      deoptimization_table_(std::move(deoptimization_table)) {}
+      deoptimization_table_(std::move(deoptimization_table)),
+      assumptions_(std::move(assumptions)) {}
 
 CompiledFunction::~CompiledFunction() = default;
 CompiledFunction::CompiledFunction(CompiledFunction&&) noexcept = default;
@@ -158,23 +255,63 @@ ir::EvaluationResult CompiledFunction::invoke(
              "compiled function has no published entry point"},
             0};
   }
-  if (context == nullptr && requires_context_) {
-    runtime::ExecutionContext local_context;
-    return finish_invocation(entry(args, &local_context), &local_context);
+  runtime::ExecutionContext local_context;
+  runtime::ExecutionContext* active_context = context;
+  if (active_context == nullptr && requires_context_) {
+    active_context = &local_context;
   }
-  if (context != nullptr) {
-    context->clear_exit();
+  if (active_context != nullptr) {
+    active_context->clear_exit();
+    active_context->clear_deoptimization_wakeup();
   }
-  return finish_invocation(entry(args, context), context);
+  if (!assumptions_.empty()) {
+    runtime::AssumptionActivation activation =
+        assumptions_.activate(active_context);
+    if (!activation.status().ok()) {
+      return {activation.status(), 0};
+    }
+    const runtime::AssumptionDependency* invalid =
+        activation.invalid_dependency();
+    if (invalid != nullptr) {
+      active_context->record_exit(runtime::ExitReason::kRuntime,
+                                  invalid->site);
+      return finish_invocation(0, active_context);
+    }
+
+    const ir::Word value = entry(args, active_context);
+    invalid = assumptions_.first_invalid();
+    if (invalid != nullptr) {
+      active_context->clear_deoptimization_wakeup();
+      active_context->record_exit(runtime::ExitReason::kRuntime,
+                                  invalid->site);
+      return finish_invocation(0, active_context);
+    }
+    return finish_invocation(value, active_context);
+  }
+  return finish_invocation(entry(args, active_context), active_context);
 }
 
 CompilationResult Compiler::compile(const ir::Function& function) {
-  return compile(function, {});
+  return compile(function, runtime::DeoptimizationTable{},
+                 runtime::AssumptionSet{});
 }
 
 CompilationResult Compiler::compile(
     const ir::Function& function,
     const runtime::DeoptimizationTable& deoptimization_table) {
+  return compile(function, deoptimization_table, runtime::AssumptionSet{});
+}
+
+CompilationResult Compiler::compile(
+    const ir::Function& function,
+    const runtime::AssumptionSet& assumptions) {
+  return compile(function, runtime::DeoptimizationTable{}, assumptions);
+}
+
+CompilationResult Compiler::compile(
+    const ir::Function& function,
+    const runtime::DeoptimizationTable& deoptimization_table,
+    const runtime::AssumptionSet& assumptions) {
   const Status verification = ir::verify(function);
   if (!verification.ok()) {
     return {verification, nullptr};
@@ -187,7 +324,8 @@ CompilationResult Compiler::compile(
   const ir::Function& optimized = optimization.function;
 
   DeoptimizationPreparation deoptimization =
-      prepare_deoptimization(function, optimized, deoptimization_table);
+      prepare_deoptimization(function, optimized, deoptimization_table,
+                             assumptions);
   if (!deoptimization.status.ok()) {
     return {deoptimization.status, nullptr};
   }
@@ -218,14 +356,14 @@ CompilationResult Compiler::compile(
                            implementation->memory.mapping_size(),
                            lowering.spill_slots, function.nodes().size(),
                            optimized.nodes().size()};
-    const bool requires_context = std::any_of(
+    const bool requires_context = !assumptions.empty() || std::any_of(
         optimized.nodes().begin(), optimized.nodes().end(),
         [](const ir::Node& node) {
           return node.opcode == ir::Opcode::kGuardFloatNonzero;
         });
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
         std::move(implementation), function.parameter_count(), stats,
-        requires_context, std::move(deoptimization.table)));
+        requires_context, std::move(deoptimization.table), assumptions));
     return {Status::ok_status(), std::move(compiled)};
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
@@ -241,9 +379,29 @@ CompilationResult Compiler::compile(
 }
 
 CompilationResult Compiler::compile(const ir::ControlFlowFunction& function) {
+  return compile(function, runtime::DeoptimizationTable{},
+                 runtime::AssumptionSet{});
+}
+
+CompilationResult Compiler::compile(
+    const ir::ControlFlowFunction& function,
+    const runtime::AssumptionSet& assumptions) {
+  return compile(function, runtime::DeoptimizationTable{}, assumptions);
+}
+
+CompilationResult Compiler::compile(
+    const ir::ControlFlowFunction& function,
+    const runtime::DeoptimizationTable& deoptimization_table,
+    const runtime::AssumptionSet& assumptions) {
   const Status verification = ir::verify(function);
   if (!verification.ok()) {
     return {verification, nullptr};
+  }
+
+  DeoptimizationPreparation deoptimization =
+      prepare_deoptimization(function, deoptimization_table, assumptions);
+  if (!deoptimization.status.ok()) {
+    return {deoptimization.status, nullptr};
   }
 
 #if defined(UNIJIT_TARGET_AARCH64)
@@ -272,14 +430,14 @@ CompilationResult Compiler::compile(const ir::ControlFlowFunction& function) {
                            implementation->memory.mapping_size(),
                            lowering.spill_slots, function.nodes().size(),
                            function.nodes().size()};
-    const bool requires_context = std::any_of(
+    const bool requires_context = !assumptions.empty() || std::any_of(
         function.nodes().begin(), function.nodes().end(),
         [](const ir::ControlNode& node) {
           return node.opcode == ir::ControlOpcode::kSafepoint;
         });
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
         std::move(implementation), function.parameter_count(), stats,
-        requires_context, {}));
+        requires_context, std::move(deoptimization.table), assumptions));
     return {Status::ok_status(), std::move(compiled)};
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,

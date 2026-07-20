@@ -8,6 +8,7 @@ add_library(unijit
   jit/compiler.cpp
   jit/executable_memory.cpp
   jit/register_allocator.cpp
+  runtime/assumption.cpp
   runtime/deoptimization.cpp)
 
 set(UNIJIT_PROCESSOR "${CMAKE_SYSTEM_PROCESSOR}")

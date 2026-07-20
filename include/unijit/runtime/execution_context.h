@@ -8,7 +8,13 @@
 
 #include "unijit/ir/function.h"
 
+namespace unijit::jit {
+class CompiledFunction;
+}
+
 namespace unijit::runtime {
+
+class Assumption;
 
 enum class ExitReason : std::uint64_t {
   kNone = 0,
@@ -24,14 +30,21 @@ class ExecutionContext final {
   ExecutionContext& operator=(const ExecutionContext&) = delete;
 
   void request_interrupt() noexcept {
-    interrupt_requested_.store(1, std::memory_order_release);
+    interrupt_requested_.fetch_or(kInterruptRequested,
+                                  std::memory_order_release);
   }
 
   void clear_interrupt() noexcept {
-    interrupt_requested_.store(0, std::memory_order_release);
+    interrupt_requested_.fetch_and(~kInterruptRequested,
+                                   std::memory_order_release);
   }
 
   bool interrupt_requested() const noexcept {
+    return (interrupt_requested_.load(std::memory_order_acquire) &
+            kInterruptRequested) != 0;
+  }
+
+  bool exit_poll_requested() const noexcept {
     return interrupt_requested_.load(std::memory_order_acquire) != 0;
   }
 
@@ -67,6 +80,22 @@ class ExecutionContext final {
   static constexpr std::size_t exit_value_offset() noexcept;
 
  private:
+  friend class Assumption;
+  friend class jit::CompiledFunction;
+
+  static constexpr std::uint64_t kInterruptRequested = 1;
+  static constexpr std::uint64_t kDeoptimizationWakeup = 2;
+
+  void request_deoptimization_wakeup() noexcept {
+    interrupt_requested_.fetch_or(kDeoptimizationWakeup,
+                                  std::memory_order_release);
+  }
+
+  void clear_deoptimization_wakeup() noexcept {
+    interrupt_requested_.fetch_and(~kDeoptimizationWakeup,
+                                   std::memory_order_release);
+  }
+
   alignas(std::uint64_t) std::atomic<std::uint64_t> interrupt_requested_{0};
   std::uint64_t exit_reason_{static_cast<std::uint64_t>(ExitReason::kNone)};
   std::uint64_t exit_site_{0};
