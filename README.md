@@ -11,7 +11,9 @@ benchmark competitors; UniJIT does not link against them as its backend.
 
 Native integer backends currently target AArch64, x86-64, and RISC-V 64.
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and delivery
-gates and [docs/PORTABILITY.md](docs/PORTABILITY.md) for verified platforms.
+gates, [docs/PORTABILITY.md](docs/PORTABILITY.md) for verified platforms, and
+[docs/LUA_FRONTEND.md](docs/LUA_FRONTEND.md) for the first stock Lua 5.5
+integration contract.
 
 ## Build
 
@@ -23,3 +25,12 @@ ctest --test-dir build/debug --output-on-failure
 
 All generated files must remain below the repository-level `build/`
 directory.
+
+To build the pinned stock Lua runtime and the UniJIT Lua frontend tests:
+
+```sh
+cmake -S . -B build/lua -G Ninja \
+  -DUNIJIT_BUILD_LUA_REFERENCE=ON -DUNIJIT_BUILD_TESTS=ON
+cmake --build build/lua --target unijit_lua55_tests
+ctest --test-dir build/lua -R unijit.lua55_frontend --output-on-failure
+```

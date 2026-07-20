@@ -1,5 +1,7 @@
 ## 0.1.2
 
+- Added a guarded stock Lua 5.5 bytecode-to-native frontend for straight-line
+  integer functions, with differential and lifecycle tests.
 - Added isolated Lua 5.5 and LuaJIT reference builds for language benchmarks.
 
 ## 0.1.1
