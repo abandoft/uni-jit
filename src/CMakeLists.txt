@@ -1,0 +1,38 @@
+add_library(unijit
+  ir/function.cpp
+  ir/verifier.cpp)
+
+add_library(UniJIT::unijit ALIAS unijit)
+
+target_include_directories(unijit
+  PUBLIC
+    "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>"
+    "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
+
+target_compile_features(unijit PUBLIC cxx_std_17)
+
+if(MSVC)
+  target_compile_options(unijit PRIVATE /W4 /permissive-)
+  if(UNIJIT_WARNINGS_AS_ERRORS)
+    target_compile_options(unijit PRIVATE /WX)
+  endif()
+else()
+  target_compile_options(unijit PRIVATE -Wall -Wextra -Wpedantic)
+  if(UNIJIT_WARNINGS_AS_ERRORS)
+    target_compile_options(unijit PRIVATE -Werror)
+  endif()
+endif()
+
+set_target_properties(unijit PROPERTIES
+  CXX_VISIBILITY_PRESET hidden
+  VISIBILITY_INLINES_HIDDEN YES
+  VERSION "${PROJECT_VERSION}"
+  SOVERSION "${PROJECT_VERSION_MAJOR}")
+
+install(
+  TARGETS unijit
+  EXPORT UniJITTargets
+  ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+  LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+  RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
