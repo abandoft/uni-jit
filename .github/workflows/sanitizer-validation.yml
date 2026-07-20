@@ -60,6 +60,9 @@ jobs:
           --target unijit_lua55_tests
 
       - name: Test Lua frontend
-        run: >-
-          ctest --test-dir build/sanitize -C Debug --output-on-failure
-          --timeout 120 -R ^unijit.lua55_frontend$
+        timeout-minutes: 3
+        run: |
+          & ./build/sanitize/bin/Debug/unijit_lua55_tests.exe
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
