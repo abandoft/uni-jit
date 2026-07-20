@@ -12,6 +12,7 @@ extern "C" {
 #include "lauxlib.h"
 #include "lobject.h"
 #include "lopcodes.h"
+#include "lstate.h"
 }
 
 #include "unijit/ir/function.h"
@@ -269,30 +270,35 @@ int destroy_compiled_function(lua_State *state) {
 }
 
 int invoke_compiled_function(lua_State *state) {
-  auto *owned =
-      static_cast<OwnedFunction *>(lua_touserdata(state, lua_upvalueindex(1)));
+  CallInfo *call = state->ci;
+  const CClosure *closure = clCvalue(s2v(call->func.p));
+  auto *owned = reinterpret_cast<OwnedFunction *>(
+      getudatamem(uvalue(&closure->upvalue[0])));
   if (owned == nullptr || owned->function == nullptr) {
     return luaL_error(state, "invalid UniJIT compiled function");
   }
 
-  const int supplied = lua_gettop(state);
-  if (supplied < 0 ||
-      static_cast<std::size_t>(supplied) < owned->parameter_count) {
+  const StkId argument_base = call->func.p + 1;
+  const std::size_t supplied =
+      static_cast<std::size_t>(state->top.p - argument_base);
+  if (supplied < owned->parameter_count) {
     return luaL_error(state, "compiled function requires %d arguments",
                       static_cast<int>(owned->parameter_count));
   }
 
-  std::array<Word, kMaximumLuaParameters> arguments{};
+  std::array<Word, kMaximumLuaParameters> arguments;
   for (std::size_t index = 0; index < owned->parameter_count; ++index) {
-    const int lua_index = static_cast<int>(index + 1);
-    if (lua_isinteger(state, lua_index) == 0) {
-      return luaL_error(state, "argument %d must be a Lua integer", lua_index);
+    const TValue *argument = s2v(argument_base + index);
+    if (!ttisinteger(argument)) {
+      return luaL_error(state, "argument %d must be a Lua integer",
+                        static_cast<int>(index + 1));
     }
-    arguments[index] = static_cast<Word>(lua_tointeger(state, lua_index));
+    arguments[index] = static_cast<Word>(ivalue(argument));
   }
 
   const Word value = owned->function->native_entry()(arguments.data());
-  lua_pushinteger(state, static_cast<lua_Integer>(value));
+  setivalue(s2v(state->top.p), static_cast<lua_Integer>(value));
+  ++state->top.p;
   return 1;
 }
 
