@@ -1,0 +1,95 @@
+name: Stress and differential fuzz validation
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  deterministic-qualification:
+    name: Deterministic IR fuzz and cache stress
+    runs-on: ubuntu-24.04
+    env:
+      CC: gcc
+      CXX: g++
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure qualification executables
+        run: >-
+          cmake -S . -B build/qualification -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DUNIJIT_BUILD_TESTS=ON
+          -DUNIJIT_BUILD_QUALIFICATION_TESTS=ON
+          -DUNIJIT_WARNINGS_AS_ERRORS=ON
+
+      - name: Build qualification executables
+        run: >-
+          cmake --build build/qualification --parallel
+          --target unijit_differential_fuzz unijit_code_cache_stress
+
+      - name: Run committed qualification corpus
+        run: >-
+          ctest --test-dir build/qualification --output-on-failure
+          -L qualification
+
+      - name: Run extended deterministic IR differential fuzzing
+        run: |
+          mkdir -p build/qualification/records
+          build/qualification/test/unijit_differential_fuzz \
+            --seed 0x53534146555A5A31 \
+            --programs 512 --inputs 64 --nodes 64 \
+            > build/qualification/records/differential-fuzz-seed-1.json
+          build/qualification/test/unijit_differential_fuzz \
+            --seed 0x53534146555A5A32 \
+            --programs 512 --inputs 64 --nodes 64 \
+            > build/qualification/records/differential-fuzz-seed-2.json
+
+      - name: Run sustained concurrent code-cache stress
+        run: >-
+          build/qualification/test/unijit_code_cache_stress
+          --seed 0x43414348454C4F4E
+          --readers 12 --writers 4 --reads 50000
+          --publications 3000 --keys 32
+          > build/qualification/records/code-cache-stress.json
+
+      - name: Retain qualification records
+        uses: actions/upload-artifact@v7
+        with:
+          name: stress-and-fuzz-qualification
+          path: build/qualification/records/*.json
+          if-no-files-found: error
+
+  thread-sanitized-cache-stress:
+    name: ThreadSanitizer code-cache stress
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+      TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure ThreadSanitizer qualification
+        run: >-
+          cmake -S . -B build/thread-sanitize -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DUNIJIT_BUILD_TESTS=ON
+          -DUNIJIT_BUILD_QUALIFICATION_TESTS=ON
+          -DUNIJIT_WARNINGS_AS_ERRORS=ON
+          -DCMAKE_C_FLAGS=-fsanitize=thread
+          -DCMAKE_CXX_FLAGS=-fsanitize=thread
+          -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread
+
+      - name: Build ThreadSanitizer cache stress
+        run: >-
+          cmake --build build/thread-sanitize --parallel
+          --target unijit_code_cache_stress
+
+      - name: Run ThreadSanitizer cache stress
+        run: >-
+          build/thread-sanitize/test/unijit_code_cache_stress
+          --seed 0x5453524541444348
+          --readers 8 --writers 2 --reads 10000
+          --publications 500 --keys 16

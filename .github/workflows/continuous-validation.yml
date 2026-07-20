@@ -31,3 +31,7 @@ jobs:
   sanitizers:
     name: Sanitizer validation
     uses: ./.github/workflows/sanitizer-validation.yml
+
+  stress-and-fuzz:
+    name: Stress and differential fuzz validation
+    uses: ./.github/workflows/stress-and-fuzz-validation.yml
