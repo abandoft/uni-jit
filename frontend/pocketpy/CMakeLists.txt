@@ -38,7 +38,9 @@ set_target_properties(unijit_pocketpy_reference PROPERTIES
   C_VISIBILITY_PRESET hidden
   POSITION_INDEPENDENT_CODE ON)
 
-add_library(unijit_pocketpy_frontend STATIC source_translator.cpp)
+add_library(unijit_pocketpy_frontend STATIC
+  jit_module.cpp
+  source_translator.cpp)
 target_include_directories(unijit_pocketpy_frontend
   PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_features(unijit_pocketpy_frontend PRIVATE cxx_std_17)

@@ -1,4 +1,4 @@
-#include <pocketpy/pocketpy.h>
+#include <pocketpy.h>
 
 #include <stdio.h>
 #include <stdlib.h>

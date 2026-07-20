@@ -2,8 +2,11 @@
 #include <cstdlib>
 #include <iostream>
 
+#include <pocketpy.h>
+
 #include "source_translator.h"
 #include "unijit/ir/function.h"
+#include "unijit_pocketpy.h"
 
 int main() {
   const auto translation =
@@ -40,6 +43,56 @@ int main() {
       return EXIT_FAILURE;
     }
   }
+
+  py_initialize();
+  if (unijit_pocketpy_install() != 0 || unijit_pocketpy_install() != 0) {
+    std::cerr << "unable to install the UniJIT PocketPy module\n";
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  constexpr char kNativeSource[] =
+      "import unijit\n"
+      "native = unijit.compile(\"def affine(a, b): return (a + 2.5) * "
+      "(b - -3)\")\n"
+      "result = native(1.5, 4)\n";
+  if (!py_exec(kNativeSource, "<unijit-pocketpy-native>", EXEC_MODE, nullptr)) {
+    py_printexc();
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  const py_Ref result = py_getglobal(py_name("result"));
+  if (result == nullptr || !py_isfloat(result) || py_tofloat(result) != 28.0) {
+    std::cerr << "PocketPy did not execute the compiled native callable\n";
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+
+  if (py_exec("native('1.5', 4)", "<unijit-pocketpy-guard>", EVAL_MODE,
+              nullptr) ||
+      !py_matchexc(tp_TypeError)) {
+    std::cerr << "PocketPy native callable accepted a non-number argument\n";
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  py_clearexc(nullptr);
+
+  if (py_exec("unijit._CompiledFunction()", "<unijit-pocketpy-constructor>",
+              EVAL_MODE, nullptr) ||
+      !py_matchexc(tp_TypeError)) {
+    std::cerr << "PocketPy exposed unsafe direct native construction\n";
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  py_clearexc(nullptr);
+
+  if (py_exec("native(1.5)", "<unijit-pocketpy-arity>", EVAL_MODE, nullptr) ||
+      !py_matchexc(tp_TypeError)) {
+    std::cerr << "PocketPy native callable accepted the wrong arity\n";
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  py_clearexc(nullptr);
+  py_finalize();
 
   std::cout << "PocketPy numeric source translator test passed\n";
   return EXIT_SUCCESS;
