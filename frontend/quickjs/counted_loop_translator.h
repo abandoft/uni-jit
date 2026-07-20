@@ -8,7 +8,10 @@
 namespace unijit::frontend::quickjs {
 
 bool looks_like_counted_loop(std::string_view source) noexcept;
-TranslationResult translate_counted_loop(std::string_view source);
+TranslationResult translate_counted_loop(
+    std::string_view source,
+    jit::OptimizationLevel optimization_level =
+        jit::OptimizationLevel::kOptimized);
 
 }  // namespace unijit::frontend::quickjs
 

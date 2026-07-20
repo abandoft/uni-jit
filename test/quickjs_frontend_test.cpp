@@ -110,7 +110,7 @@ int main() {
       "function numericWorkload(count) {"
       "  let lhs = 1.25;"
       "  let rhs = -7.5;"
-      "  let checksum = 0.0;"
+      "  let checksum = 20.0 + -20.0;"
       "  for (let iteration = 0; iteration < count; ++iteration) {"
       "    checksum += (lhs + rhs) * (lhs - 3.25) + rhs * 0.75;"
       "    lhs += 0.125;"
@@ -123,8 +123,18 @@ int main() {
   const auto counted_loop =
       unijit::frontend::quickjs::translate_numeric_function(
           kCountedLoopSource);
+  const auto baseline_counted_loop =
+      unijit::frontend::quickjs::translate_numeric_function(
+          kCountedLoopSource, unijit::jit::OptimizationLevel::kBaseline);
   if (!counted_loop.ok() || counted_loop.parameter_count != 1 ||
-      !counted_loop.function->requires_context()) {
+      !counted_loop.function->requires_context() ||
+      !baseline_counted_loop.ok() ||
+      baseline_counted_loop.function->stats().input_ir_nodes !=
+          baseline_counted_loop.function->stats().optimized_ir_nodes ||
+      counted_loop.function->stats().optimized_ir_nodes >=
+          baseline_counted_loop.function->stats().optimized_ir_nodes ||
+      !unijit::frontend::quickjs::supports_tiered_translation(
+          kCountedLoopSource)) {
     std::cerr << "QuickJS counted loop did not compile: "
               << counted_loop.status.message() << '\n';
     return EXIT_FAILURE;
@@ -418,10 +428,23 @@ int main() {
   JS_FreeValue(context, result);
 
   constexpr char kLoopStatsSource[] =
+      "let loopTieringValid = true;"
+      "for (let loopTieringIteration = 1; loopTieringIteration < 64;"
+      "     ++loopTieringIteration) {"
+      "  loopTieringValid = loopTieringValid &&"
+      "      typeof nativeLoop(10000) === 'number';"
+      "}"
+      "const loopWaited = unijit.wait(nativeLoop, 5000);"
       "const loopStats = unijit.stats(nativeLoop);"
-      "loopStats.tierable === false &&"
-      "loopStats.active_tier === 'baseline' &&"
-      "loopStats.compilation_state === 'idle';";
+      "loopTieringValid && loopWaited &&"
+      "loopStats.tierable === true &&"
+      "loopStats.active_tier === 'optimized' &&"
+      "loopStats.compilation_attempts === 1 &&"
+      "loopStats.successful_compilations === 1 &&"
+      "loopStats.failed_compilations === 0 &&"
+      "loopStats.promotions === 1 &&"
+      "loopStats.compilation_state === 'succeeded' &&"
+      "loopStats.active_ir_nodes < loopStats.input_ir_nodes;";
   result = JS_Eval(context, kLoopStatsSource, std::strlen(kLoopStatsSource),
                    "<unijit-quickjs-loop-stats>", JS_EVAL_TYPE_GLOBAL);
   if (JS_IsException(result) || JS_ToBool(context, result) != 1) {
