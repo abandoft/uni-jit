@@ -848,6 +848,40 @@ void spill_control_stack_map_values(
   }
 }
 
+void save_control_live_across_call(
+    Assembler* assembler, const ir::ControlFlowFunction& function,
+    const ControlFlowRegisterAllocation& allocation, ir::Value call,
+    std::size_t current_block) {
+  for (const ir::Value value : allocation.live_across_calls[call.id()]) {
+    if (function.value_type(value) == ir::ValueType::kFloat64) {
+      assembler->store_float(
+          control_float_register(allocation, value, current_block),
+          kStackPointer, control_spill_offset(value.id()));
+    } else {
+      assembler->store(
+          control_word_register(allocation, value, current_block),
+          kStackPointer, control_spill_offset(value.id()));
+    }
+  }
+}
+
+void restore_control_live_across_call(
+    Assembler* assembler, const ir::ControlFlowFunction& function,
+    const ControlFlowRegisterAllocation& allocation, ir::Value call,
+    std::size_t current_block) {
+  for (const ir::Value value : allocation.live_across_calls[call.id()]) {
+    if (function.value_type(value) == ir::ValueType::kFloat64) {
+      assembler->load_float(
+          control_float_register(allocation, value, current_block),
+          kStackPointer, control_spill_offset(value.id()));
+    } else {
+      assembler->load(
+          control_word_register(allocation, value, current_block),
+          kStackPointer, control_spill_offset(value.id()));
+    }
+  }
+}
+
 void capture_control_stack_map_values(
     Assembler* assembler, const std::vector<ir::Value>& live_values,
     int context) {
@@ -1008,11 +1042,25 @@ LoweringResult lower_control_flow_impl(
         return node.opcode == ir::ControlOpcode::kSafepoint ||
                node.opcode == ir::ControlOpcode::kGuardFloatNonzero;
       });
+  std::size_t maximum_call_arguments = 0;
+  bool has_calls = false;
+  for (const ir::ControlNode& node : function.nodes()) {
+    if (node.opcode == ir::ControlOpcode::kCall) {
+      has_calls = true;
+      maximum_call_arguments =
+          std::max(maximum_call_arguments,
+                   static_cast<std::size_t>(node.argument_count));
+    }
+  }
   const std::size_t spill_slots =
       function.nodes().size() + maximum_block_parameters;
   const std::size_t context_slot = spill_slots;
+  const std::size_t call_argument_base =
+      context_slot + static_cast<std::size_t>(has_context_operations);
+  const std::size_t return_address_slot =
+      call_argument_base + maximum_call_arguments;
   const std::size_t total_slots =
-      spill_slots + static_cast<std::size_t>(has_context_operations);
+      return_address_slot + static_cast<std::size_t>(has_calls);
   const std::size_t raw_stack_size = total_slots * sizeof(ir::Word);
   const std::size_t stack_size = (raw_stack_size + 15U) & ~std::size_t{15U};
   if (stack_size > kMaximumStackSize) {
@@ -1042,6 +1090,10 @@ LoweringResult lower_control_flow_impl(
   if (has_context_operations) {
     assembler.store(kContextArgumentRegister, kStackPointer,
                     context_slot * sizeof(ir::Word));
+  }
+  if (has_calls) {
+    assembler.store(kReturnAddressRegister, kStackPointer,
+                    return_address_slot * sizeof(ir::Word));
   }
 
   const std::size_t no_label = std::numeric_limits<std::size_t>::max();
@@ -1123,9 +1175,57 @@ LoweringResult lower_control_flow_impl(
           }
           break;
         case ir::ControlOpcode::kCall:
-          return {{StatusCode::kCodeGenerationFailed,
-                   "AArch64 CFG runtime calls are not lowered"},
-                  {}, 0};
+          save_control_live_across_call(&assembler, function, allocation,
+                                        value, block_index);
+          for (std::size_t argument_index = 0;
+               argument_index < node.argument_count; ++argument_index) {
+            const ir::Value argument = function.call_arguments()[
+                static_cast<std::size_t>(node.argument_begin) +
+                argument_index];
+            const std::size_t argument_offset =
+                (call_argument_base + argument_index) * sizeof(ir::Word);
+            if (function.value_type(argument) == ir::ValueType::kFloat64) {
+              const int source = load_control_float(
+                  &assembler, allocation, argument, block_index,
+                  kFloatScratch0);
+              assembler.store_float(source, kStackPointer, argument_offset);
+            } else {
+              const int source = load_control_word(
+                  &assembler, allocation, argument, block_index, kScratch0);
+              assembler.store(source, kStackPointer, argument_offset);
+            }
+          }
+          assembler.address(kReturnRegister, kStackPointer,
+                            call_argument_base * sizeof(ir::Word));
+          assembler.move_immediate(
+              1, static_cast<ir::Word>(node.argument_count));
+          assembler.move_immediate(kScratch0, node.immediate);
+          assembler.call_register(kScratch0);
+          if (destination_is_float) {
+            if (allocated_float >= 0) {
+              assembler.move_word_to_float(float_destination,
+                                           kReturnRegister);
+              if (allocation.requires_stack[value.id()]) {
+                assembler.store_float(float_destination, kStackPointer,
+                                      destination_offset);
+              }
+            } else {
+              assembler.store(kReturnRegister, kStackPointer,
+                              destination_offset);
+            }
+          } else if (allocated_word >= 0) {
+            assembler.move_register(word_destination, kReturnRegister);
+            if (allocation.requires_stack[value.id()]) {
+              assembler.store(word_destination, kStackPointer,
+                              destination_offset);
+            }
+          } else {
+            assembler.store(kReturnRegister, kStackPointer,
+                            destination_offset);
+          }
+          restore_control_live_across_call(&assembler, function, allocation,
+                                           value, block_index);
+          break;
         case ir::ControlOpcode::kGuardFloatNonzero: {
           const int source = load_control_float(
               &assembler, allocation, node.lhs, block_index, kFloatScratch0);
@@ -1152,6 +1252,10 @@ LoweringResult lower_control_flow_impl(
 
           const std::size_t exit = assembler.size();
           assembler.move_immediate(kReturnRegister, 0);
+          if (has_calls) {
+            assembler.load(kReturnAddressRegister, kStackPointer,
+                           return_address_slot * sizeof(ir::Word));
+          }
           if (stack_size != 0) {
             assembler.release_stack(stack_size);
           }
@@ -1200,6 +1304,10 @@ LoweringResult lower_control_flow_impl(
           assembler.store(kScratch1, kScratch0,
                           runtime::ExecutionContext::exit_reason_offset());
           assembler.move_immediate(kReturnRegister, 0);
+          if (has_calls) {
+            assembler.load(kReturnAddressRegister, kStackPointer,
+                           return_address_slot * sizeof(ir::Word));
+          }
           if (stack_size != 0) {
             assembler.release_stack(stack_size);
           }
@@ -1305,6 +1413,10 @@ LoweringResult lower_control_flow_impl(
         if (returned != kReturnRegister) {
           assembler.move_register(kReturnRegister, returned);
         }
+      }
+      if (has_calls) {
+        assembler.load(kReturnAddressRegister, kStackPointer,
+                       return_address_slot * sizeof(ir::Word));
       }
       if (stack_size != 0) {
         assembler.release_stack(stack_size);
