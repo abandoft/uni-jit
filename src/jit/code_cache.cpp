@@ -91,6 +91,18 @@ runtime::MaterializationResult CodeHandle::materialize_deoptimization(
       site, args, arg_count, context, plan, callbacks);
 }
 
+runtime::OsrEntryResult CodeHandle::enter_osr(
+    const runtime::OsrFrame& frame, const runtime::OsrEntryPlan& plan,
+    runtime::ExecutionContext* context) const {
+  if (function_ == nullptr) {
+    runtime::OsrArguments arguments;
+    arguments.status = {StatusCode::kInvalidArgument,
+                        "code handle is not valid"};
+    return {arguments, {arguments.status, 0}};
+  }
+  return function_->enter_osr(frame, plan, context);
+}
+
 NativeEntry CodeHandle::native_entry() const noexcept {
   return function_ == nullptr ? nullptr : function_->native_entry();
 }

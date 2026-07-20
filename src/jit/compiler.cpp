@@ -741,6 +741,16 @@ runtime::MaterializationResult CompiledFunction::materialize_deoptimization(
   return runtime::materialize_frame(reconstruction.frame, plan, callbacks);
 }
 
+runtime::OsrEntryResult CompiledFunction::enter_osr(
+    const runtime::OsrFrame& frame, const runtime::OsrEntryPlan& plan,
+    runtime::ExecutionContext* context) const {
+  runtime::OsrArguments arguments = plan.marshal(frame, parameter_types_);
+  if (!arguments.ok()) {
+    return {arguments, {arguments.status, 0}};
+  }
+  return {arguments, invoke(arguments.data(), arguments.count, context)};
+}
+
 ir::EvaluationResult CompiledFunction::invoke(
     const ir::Word* args, std::size_t arg_count,
     runtime::ExecutionContext* context) const {

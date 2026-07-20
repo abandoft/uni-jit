@@ -14,6 +14,7 @@
 #include "unijit/runtime/deoptimization.h"
 #include "unijit/runtime/execution_context.h"
 #include "unijit/runtime/materialization.h"
+#include "unijit/runtime/on_stack_replacement.h"
 #include "unijit/status.h"
 
 namespace unijit::jit {
@@ -91,6 +92,9 @@ class CompiledFunction final {
       const runtime::ExecutionContext& context,
       const runtime::MaterializationPlan& plan,
       const runtime::MaterializationCallbacks& callbacks) const;
+  runtime::OsrEntryResult enter_osr(
+      const runtime::OsrFrame& frame, const runtime::OsrEntryPlan& plan,
+      runtime::ExecutionContext* context = nullptr) const;
 
   const CompilationStats& stats() const noexcept { return stats_; }
 

@@ -62,6 +62,9 @@ class CodeHandle final {
       const runtime::ExecutionContext& context,
       const runtime::MaterializationPlan& plan,
       const runtime::MaterializationCallbacks& callbacks) const;
+  runtime::OsrEntryResult enter_osr(
+      const runtime::OsrFrame& frame, const runtime::OsrEntryPlan& plan,
+      runtime::ExecutionContext* context = nullptr) const;
   NativeEntry native_entry() const noexcept;
 
   ir::EvaluationResult invoke(
