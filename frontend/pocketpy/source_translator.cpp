@@ -214,15 +214,25 @@ private:
     ir::Value value = parse_unary(depth + 1);
     while (value.valid()) {
       skip_space();
-      if (peek() != '*') {
+      const char operation = peek();
+      if (operation != '*' && operation != '/') {
         break;
       }
+      const std::size_t operation_site = position_;
       ++position_;
       const ir::Value rhs = parse_unary(depth + 1);
       if (!rhs.valid()) {
         return {};
       }
-      value = builder_->float64_multiply(value, rhs);
+      if (operation == '*') {
+        value = builder_->float64_multiply(value, rhs);
+      } else {
+        if (!builder_->guard_float64_nonzero(rhs, operation_site).valid()) {
+          invalid("unable to create a checked Float64 division");
+          return {};
+        }
+        value = builder_->float64_divide(value, rhs);
+      }
     }
     return value;
   }

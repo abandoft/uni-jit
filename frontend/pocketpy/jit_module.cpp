@@ -97,8 +97,23 @@ bool invoke_compiled_function(int argc, py_Ref argv) {
     native_arguments[index] = unijit::ir::pack_float64(number);
   }
 
-  const Word result =
-      owned->function->native_entry()(native_arguments.data(), nullptr);
+  Word result = 0;
+  if (owned->function->requires_context()) {
+    const unijit::ir::EvaluationResult invocation = owned->function->invoke(
+        native_arguments.data(), owned->parameter_count);
+    if (!invocation.ok()) {
+      if (invocation.status.code() == unijit::StatusCode::kRuntimeExit) {
+        return ZeroDivisionError("float division by zero");
+      }
+      return RuntimeError("UniJIT invocation failed at site %d: %s",
+                          static_cast<int>(invocation.status.location()),
+                          invocation.status.message().c_str());
+    }
+    result = invocation.value;
+  } else {
+    result =
+        owned->function->native_entry()(native_arguments.data(), nullptr);
+  }
   py_newfloat(py_retval(), unijit::ir::unpack_float64(result));
   return true;
 }

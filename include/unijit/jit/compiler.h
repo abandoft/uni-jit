@@ -42,6 +42,7 @@ class CompiledFunction final {
   }
 
   NativeEntry native_entry() const noexcept;
+  bool requires_context() const noexcept { return requires_context_; }
 
   const CompilationStats& stats() const noexcept { return stats_; }
 
