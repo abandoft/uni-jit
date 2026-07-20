@@ -109,7 +109,12 @@ SSA edges, and every backedge polls an execution-context safepoint. `/` and
 entered iterations reconstruct the original parameters, signed-zero divisor,
 and every current loop local including the induction variable before raising
 `ZeroDivisionError`, while a zero-iteration loop does not execute or reject its
-dormant division. Calls, nested loops, `break`, and `continue` remain rejected.
+dormant division. A single-statement true arm may use `if condition:` followed
+by `break` or `continue` without an `else`: `break` carries the exact current
+locals to loop exit, while `continue` passes them through the common range
+update so the induction variable advances normally. Unconditional or
+multi-statement control transfers, control guards with an `else`, calls, and
+nested loops remain rejected.
 
 Counted loops already enter the CFG native path directly and therefore remain
 a single baseline publication instead of recompiling identical code at the

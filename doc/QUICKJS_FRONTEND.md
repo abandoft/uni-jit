@@ -78,8 +78,13 @@ The counted-loop tier additionally accepts a conventional body with Float64
 `let` initializers, one unit-increment `for` loop, arithmetic assignments, and
 ordered `if`/`else` comparisons whose arms update loop locals. Every mutable
 value becomes a typed CFG block parameter, conditional updates merge through
-SSA edges, and the loop backedge polls an execution-context safepoint. Calls,
-object access, coercion, `break`, `continue`, and nested loops remain rejected.
+SSA edges, and the loop backedge polls an execution-context safepoint. A
+single-statement true arm may use `if (condition) { break; }` or
+`if (condition) { continue; }` without an `else`: the former carries the exact
+current local state to loop exit, while the latter enters the common update
+block so the induction variable still advances before the next condition.
+Unconditional or multi-statement control transfers, control guards with an
+`else`, calls, object access, coercion, and nested loops remain rejected.
 This tier is intended for complete numeric recurrences rather than repeatedly
 crossing the VM boundary for a single arithmetic expression.
 

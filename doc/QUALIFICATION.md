@@ -70,6 +70,12 @@ safepoint exits return safely after a helper has changed the link register.
 The external installed-package consumer builds and executes the same public CFG
 call API without access to private headers.
 
+QuickJS and PocketPy frontend tests compile the same single-level counted loop
+with ordered `break` and `continue` guards, execute it both as a native function
+and through the stock language runtime, and bit-match the result with the source
+semantics. Separate negative fixtures require an explicit rejection when a
+control guard contains an unsupported `else` arm.
+
 ## CFG register-residency benchmark
 
 `unijit_cfg_float64_benchmark` executes one typed CFG with four loop-carried
