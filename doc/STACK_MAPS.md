@@ -67,6 +67,10 @@ context does not zero 512 bytes on every hot invocation.
 
 Canonical maps and diagnosed-exit capture preserve arbitrary live Word and
 Float64 SSA state, within the per-site bound, across normal ABI return.
-Materialized object recovery, interpreter-frame installation, unwind
-registration, resumable transfer into a stock runtime, and on-stack replacement
-build on this state but are not claimed by the current interface.
+`RecoveryOperation::captured_value` consumes that state as a logical-frame
+input: compilation preserves and remaps the requested definition, verifies
+straight-line availability or CFG dominance, forces it through allocation and
+liveness, and resolves it to the exact captured index. Materialized object
+recovery, concrete interpreter-frame installation, unwind registration,
+resumable transfer into a stock runtime, and on-stack replacement build on this
+primitive frame state but are not claimed by the current interface.

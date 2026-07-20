@@ -88,11 +88,13 @@ rejected as function or parameter names. Every division emits an inline
 Float64 nonzero guard at the `/` source site; both `+0.0` and `-0.0` exit
 through the execution context and become
 PocketPy's `ZeroDivisionError("float division by zero")`. The compiled record
-retains the source resume offset and reconstructs every entry parameter plus
-the exact guarded divisor bits. The adapter maps the exit only after validating
-that record and reconstructed trigger, so future runtime exits cannot be
-silently misclassified as division errors. This narrow contract prevents
-fallback-free native code from silently changing unsupported Python behavior.
+retains the source resume offset and reconstructs every entry parameter, the
+exact guarded divisor bits, and the partial left-hand expression value that
+represents the primitive operand stack immediately before division. The
+adapter maps the exit only after validating that record and reconstructed
+trigger, so future runtime exits cannot be silently misclassified as division
+errors. This narrow contract prevents fallback-free native code from silently
+changing unsupported Python behavior.
 
 The counted-loop tier accepts four-space-indented numeric functions with
 Float64 local initializers, one `for name in range(count)` loop, arithmetic or
@@ -100,10 +102,10 @@ augmented assignments, and ordered `if`/`else` arms that update loop locals.
 Mutable state is carried through typed CFG block parameters, branches merge via
 SSA edges, and every backedge polls an execution-context safepoint. `/` and
 `/=` emit effectful CFG Float64 nonzero guards at their exact source positions;
-entered iterations reconstruct the original parameters and signed-zero divisor
-before raising `ZeroDivisionError`, while a zero-iteration loop does not execute
-or reject its dormant division. Calls, nested loops, `break`, and `continue`
-remain rejected.
+entered iterations reconstruct the original parameters, signed-zero divisor,
+and every current loop local including the induction variable before raising
+`ZeroDivisionError`, while a zero-iteration loop does not execute or reject its
+dormant division. Calls, nested loops, `break`, and `continue` remain rejected.
 
 Counted loops already enter the CFG native path directly and therefore remain
 a single baseline publication instead of recompiling identical code at the

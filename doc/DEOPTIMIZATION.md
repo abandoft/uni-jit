@@ -13,17 +13,25 @@ resume offset, and an ordered recovery program. The public reason vocabulary
 currently covers generic guard failure, division by zero, type mismatch, and
 invalidated assumptions.
 
-Recovery operations materialize typed logical slots from one of three sources:
+Recovery operations materialize typed logical slots from one of four sources:
 
 - an original native-entry argument;
 - an immutable value-bits constant;
 - the exact value bits captured by the failing guard.
+- an arbitrary Word or Float64 SSA value captured from the guard's canonical
+  stack map.
 
 Slots are frontend identities rather than physical registers or stack
 locations. Duplicate slots and duplicate sites are rejected. Compilation also
-rejects argument references outside the function signature and metadata sites
-that do not identify a runtime guard. When optimization proves a guard cannot
-fail and removes it, its metadata is omitted from the compiled function.
+rejects argument references outside the function signature, metadata sites
+that do not identify a runtime guard, capture values that are unavailable or
+have the wrong type, and CFG captures whose definitions do not dominate the
+guard. Frame-state values are explicit optimizer roots while their guard is
+live, are remapped across canonicalization, and extend register lifetimes and
+CFG data-flow liveness through native lowering. The compiler resolves each
+logical capture to a checked canonical-map index. When optimization proves a
+guard cannot fail and removes it, its frame-state roots and metadata are both
+omitted from the compiled function.
 
 ## Exit and reconstruction sequence
 
@@ -54,19 +62,22 @@ quiescent invalidation protocol described in [ASSUMPTIONS.md](ASSUMPTIONS.md).
 
 ## Frontend policy and current boundary
 
-PocketPy numeric division in both straight-line SSA and counted-loop CFG code
-records all source parameters plus the guarded divisor. Its adapter raises
-`ZeroDivisionError` only after successful frame reconstruction identifies a
-division-by-zero record and a zero Float64 trigger; an unknown runtime exit
-becomes a diagnostic runtime error instead of being silently misclassified.
+PocketPy straight-line numeric division records all source parameters, the
+guarded divisor, and the current left-hand expression value that represents
+its primitive operand stack. Counted-loop division additionally records every
+current loop local, including the induction variable, in stable declaration
+order. Its adapter raises `ZeroDivisionError` only after successful frame
+reconstruction identifies a division-by-zero record and a zero Float64
+trigger; an unknown runtime exit becomes a diagnostic runtime error instead of
+being silently misclassified.
 
-The current recovery vocabulary is sufficient for entry-argument
-specializations and language exceptions at the ABI boundary. Compiled guards
-and safepoints now retain canonical stack maps and copy their bounded live Word
-and Float64 SSA values into the execution context before ABI return. The exact
-compiled generation can reconstruct that typed capture after its native frame
-has been restored. Broader optimized tiers still need materialized object
-state, interpreter-frame installation, unwind registration, and resumable
-transfer into the stock runtime. Those additions can extend recovery sources
-without exposing target register layouts to frontends; see
+The current recovery vocabulary materializes complete primitive Word and
+Float64 logical frame state at the ABI boundary. Compiled guards and
+safepoints retain canonical stack maps and copy their bounded values into the
+execution context before ABI return. The exact compiled generation can
+reconstruct that typed state after its native frame has been restored. Broader
+optimized tiers still need object materialization, installation into each
+stock interpreter's concrete frame representation, unwind registration, and
+resumable transfer. Those additions can build on this target-independent
+recovery program without exposing physical register layouts to frontends; see
 [STACK_MAPS.md](STACK_MAPS.md).
