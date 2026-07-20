@@ -599,6 +599,31 @@ void test_optimization_pipeline() {
          "optimized native code must preserve observable semantics");
 }
 
+void test_float64_constant_folding() {
+  FunctionBuilder builder(0);
+  const Value numerator = builder.float64_add(
+      builder.float64_constant(12.0), builder.float64_constant(5.0));
+  const Value quotient =
+      builder.float64_divide(numerator, builder.float64_constant(2.0));
+  expect(builder.set_return(quotient).ok(),
+         "Float64 folding fixture must record its result");
+  const Function function = std::move(builder).build();
+
+  const auto optimization = unijit::ir::Optimizer::run(function);
+  expect(optimization.ok(), "optimizer must accept constant Float64 SSA");
+  if (!optimization.ok()) {
+    return;
+  }
+  expect(optimization.stats.output_nodes == 1 &&
+             optimization.stats.constants_folded == 2,
+         "optimizer must fold chained Float64 arithmetic to one constant");
+  const auto interpreted =
+      Interpreter::evaluate(optimization.function, nullptr, 0);
+  expect(interpreted.ok() &&
+             interpreted.value == unijit::ir::pack_float64(8.5),
+         "folded Float64 constants must preserve result bits");
+}
+
 void test_control_flow_counted_loop() {
   unijit::ir::ControlFlowBuilder builder(1);
   const unijit::ir::Block loop = builder.create_block(2);
@@ -876,6 +901,7 @@ int main() {
   test_spill_path();
   test_argument_validation();
   test_optimization_pipeline();
+  test_float64_constant_folding();
   test_control_flow_counted_loop();
   test_control_flow_merge();
   test_control_flow_parallel_edge_copy();
