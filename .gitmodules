@@ -10,3 +10,6 @@
 [submodule "third/quickjs"]
 	path = third/quickjs
 	url = https://github.com/bellard/quickjs.git
+[submodule "third/pocketpy"]
+	path = third/pocketpy
+	url = https://github.com/pocketpy/pocketpy.git
