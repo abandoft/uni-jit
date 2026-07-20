@@ -39,10 +39,18 @@ lease. Cache replacement, invalidation, eviction, clearing, or destruction
 cannot redirect or reclaim the selected generation while the lease remains
 alive.
 
-`OsrEntryResult` retains the exact marshalled arguments even when native code
-exits. A frontend passes those arguments, the same execution context, and the
-exit site back to `reconstruct_deoptimization` on the same compiled function or
-code lease. This preserves exact argument bits and prevents reconstruction from
+`TieredCode::enter_osr` atomically snapshots the active baseline or optimized
+generation, retains that exact code handle in the result, and performs the
+transfer without a separate frontend lookup race. It counts attempts,
+successful entries, and diagnosed exits. An assumption exit from an optimized
+OSR generation withdraws that generation for future transfers while the result
+keeps the attempted lease available for reconstruction.
+
+`OsrEntryResult` and `TieredOsrEntryResult` retain the exact marshalled
+arguments even when native code exits. A frontend passes those arguments, the
+same execution context, and the exit site back to
+`reconstruct_deoptimization` on the attempted compiled function or code lease.
+This preserves exact argument bits and prevents reconstruction from
 accidentally using a newer generation.
 
 ## Current boundary

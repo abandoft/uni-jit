@@ -57,8 +57,9 @@ invocation and is delayed before retry.
 
 `unijit.stats(native)` returns the active tier, whether the source supports
 tiering, generation, invocation and compilation counters, promotion and
-withdrawal counts, compilation task state, cancellation state, scheduler queue
-and worker use, code size, and input/active IR node counts. `unijit.wait`
+withdrawal counts, OSR attempts/entries/exits, compilation task state,
+cancellation state, scheduler queue and worker use, code size, and input/active
+IR node counts. `unijit.wait`
 performs a timeout-bounded wait without polling the VM, and `unijit.cancel`
 requests queued or running work cancellation. These APIs report optimization
 lifecycle only; baseline execution remains available after rejection, timeout,

@@ -50,9 +50,10 @@ const cancelled = unijit.cancel(native);
 reached a terminal state. `cancel` immediately removes queued work or requests
 cooperative cancellation from a running compiler. `stats` reports the active
 tier and generation, hotness and compilation outcomes, promotions, current
-task state, cancellation state, scheduler load, native code size, and IR node
-counts. Garbage collection requests cancellation automatically; task-owned
-shared state remains valid until a running job observes cancellation and exits.
+task state, cancellation state, OSR attempts/entries/exits, scheduler load,
+native code size, and IR node counts. Garbage collection requests cancellation
+automatically; task-owned shared state remains valid until a running job
+observes cancellation and exits.
 
 ## Specialization contract
 

@@ -52,7 +52,8 @@ local cancelled = unijit.cancel(native)
 ```
 
 `stats` reports active tier and generation, invocation and backedge hotness,
-compilation outcomes, promotions, scheduler state, code size, and IR size.
+compilation outcomes, promotions, OSR attempts/entries/exits, scheduler state,
+code size, and IR size.
 `wait` bounds only the caller's wait. `cancel` immediately removes queued work
 or requests cooperative cancellation from a running compiler; collection of
 the callable requests the same cancellation automatically.
