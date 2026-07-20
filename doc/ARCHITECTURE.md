@@ -84,10 +84,12 @@ fuzzed infinite loops fail deterministically.
 CFG signatures, constants, instructions, and block parameters carry the same
 Word/Float64 types as straight-line SSA. Edges must preserve each destination
 parameter's type, and Float64 addition, subtraction, multiplication, and
-division retain exact value bits through loop backedges. The initial portable
-lowering keeps those bits in the common CFG register/stack transport and uses
-native floating-point registers at arithmetic operations; a split register
-class allocator will remove the remaining transfer traffic.
+division retain exact value bits through loop backedges. Ordered Float64
+comparisons return false for NaN inputs and produce Word conditions suitable
+for CFG branches. The initial portable lowering keeps Float64 bits in the
+common CFG register/stack transport and uses native floating-point registers
+at arithmetic and comparison operations; a split register class allocator
+will remove the remaining transfer traffic.
 
 Native CFG lowering applies block-local lifetime analysis on AArch64, x86-64,
 and RISC-V 64. Values stay in registers within a block; only actual spills and
