@@ -9,6 +9,7 @@
 #include "unijit/ir/control_flow.h"
 #include "unijit/ir/function.h"
 #include "unijit/status.h"
+#include "jit/stack_map_requirements.h"
 
 namespace unijit::jit::detail {
 
@@ -60,10 +61,13 @@ struct StackMapLiveness final {
 
 RegisterAllocation allocate_linear_scan(const ir::Function& function,
                                         std::size_t register_count,
-                                        std::size_t maximum_spill_slots);
+                                        std::size_t maximum_spill_slots,
+                                        const StackMapRequirements&
+                                            requirements);
 
 ControlFlowRegisterAllocation allocate_control_flow_registers(
-    const ir::ControlFlowFunction& function, std::size_t register_count);
+    const ir::ControlFlowFunction& function, std::size_t register_count,
+    const StackMapRequirements& requirements);
 
 ControlFlowEdgeMoves plan_control_flow_edge_moves(
     const ir::ControlFlowFunction& function, const ir::ControlEdge& edge,
@@ -75,7 +79,8 @@ StackMapLiveness plan_stack_map_liveness(
     const RegisterAllocation& allocation);
 
 StackMapLiveness plan_stack_map_liveness(
-    const ir::ControlFlowFunction& function);
+    const ir::ControlFlowFunction& function,
+    const StackMapRequirements& requirements);
 
 }  // namespace unijit::jit::detail
 

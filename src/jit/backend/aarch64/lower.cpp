@@ -383,7 +383,8 @@ StackMapRecord make_stack_map_record(
   return record;
 }
 
-LoweringResult lower_impl(const ir::Function& function) {
+LoweringResult lower_impl(const ir::Function& function,
+                          const StackMapRequirements& requirements) {
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
   return {{StatusCode::kUnsupportedArchitecture,
            "the AArch64 encoder currently supports little-endian targets"},
@@ -399,7 +400,7 @@ LoweringResult lower_impl(const ir::Function& function) {
 
   RegisterAllocation allocation =
       allocate_linear_scan(function, kAllocationRegisters.size(),
-                           kMaximumStackSize / sizeof(ir::Word));
+                           kMaximumStackSize / sizeof(ir::Word), requirements);
   if (!allocation.status.ok()) {
     return {allocation.status, {}, 0, {}};
   }
@@ -902,7 +903,8 @@ void copy_edge_arguments(Assembler* assembler,
 }
 
 LoweringResult lower_control_flow_impl(
-    const ir::ControlFlowFunction& function) {
+    const ir::ControlFlowFunction& function,
+    const StackMapRequirements& requirements) {
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
   return {{StatusCode::kUnsupportedArchitecture,
            "the AArch64 encoder currently supports little-endian targets"},
@@ -942,11 +944,12 @@ LoweringResult lower_control_flow_impl(
   }
 
   ControlFlowRegisterAllocation allocation = allocate_control_flow_registers(
-      function, kAllocationRegisters.size());
+      function, kAllocationRegisters.size(), requirements);
   if (!allocation.status.ok()) {
     return {allocation.status, {}, 0, {}};
   }
-  StackMapLiveness stack_map_liveness = plan_stack_map_liveness(function);
+  StackMapLiveness stack_map_liveness =
+      plan_stack_map_liveness(function, requirements);
   if (!stack_map_liveness.status.ok()) {
     return {stack_map_liveness.status, {}, 0, {}};
   }
@@ -1227,9 +1230,10 @@ LoweringResult lower_control_flow_impl(
 
 }  // namespace
 
-LoweringResult lower(const ir::Function& function) {
+LoweringResult lower(const ir::Function& function,
+                     const StackMapRequirements& requirements) {
   try {
-    return lower_impl(function);
+    return lower_impl(function, requirements);
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate AArch64 lowering state"},
@@ -1238,9 +1242,10 @@ LoweringResult lower(const ir::Function& function) {
   }
 }
 
-LoweringResult lower(const ir::ControlFlowFunction& function) {
+LoweringResult lower(const ir::ControlFlowFunction& function,
+                     const StackMapRequirements& requirements) {
   try {
-    return lower_control_flow_impl(function);
+    return lower_control_flow_impl(function, requirements);
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate AArch64 CFG lowering state"},

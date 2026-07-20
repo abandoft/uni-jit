@@ -49,7 +49,8 @@ void note_use(std::vector<std::size_t>* last_use, ir::Value value,
 
 RegisterAllocation allocate_impl(const ir::Function& function,
                                  std::size_t register_count,
-                                 std::size_t maximum_spill_slots) {
+                                 std::size_t maximum_spill_slots,
+                                 const StackMapRequirements& requirements) {
   if (register_count == 0) {
     return {{StatusCode::kInvalidArgument,
              "linear scan requires at least one allocatable register"},
@@ -82,6 +83,16 @@ RegisterAllocation allocate_impl(const ir::Function& function,
                      static_cast<std::size_t>(node.argument_begin) +
                      argument_index],
                  index);
+      }
+    }
+    if (node.opcode == ir::Opcode::kSafepoint ||
+        node.opcode == ir::Opcode::kGuardFloatNonzero) {
+      const StackMapRequirement* requirement = find_stack_map_requirement(
+          requirements, static_cast<std::size_t>(node.immediate));
+      if (requirement != nullptr) {
+        for (const ir::Value value : requirement->values) {
+          note_use(&last_use, value, index);
+        }
       }
     }
   }
@@ -154,7 +165,8 @@ RegisterAllocation allocate_impl(const ir::Function& function,
 }
 
 ControlFlowRegisterAllocation allocate_control_flow_impl(
-    const ir::ControlFlowFunction& function, std::size_t register_count) {
+    const ir::ControlFlowFunction& function, std::size_t register_count,
+    const StackMapRequirements& requirements) {
   if (register_count == 0) {
     return {{StatusCode::kInvalidArgument,
              "control-flow allocation requires an allocatable register"},
@@ -214,6 +226,16 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kConstant:
         case ir::ControlOpcode::kSafepoint:
           break;
+      }
+      if (node.opcode == ir::ControlOpcode::kSafepoint ||
+          node.opcode == ir::ControlOpcode::kGuardFloatNonzero) {
+        const StackMapRequirement* requirement = find_stack_map_requirement(
+            requirements, static_cast<std::size_t>(node.immediate));
+        if (requirement != nullptr) {
+          for (const ir::Value required : requirement->values) {
+            note_local_use(required);
+          }
+        }
       }
     }
 
@@ -304,6 +326,16 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kConstant:
         case ir::ControlOpcode::kSafepoint:
           break;
+      }
+      if (node.opcode == ir::ControlOpcode::kSafepoint ||
+          node.opcode == ir::ControlOpcode::kGuardFloatNonzero) {
+        const StackMapRequirement* requirement = find_stack_map_requirement(
+            requirements, static_cast<std::size_t>(node.immediate));
+        if (requirement != nullptr) {
+          for (const ir::Value required : requirement->values) {
+            note_nonlocal_use(block_index, required);
+          }
+        }
       }
     }
     const ir::ControlTerminator& terminator = block.terminator;
@@ -439,7 +471,8 @@ StackMapLiveness plan_straight_stack_map_liveness_impl(
 }
 
 StackMapLiveness plan_control_stack_map_liveness_impl(
-    const ir::ControlFlowFunction& function) {
+    const ir::ControlFlowFunction& function,
+    const StackMapRequirements& requirements) {
   const std::size_t block_count = function.blocks().size();
   const std::size_t value_count = function.nodes().size();
   using ValueSet = std::vector<bool>;
@@ -465,6 +498,16 @@ StackMapLiveness plan_control_stack_map_liveness_impl(
                              [&](ir::Value operand) {
                                note_use(&uses[block_index], defined, operand);
                              });
+      if (node.opcode == ir::ControlOpcode::kSafepoint ||
+          node.opcode == ir::ControlOpcode::kGuardFloatNonzero) {
+        const StackMapRequirement* requirement = find_stack_map_requirement(
+            requirements, static_cast<std::size_t>(node.immediate));
+        if (requirement != nullptr) {
+          for (const ir::Value required : requirement->values) {
+            note_use(&uses[block_index], defined, required);
+          }
+        }
+      }
       if (node.opcode != ir::ControlOpcode::kBlockParameter) {
         defined[value.id()] = true;
         definitions[block_index][value.id()] = true;
@@ -556,6 +599,17 @@ StackMapLiveness plan_control_stack_map_liveness_impl(
       live[value.id()] = false;
       visit_control_operands(node,
                              [&](ir::Value operand) { live[operand.id()] = true; });
+      const StackMapRequirement* requirement =
+          node.opcode == ir::ControlOpcode::kSafepoint ||
+                  node.opcode == ir::ControlOpcode::kGuardFloatNonzero
+              ? find_stack_map_requirement(
+                    requirements, static_cast<std::size_t>(node.immediate))
+              : nullptr;
+      if (requirement != nullptr) {
+        for (const ir::Value required : requirement->values) {
+          live[required.id()] = true;
+        }
+      }
       if (node.opcode != ir::ControlOpcode::kSafepoint &&
           node.opcode != ir::ControlOpcode::kGuardFloatNonzero) {
         continue;
@@ -588,9 +642,12 @@ StackMapLiveness plan_control_stack_map_liveness_impl(
 
 RegisterAllocation allocate_linear_scan(const ir::Function& function,
                                         std::size_t register_count,
-                                        std::size_t maximum_spill_slots) {
+                                        std::size_t maximum_spill_slots,
+                                        const StackMapRequirements&
+                                            requirements) {
   try {
-    return allocate_impl(function, register_count, maximum_spill_slots);
+    return allocate_impl(function, register_count, maximum_spill_slots,
+                         requirements);
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate linear-scan state"},
@@ -599,9 +656,10 @@ RegisterAllocation allocate_linear_scan(const ir::Function& function,
 }
 
 ControlFlowRegisterAllocation allocate_control_flow_registers(
-    const ir::ControlFlowFunction& function, std::size_t register_count) {
+    const ir::ControlFlowFunction& function, std::size_t register_count,
+    const StackMapRequirements& requirements) {
   try {
-    return allocate_control_flow_impl(function, register_count);
+    return allocate_control_flow_impl(function, register_count, requirements);
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate control-flow register state"},
@@ -629,9 +687,10 @@ StackMapLiveness plan_stack_map_liveness(
 }
 
 StackMapLiveness plan_stack_map_liveness(
-    const ir::ControlFlowFunction& function) {
+    const ir::ControlFlowFunction& function,
+    const StackMapRequirements& requirements) {
   try {
-    return plan_control_stack_map_liveness_impl(function);
+    return plan_control_stack_map_liveness_impl(function, requirements);
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate CFG stack-map liveness"},

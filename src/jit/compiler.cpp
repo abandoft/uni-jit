@@ -6,8 +6,10 @@
 #include <new>
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include "jit/executable_memory.h"
+#include "jit/stack_map_requirements.h"
 #include "unijit/ir/optimizer.h"
 
 #if defined(UNIJIT_TARGET_AARCH64)
@@ -24,6 +26,23 @@ namespace {
 struct DeoptimizationPreparation final {
   Status status;
   runtime::DeoptimizationTable table;
+};
+
+struct OptimizationExitStatePreparation final {
+  Status status;
+  std::vector<ir::OptimizationExitState> exit_states;
+};
+
+struct CaptureBinding final {
+  std::size_t site{0};
+  ir::Value source;
+  ir::Value lowered;
+};
+
+struct StackMapRequirementPreparation final {
+  Status status;
+  detail::StackMapRequirements requirements;
+  std::vector<CaptureBinding> bindings;
 };
 
 bool has_guard_site(const ir::Function& function, std::size_t site) noexcept {
@@ -65,6 +84,147 @@ bool has_runtime_exit_site(const ir::ControlFlowFunction& function,
                                    ir::ControlOpcode::kSafepoint) &&
                               static_cast<std::size_t>(node.immediate) == site;
                      });
+}
+
+ir::Value guard_value(const ir::Function& function,
+                      std::size_t site) noexcept {
+  for (std::size_t index = 0; index < function.nodes().size(); ++index) {
+    const ir::Node& node = function.nodes()[index];
+    if (node.opcode == ir::Opcode::kGuardFloatNonzero &&
+        static_cast<std::size_t>(node.immediate) == site) {
+      return ir::Value{static_cast<std::uint32_t>(index)};
+    }
+  }
+  return {};
+}
+
+ir::Value guard_value(const ir::ControlFlowFunction& function,
+                      std::size_t site) noexcept {
+  for (std::size_t index = 0; index < function.nodes().size(); ++index) {
+    const ir::ControlNode& node = function.nodes()[index];
+    if (node.opcode == ir::ControlOpcode::kGuardFloatNonzero &&
+        static_cast<std::size_t>(node.immediate) == site) {
+      return ir::Value{static_cast<std::uint32_t>(index)};
+    }
+  }
+  return {};
+}
+
+bool control_value_available(const ir::ControlFlowFunction& function,
+                             ir::Value value, ir::Value exit) {
+  if (!value.valid() || value.id() >= function.nodes().size() ||
+      !exit.valid() || exit.id() >= function.nodes().size()) {
+    return false;
+  }
+
+  const std::size_t block_count = function.blocks().size();
+  const std::size_t no_owner = block_count;
+  std::vector<std::size_t> owners(function.nodes().size(), no_owner);
+  std::vector<std::size_t> positions(function.nodes().size(), 0);
+  std::vector<std::vector<std::size_t>> predecessors(block_count);
+  for (std::size_t block_index = 0; block_index < block_count;
+       ++block_index) {
+    const ir::BasicBlock& block = function.blocks()[block_index];
+    for (std::size_t position = 0; position < block.instructions.size();
+         ++position) {
+      const ir::Value instruction = block.instructions[position];
+      owners[instruction.id()] = block_index;
+      positions[instruction.id()] = position;
+    }
+    const auto note_edge = [&](const ir::ControlEdge& edge) {
+      predecessors[edge.target.id()].push_back(block_index);
+    };
+    if (block.terminator.opcode == ir::TerminatorOpcode::kJump) {
+      note_edge(block.terminator.true_edge);
+    } else if (block.terminator.opcode == ir::TerminatorOpcode::kBranch) {
+      note_edge(block.terminator.true_edge);
+      note_edge(block.terminator.false_edge);
+    }
+  }
+
+  const std::size_t value_block = owners[value.id()];
+  const std::size_t exit_block = owners[exit.id()];
+  if (value_block == no_owner || exit_block == no_owner) {
+    return false;
+  }
+  if (value_block == exit_block) {
+    return positions[value.id()] < positions[exit.id()];
+  }
+
+  std::vector<std::vector<bool>> dominates(
+      block_count, std::vector<bool>(block_count, true));
+  std::fill(dominates[0].begin(), dominates[0].end(), false);
+  dominates[0][0] = true;
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (std::size_t block_index = 1; block_index < block_count;
+         ++block_index) {
+      std::vector<bool> next(block_count, true);
+      for (const std::size_t predecessor : predecessors[block_index]) {
+        for (std::size_t candidate = 0; candidate < block_count;
+             ++candidate) {
+          next[candidate] =
+              next[candidate] && dominates[predecessor][candidate];
+        }
+      }
+      next[block_index] = true;
+      if (next != dominates[block_index]) {
+        dominates[block_index] = std::move(next);
+        changed = true;
+      }
+    }
+  }
+  return dominates[exit_block][value_block];
+}
+
+OptimizationExitStatePreparation prepare_optimization_exit_states(
+    const ir::Function& function,
+    const runtime::DeoptimizationTable& requested) {
+  try {
+    std::vector<ir::OptimizationExitState> exit_states;
+    for (const runtime::DeoptimizationRecord& record : requested.records()) {
+      ir::OptimizationExitState exit_state;
+      exit_state.exit = guard_value(function, record.site);
+      for (const runtime::RecoveryOperation& operation : record.recovery) {
+        if (operation.source != runtime::RecoverySource::kCapturedValue) {
+          continue;
+        }
+        if (!exit_state.exit.valid()) {
+          return {{StatusCode::kInvalidArgument,
+                   "captured recovery values require a native guard site",
+                   record.site},
+                  {}};
+        }
+        if (!operation.source_value.valid() ||
+            operation.source_value.id() >= exit_state.exit.id()) {
+          return {{StatusCode::kInvalidArgument,
+                   "captured recovery value is unavailable at its guard",
+                   record.site},
+                  {}};
+        }
+        if (function.value_type(operation.source_value) != operation.type) {
+          return {{StatusCode::kInvalidArgument,
+                   "captured recovery value type does not match SSA",
+                   record.site},
+                  {}};
+        }
+        if (std::find(exit_state.live_values.begin(),
+                      exit_state.live_values.end(), operation.source_value) ==
+            exit_state.live_values.end()) {
+          exit_state.live_values.push_back(operation.source_value);
+        }
+      }
+      if (!exit_state.live_values.empty()) {
+        exit_states.push_back(std::move(exit_state));
+      }
+    }
+    return {Status::ok_status(), std::move(exit_states)};
+  } catch (const std::bad_alloc&) {
+    return {{StatusCode::kResourceExhausted,
+             "unable to prepare optimizer exit state"},
+            {}};
+  }
 }
 
 template <typename FunctionType>
@@ -254,6 +414,168 @@ DeoptimizationPreparation prepare_deoptimization(
   }
 }
 
+StackMapRequirementPreparation prepare_stack_map_requirements(
+    const ir::Function& input, const ir::Function& lowered,
+    const runtime::DeoptimizationTable& deoptimization,
+    const ir::OptimizationResult* optimization) {
+  try {
+    StackMapRequirementPreparation result;
+    result.status = Status::ok_status();
+    for (const runtime::DeoptimizationRecord& record :
+         deoptimization.records()) {
+      const ir::Value lowered_exit = guard_value(lowered, record.site);
+      detail::StackMapRequirement requirement;
+      requirement.site = record.site;
+      for (const runtime::RecoveryOperation& operation : record.recovery) {
+        if (operation.source != runtime::RecoverySource::kCapturedValue) {
+          continue;
+        }
+        if (!lowered_exit.valid()) {
+          return {{StatusCode::kInvalidArgument,
+                   "captured recovery value has no compiled guard",
+                   record.site},
+                  {}, {}};
+        }
+        const ir::Value lowered_value =
+            optimization == nullptr
+                ? operation.source_value
+                : optimization->map(operation.source_value);
+        if (!lowered_value.valid() || lowered_value.id() >= lowered_exit.id()) {
+          return {{StatusCode::kCodeGenerationFailed,
+                   "optimizer did not retain a captured recovery value",
+                   record.site},
+                  {}, {}};
+        }
+        if (input.value_type(operation.source_value) != operation.type ||
+            lowered.value_type(lowered_value) != operation.type) {
+          return {{StatusCode::kCodeGenerationFailed,
+                   "captured recovery value changed type during optimization",
+                   record.site},
+                  {}, {}};
+        }
+        if (std::find(requirement.values.begin(), requirement.values.end(),
+                      lowered_value) == requirement.values.end()) {
+          requirement.values.push_back(lowered_value);
+        }
+        result.bindings.push_back(
+            {record.site, operation.source_value, lowered_value});
+      }
+      if (!requirement.values.empty()) {
+        result.requirements.push_back(std::move(requirement));
+      }
+    }
+    return result;
+  } catch (const std::bad_alloc&) {
+    return {{StatusCode::kResourceExhausted,
+             "unable to prepare straight-line stack-map requirements"},
+            {}, {}};
+  }
+}
+
+StackMapRequirementPreparation prepare_stack_map_requirements(
+    const ir::ControlFlowFunction& function,
+    const runtime::DeoptimizationTable& deoptimization) {
+  try {
+    StackMapRequirementPreparation result;
+    result.status = Status::ok_status();
+    for (const runtime::DeoptimizationRecord& record :
+         deoptimization.records()) {
+      const ir::Value exit = guard_value(function, record.site);
+      detail::StackMapRequirement requirement;
+      requirement.site = record.site;
+      for (const runtime::RecoveryOperation& operation : record.recovery) {
+        if (operation.source != runtime::RecoverySource::kCapturedValue) {
+          continue;
+        }
+        if (!exit.valid() ||
+            !control_value_available(function, operation.source_value, exit)) {
+          return {{StatusCode::kInvalidArgument,
+                   "CFG captured recovery value does not dominate its guard",
+                   record.site},
+                  {}, {}};
+        }
+        if (function.value_type(operation.source_value) != operation.type) {
+          return {{StatusCode::kInvalidArgument,
+                   "CFG captured recovery value type does not match SSA",
+                   record.site},
+                  {}, {}};
+        }
+        if (std::find(requirement.values.begin(), requirement.values.end(),
+                      operation.source_value) == requirement.values.end()) {
+          requirement.values.push_back(operation.source_value);
+        }
+        result.bindings.push_back(
+            {record.site, operation.source_value, operation.source_value});
+      }
+      if (!requirement.values.empty()) {
+        result.requirements.push_back(std::move(requirement));
+      }
+    }
+    return result;
+  } catch (const std::bad_alloc&) {
+    return {{StatusCode::kResourceExhausted,
+             "unable to prepare CFG stack-map requirements"},
+            {}, {}};
+  }
+}
+
+Status resolve_deoptimization_captures(
+    runtime::DeoptimizationTable* deoptimization,
+    const std::vector<CaptureBinding>& bindings,
+    const std::vector<StackMapRecord>& stack_maps) {
+  if (bindings.empty()) {
+    return Status::ok_status();
+  }
+  try {
+    runtime::DeoptimizationTable resolved;
+    for (const runtime::DeoptimizationRecord& source_record :
+         deoptimization->records()) {
+      runtime::DeoptimizationRecord record = source_record;
+      for (runtime::RecoveryOperation& operation : record.recovery) {
+        if (operation.source != runtime::RecoverySource::kCapturedValue) {
+          continue;
+        }
+        const auto binding = std::find_if(
+            bindings.begin(), bindings.end(), [&](const auto& candidate) {
+              return candidate.site == record.site &&
+                     candidate.source == operation.source_value;
+            });
+        const auto stack_map = std::find_if(
+            stack_maps.begin(), stack_maps.end(), [&](const auto& candidate) {
+              return candidate.site == record.site;
+            });
+        if (binding == bindings.end() || stack_map == stack_maps.end()) {
+          return {StatusCode::kCodeGenerationFailed,
+                  "captured recovery value has no native stack map",
+                  record.site};
+        }
+        const auto stack_value = std::find_if(
+            stack_map->live_values.begin(), stack_map->live_values.end(),
+            [&](const auto& candidate) {
+              return candidate.value == binding->lowered;
+            });
+        if (stack_value == stack_map->live_values.end() ||
+            stack_value->type != operation.type) {
+          return {StatusCode::kCodeGenerationFailed,
+                  "captured recovery value is missing from its native stack map",
+                  record.site};
+        }
+        operation.capture_index = static_cast<std::size_t>(
+            stack_value - stack_map->live_values.begin());
+      }
+      const Status addition = resolved.add(record);
+      if (!addition.ok()) {
+        return addition;
+      }
+    }
+    *deoptimization = std::move(resolved);
+    return Status::ok_status();
+  } catch (const std::bad_alloc&) {
+    return {StatusCode::kResourceExhausted,
+            "unable to resolve captured deoptimization values"};
+  }
+}
+
 ir::EvaluationResult finish_invocation(
     ir::Word value, runtime::ExecutionContext* context) {
   if (context == nullptr ||
@@ -383,6 +705,29 @@ StackMapCaptureResult CompiledFunction::reconstruct_stack_map(
   }
 }
 
+runtime::ReconstructionResult CompiledFunction::reconstruct_deoptimization(
+    std::size_t site, const ir::Word* args, std::size_t arg_count,
+    const runtime::ExecutionContext& context) const {
+  const runtime::DeoptimizationRecord* record =
+      deoptimization_record(site);
+  if (record != nullptr &&
+      std::any_of(record->recovery.begin(), record->recovery.end(),
+                  [](const runtime::RecoveryOperation& operation) {
+                    return operation.source ==
+                           runtime::RecoverySource::kCapturedValue;
+                  })) {
+    const StackMapRecord* map = stack_map(site);
+    if (map == nullptr ||
+        context.captured_value_count() != map->live_values.size()) {
+      return {{StatusCode::kInvalidArgument,
+               "execution context has incomplete deoptimization captures",
+               site},
+              {}};
+    }
+  }
+  return deoptimization_table_.reconstruct(site, args, arg_count, context);
+}
+
 ir::EvaluationResult CompiledFunction::invoke(
     const ir::Word* args, std::size_t arg_count,
     runtime::ExecutionContext* context) const {
@@ -481,13 +826,20 @@ CompilationResult Compiler::compile(
     return {verification, nullptr};
   }
 
+  const OptimizationExitStatePreparation exit_state =
+      prepare_optimization_exit_states(function, deoptimization_table);
+  if (!exit_state.status.ok()) {
+    return {exit_state.status, nullptr};
+  }
+
   std::optional<ir::OptimizationResult> optimization;
   const ir::Function* lowered = &function;
   switch (options.optimization_level) {
     case OptimizationLevel::kBaseline:
       break;
     case OptimizationLevel::kOptimized:
-      optimization.emplace(ir::Optimizer::run(function));
+      optimization.emplace(
+          ir::Optimizer::run(function, exit_state.exit_states));
       if (!optimization->ok()) {
         return {optimization->status, nullptr};
       }
@@ -505,19 +857,35 @@ CompilationResult Compiler::compile(
   if (!deoptimization.status.ok()) {
     return {deoptimization.status, nullptr};
   }
+  StackMapRequirementPreparation stack_map_requirements =
+      prepare_stack_map_requirements(
+          function, *lowered, deoptimization.table,
+          optimization.has_value() ? &*optimization : nullptr);
+  if (!stack_map_requirements.status.ok()) {
+    return {stack_map_requirements.status, nullptr};
+  }
 
 #if defined(UNIJIT_TARGET_AARCH64)
-  detail::aarch64::LoweringResult lowering = detail::aarch64::lower(*lowered);
+  detail::aarch64::LoweringResult lowering = detail::aarch64::lower(
+      *lowered, stack_map_requirements.requirements);
 #elif defined(UNIJIT_TARGET_X86_64)
-  detail::x86_64::LoweringResult lowering = detail::x86_64::lower(*lowered);
+  detail::x86_64::LoweringResult lowering = detail::x86_64::lower(
+      *lowered, stack_map_requirements.requirements);
 #elif defined(UNIJIT_TARGET_RISCV64)
-  detail::riscv64::LoweringResult lowering = detail::riscv64::lower(*lowered);
+  detail::riscv64::LoweringResult lowering = detail::riscv64::lower(
+      *lowered, stack_map_requirements.requirements);
 #endif
 
 #if defined(UNIJIT_TARGET_AARCH64) || defined(UNIJIT_TARGET_X86_64) || \
     defined(UNIJIT_TARGET_RISCV64)
   if (!lowering.status.ok()) {
     return {lowering.status, nullptr};
+  }
+  const Status capture_resolution = resolve_deoptimization_captures(
+      &deoptimization.table, stack_map_requirements.bindings,
+      lowering.stack_maps);
+  if (!capture_resolution.ok()) {
+    return {capture_resolution, nullptr};
   }
 
   try {
@@ -588,19 +956,33 @@ CompilationResult Compiler::compile(
   if (!deoptimization.status.ok()) {
     return {deoptimization.status, nullptr};
   }
+  StackMapRequirementPreparation stack_map_requirements =
+      prepare_stack_map_requirements(function, deoptimization.table);
+  if (!stack_map_requirements.status.ok()) {
+    return {stack_map_requirements.status, nullptr};
+  }
 
 #if defined(UNIJIT_TARGET_AARCH64)
-  detail::aarch64::LoweringResult lowering = detail::aarch64::lower(function);
+  detail::aarch64::LoweringResult lowering = detail::aarch64::lower(
+      function, stack_map_requirements.requirements);
 #elif defined(UNIJIT_TARGET_X86_64)
-  detail::x86_64::LoweringResult lowering = detail::x86_64::lower(function);
+  detail::x86_64::LoweringResult lowering = detail::x86_64::lower(
+      function, stack_map_requirements.requirements);
 #elif defined(UNIJIT_TARGET_RISCV64)
-  detail::riscv64::LoweringResult lowering = detail::riscv64::lower(function);
+  detail::riscv64::LoweringResult lowering = detail::riscv64::lower(
+      function, stack_map_requirements.requirements);
 #endif
 
 #if defined(UNIJIT_TARGET_AARCH64) || defined(UNIJIT_TARGET_X86_64) || \
     defined(UNIJIT_TARGET_RISCV64)
   if (!lowering.status.ok()) {
     return {lowering.status, nullptr};
+  }
+  const Status capture_resolution = resolve_deoptimization_captures(
+      &deoptimization.table, stack_map_requirements.bindings,
+      lowering.stack_maps);
+  if (!capture_resolution.ok()) {
+    return {capture_resolution, nullptr};
   }
 
   try {

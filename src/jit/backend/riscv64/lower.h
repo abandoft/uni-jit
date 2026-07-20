@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include "jit/stack_map_requirements.h"
 #include "unijit/ir/control_flow.h"
 #include "unijit/ir/function.h"
 #include "unijit/jit/stack_map.h"
@@ -28,8 +29,10 @@ struct LoweringResult final {
   std::vector<StackMapRecord> stack_maps;
 };
 
-LoweringResult lower(const ir::Function& function);
-LoweringResult lower(const ir::ControlFlowFunction& function);
+LoweringResult lower(const ir::Function& function,
+                     const StackMapRequirements& requirements);
+LoweringResult lower(const ir::ControlFlowFunction& function,
+                     const StackMapRequirements& requirements);
 
 }  // namespace unijit::jit::detail::riscv64
 

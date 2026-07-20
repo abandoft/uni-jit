@@ -84,9 +84,7 @@ class CompiledFunction final {
   }
   runtime::ReconstructionResult reconstruct_deoptimization(
       std::size_t site, const ir::Word* args, std::size_t arg_count,
-      const runtime::ExecutionContext& context) const {
-    return deoptimization_table_.reconstruct(site, args, arg_count, context);
-  }
+      const runtime::ExecutionContext& context) const;
 
   const CompilationStats& stats() const noexcept { return stats_; }
 
