@@ -1,4 +1,4 @@
-name: Release
+name: Validate and publish release
 
 on:
   push:
@@ -10,14 +10,14 @@ permissions:
 
 jobs:
   quality:
-    uses: ./.github/workflows/ci.yml
+    name: Full release quality gates
+    uses: ./.github/workflows/continuous-validation.yml
 
   metadata:
     name: Validate release metadata
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v6
-      - run: python3 tool/release.py check --tag "$GITHUB_REF_NAME"
+    uses: ./.github/workflows/release-metadata-validation.yml
+    with:
+      release_tag: ${{ github.ref_name }}
 
   publish:
     name: Publish GitHub Release

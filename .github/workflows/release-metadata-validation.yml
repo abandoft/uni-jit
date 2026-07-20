@@ -1,0 +1,30 @@
+name: Release metadata validation
+
+on:
+  workflow_call:
+    inputs:
+      release_tag:
+        description: Optional tag that must match the current project version
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Release metadata
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate development metadata
+        if: inputs.release_tag == ''
+        run: python3 tool/release.py check
+
+      - name: Validate tagged-release metadata
+        if: inputs.release_tag != ''
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: python3 tool/release.py check --tag "$RELEASE_TAG"

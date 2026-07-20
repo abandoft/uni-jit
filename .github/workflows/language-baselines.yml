@@ -1,28 +1,12 @@
-name: CI
+name: Language frontend and performance baselines
 
 on:
-  push:
-    branches:
-      - "**"
-  pull_request:
-  workflow_dispatch:
   workflow_call:
 
 permissions:
   contents: read
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  release-metadata:
-    name: Release metadata
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v6
-      - run: python3 tool/release.py check
-
   lua-reference-baseline:
     name: Lua 5.5 and LuaJIT baseline
     runs-on: ubuntu-24.04
@@ -155,115 +139,3 @@ jobs:
           build/pocketpy/bin/unijit_pocketpy_benchmark
           --warmup 10000 --iterations 100000 --samples 3
           > build/pocketpy/pocketpy-call.json
-
-  build-and-test:
-    name: ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Linux GCC x86-64
-            os: ubuntu-24.04
-            cc: gcc
-            cxx: g++
-          - name: Linux Clang x86-64
-            os: ubuntu-24.04
-            cc: clang
-            cxx: clang++
-          - name: macOS Clang AArch64
-            os: macos-15
-            cc: clang
-            cxx: clang++
-          - name: macOS Clang x86-64
-            os: macos-15-intel
-            cc: clang
-            cxx: clang++
-          - name: Windows MSVC x86-64
-            os: windows-2025
-            cc: cl
-            cxx: cl
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          submodules: recursive
-
-      - name: Configure Unix
-        if: runner.os != 'Windows'
-        env:
-          CC: ${{ matrix.cc }}
-          CXX: ${{ matrix.cxx }}
-        run: >-
-          cmake -S . -B build/ci -G Ninja
-          -DCMAKE_BUILD_TYPE=RelWithDebInfo
-          -DUNIJIT_BUILD_POCKETPY_REFERENCE=ON
-          -DUNIJIT_WARNINGS_AS_ERRORS=ON
-
-      - name: Configure Windows
-        if: runner.os == 'Windows'
-        run: >-
-          cmake -S . -B build/ci -A x64
-          -DUNIJIT_BUILD_POCKETPY_REFERENCE=ON
-          -DUNIJIT_WARNINGS_AS_ERRORS=ON
-
-      - name: Build
-        run: cmake --build build/ci --config RelWithDebInfo --parallel
-
-      - name: Test
-        run: ctest --test-dir build/ci -C RelWithDebInfo --output-on-failure
-
-      - name: Install
-        run: >-
-          cmake --install build/ci --config RelWithDebInfo
-          --prefix build/install
-
-      - name: Configure package consumer on Unix
-        if: runner.os != 'Windows'
-        run: >-
-          cmake -S test/package -B build/consumer -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/build/install
-
-      - name: Configure package consumer on Windows
-        if: runner.os == 'Windows'
-        run: >-
-          cmake -S test/package -B build/consumer -A x64
-          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/build/install
-
-      - name: Test installed package
-        run: cmake --build build/consumer --config Release --parallel
-
-      - name: Run installed package consumer
-        run: ./build/consumer/unijit_package_consumer
-        if: runner.os != 'Windows'
-
-      - name: Run installed package consumer on Windows
-        run: .\build\consumer\Release\unijit_package_consumer.exe
-        if: runner.os == 'Windows'
-
-  sanitizers:
-    name: Linux ASan and UBSan
-    runs-on: ubuntu-24.04
-    env:
-      CC: clang
-      CXX: clang++
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          submodules: recursive
-
-      - name: Configure
-        run: >-
-          cmake -S . -B build/sanitize -G Ninja
-          -DCMAKE_BUILD_TYPE=Debug
-          -DUNIJIT_BUILD_POCKETPY_REFERENCE=ON
-          -DUNIJIT_WARNINGS_AS_ERRORS=ON
-          -DCMAKE_C_FLAGS=-fsanitize=address,undefined
-          -DCMAKE_CXX_FLAGS=-fsanitize=address,undefined
-          -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined
-
-      - name: Build
-        run: cmake --build build/sanitize --parallel
-
-      - name: Test
-        run: ctest --test-dir build/sanitize --output-on-failure

@@ -1,0 +1,96 @@
+name: Core platform build and package validation
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-install:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux GCC x86-64
+            os: ubuntu-24.04
+            cc: gcc
+            cxx: g++
+          - name: Linux Clang x86-64
+            os: ubuntu-24.04
+            cc: clang
+            cxx: clang++
+          - name: macOS Clang AArch64
+            os: macos-15
+            cc: clang
+            cxx: clang++
+          - name: macOS Clang x86-64
+            os: macos-15-intel
+            cc: clang
+            cxx: clang++
+          - name: Windows MSVC x86-64
+            os: windows-2025
+            cc: cl
+            cxx: cl
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Configure Unix
+        if: runner.os != 'Windows'
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: >-
+          cmake -S . -B build/platform -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DUNIJIT_BUILD_POCKETPY_REFERENCE=ON
+          -DUNIJIT_WARNINGS_AS_ERRORS=ON
+
+      - name: Configure Windows
+        if: runner.os == 'Windows'
+        run: >-
+          cmake -S . -B build/platform -A x64
+          -DUNIJIT_BUILD_POCKETPY_REFERENCE=ON
+          -DUNIJIT_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build build/platform --config RelWithDebInfo --parallel
+
+      - name: Test
+        run: >-
+          ctest --test-dir build/platform -C RelWithDebInfo
+          --output-on-failure
+
+      - name: Install
+        run: >-
+          cmake --install build/platform --config RelWithDebInfo
+          --prefix build/install
+
+      - name: Configure package consumer on Unix
+        if: runner.os != 'Windows'
+        run: >-
+          cmake -S test/package -B build/package-consumer -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/build/install
+
+      - name: Configure package consumer on Windows
+        if: runner.os == 'Windows'
+        run: >-
+          cmake -S test/package -B build/package-consumer -A x64
+          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/build/install
+
+      - name: Build installed-package consumer
+        run: >-
+          cmake --build build/package-consumer --config Release --parallel
+
+      - name: Run installed-package consumer on Unix
+        if: runner.os != 'Windows'
+        run: ./build/package-consumer/unijit_package_consumer
+
+      - name: Run installed-package consumer on Windows
+        if: runner.os == 'Windows'
+        run: .\build\package-consumer\Release\unijit_package_consumer.exe

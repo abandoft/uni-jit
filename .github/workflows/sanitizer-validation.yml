@@ -1,0 +1,35 @@
+name: Sanitizer validation
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  address-and-undefined-behavior:
+    name: Linux ASan and UBSan
+    runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build/sanitize -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DUNIJIT_BUILD_POCKETPY_REFERENCE=ON
+          -DUNIJIT_WARNINGS_AS_ERRORS=ON
+          -DCMAKE_C_FLAGS=-fsanitize=address,undefined
+          -DCMAKE_CXX_FLAGS=-fsanitize=address,undefined
+          -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined
+
+      - name: Build
+        run: cmake --build build/sanitize --parallel
+
+      - name: Test
+        run: ctest --test-dir build/sanitize --output-on-failure
