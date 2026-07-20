@@ -22,6 +22,7 @@
 - Added allocation-free diagnosed-exit capture for up to 64 live values per site, with exact Word and Float64 bits copied before native frame restoration, validated reconstruction through compiled functions and generation-stable cache leases, stale-state clearing, and compile-time rejection beyond the fixed capacity.
 - Added arbitrary Word and Float64 SSA inputs to deoptimization recovery, with guard-scoped optimizer preservation and Value-ID remapping, straight-line availability and CFG dominance validation, forced allocator and data-flow liveness on all three backends, resolved canonical capture indices, and exact baseline, optimized, cached-lease, and installed-package reconstruction.
 - Materialized PocketPy primitive division frames with the current straight-line left operand plus every counted-loop local and induction value while retaining stable parameter and signed-zero divisor slots for existing `ZeroDivisionError` mapping.
+- Added site-and-resume-bound transactional object materialization with primitive, constant, forward, backward, and cyclic recipe inputs, bounded graph validation, two-phase shell allocation and field population, opaque frontend handles, exactly-once rollback for every callback failure phase, explicit object-valued logical slots, and compiled-function plus generation-stable cache-lease APIs.
 
 ## 0.1.6
 
