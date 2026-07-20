@@ -1,5 +1,7 @@
 #include "unijit_lua.h"
 
+#include "float_translator.h"
+
 #include <array>
 #include <cstddef>
 #include <cstdio>
@@ -38,10 +40,18 @@ constexpr std::size_t kMaximumLuaParameters = 255;
 
 static_assert(sizeof(lua_Integer) == sizeof(Word),
               "Lua and UniJIT integers must have the same width");
+static_assert(sizeof(lua_Number) == sizeof(double),
+              "Lua and UniJIT Float64 values must have the same width");
+
+enum class NumericMode : unsigned char {
+  kInteger,
+  kFloat64,
+};
 
 struct OwnedFunction final {
   CompiledFunction *function{nullptr};
   std::size_t parameter_count{0};
+  NumericMode mode{NumericMode::kInteger};
 };
 
 CompilationResult translation_error(std::size_t pc, const char *message) {
@@ -712,22 +722,35 @@ int invoke_compiled_function(lua_State *state) {
   std::array<Word, kMaximumLuaParameters> arguments;
   for (std::size_t index = 0; index < owned->parameter_count; ++index) {
     const TValue *argument = s2v(argument_base + index);
-    if (!ttisinteger(argument)) {
+    if (owned->mode == NumericMode::kInteger && !ttisinteger(argument)) {
       return luaL_error(state, "argument %d must be a Lua integer",
                         static_cast<int>(index + 1));
     }
-    arguments[index] = static_cast<Word>(ivalue(argument));
+    if (owned->mode == NumericMode::kFloat64 && !ttisfloat(argument)) {
+      return luaL_error(state, "argument %d must be a Lua Float64",
+                        static_cast<int>(index + 1));
+    }
+    arguments[index] =
+        owned->mode == NumericMode::kInteger
+            ? static_cast<Word>(ivalue(argument))
+            : unijit::ir::pack_float64(static_cast<double>(fltvalue(argument)));
   }
 
   const Word value = owned->function->native_entry()(arguments.data());
-  setivalue(s2v(state->top.p), static_cast<lua_Integer>(value));
+  if (owned->mode == NumericMode::kInteger) {
+    setivalue(s2v(state->top.p), static_cast<lua_Integer>(value));
+  } else {
+    setfltvalue(s2v(state->top.p),
+                static_cast<lua_Number>(unijit::ir::unpack_float64(value)));
+  }
   ++state->top.p;
   return 1;
 }
 
-int compile_lua_function(lua_State *state) {
+int compile_lua_function_mode(lua_State *state, NumericMode mode,
+                              const char *api_name) {
   if (lua_type(state, 1) != LUA_TFUNCTION || lua_iscfunction(state, 1) != 0) {
-    return luaL_error(state, "unijit.compile expects a Lua function");
+    return luaL_error(state, "%s expects a Lua function", api_name);
   }
 
   void *storage = lua_newuserdatauv(state, sizeof(OwnedFunction), 0);
@@ -742,10 +765,15 @@ int compile_lua_function(lua_State *state) {
   char error[512] = {};
   bool compiled = false;
   {
-    CompilationResult result = compile_prototype(*closure->p);
+    CompilationResult result =
+        mode == NumericMode::kInteger
+            ? compile_prototype(*closure->p)
+            : unijit::frontend::lua55::detail::compile_float64_prototype(
+                  *closure->p);
     if (result.ok()) {
       owned->parameter_count = closure->p->numparams;
       owned->function = result.function.release();
+      owned->mode = mode;
       compiled = true;
     } else {
       std::snprintf(error, sizeof(error), "Lua bytecode at pc %zu: %s",
@@ -760,6 +788,16 @@ int compile_lua_function(lua_State *state) {
   return 1;
 }
 
+int compile_lua_function(lua_State *state) {
+  return compile_lua_function_mode(state, NumericMode::kInteger,
+                                   "unijit.compile");
+}
+
+int compile_float_lua_function(lua_State *state) {
+  return compile_lua_function_mode(state, NumericMode::kFloat64,
+                                   "unijit.compile_float");
+}
+
 } // namespace
 
 extern "C" int luaopen_unijit(lua_State *state) {
@@ -771,6 +809,7 @@ extern "C" int luaopen_unijit(lua_State *state) {
 
   static const luaL_Reg functions[] = {
       {"compile", compile_lua_function},
+      {"compile_float", compile_float_lua_function},
       {nullptr, nullptr},
   };
   luaL_newlib(state, functions);

@@ -35,6 +35,46 @@ cases[#cases + 1] = {math.maxinteger, -1, 1}
 cases[#cases + 1] = {math.mininteger, 1, -1}
 local native_recurrence = compare(recurrence, cases)
 
+local function compare_float(original, arguments)
+  local native = unijit.compile_float(original)
+  for _, values in ipairs(arguments) do
+    local expected = original(table.unpack(values))
+    local actual = native(table.unpack(values))
+    assert(math.type(actual) == "float")
+    assert(actual == expected)
+  end
+  return native
+end
+
+local float_recurrence = function(a, b, c)
+  local difference = a - b
+  local sum = b + c
+  return difference * sum
+end
+local float_cases = {
+  {9.0, 3.0, 5.0},
+  {-17.25, 4.5, 0.25},
+  {1.0e12, -0.5, 3.25},
+  {0.0, -0.0, 7.5},
+}
+local native_float_recurrence = compare_float(float_recurrence, float_cases)
+
+compare_float(function(value)
+  return (value + 7) * 0.5 - 3.0
+end, {{0.0}, {-100.25}, {123456.5}})
+
+compare_float(function()
+  return 17.5
+end, {{}})
+
+local float_ok, float_message = pcall(native_float_recurrence, 1.0, 2, 3.0)
+assert(not float_ok and tostring(float_message):find("Float64"))
+
+float_ok, float_message = pcall(unijit.compile_float, function()
+  return 17
+end)
+assert(not float_ok and tostring(float_message):find("not Float64"))
+
 local immediate = compare(function(value)
   return value + 7
 end, {{0}, {-100}, {math.maxinteger}})
@@ -141,6 +181,7 @@ assert(not ok and tostring(message):find("invalid UniJIT compiled function"))
 
 immediate = nil
 native_recurrence = nil
+native_float_recurrence = nil
 native_counted_sum = nil
 native_offset_sum = nil
 disposable = nil

@@ -65,7 +65,9 @@ set_target_properties(unijit_lua55 PROPERTIES
   OUTPUT_NAME "lua5.5-reference"
   RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin")
 
-add_library(unijit_lua55_frontend STATIC jit_module.cpp)
+add_library(unijit_lua55_frontend STATIC
+  float_translator.cpp
+  jit_module.cpp)
 target_include_directories(unijit_lua55_frontend
   PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}"
   PRIVATE "${UNIJIT_LUA_SOURCE_DIR}")
