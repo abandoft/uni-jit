@@ -1,5 +1,6 @@
 ## 0.1.9
 
+- Added guarded runtime-parameter steps to Lua 5.5 numeric `for` compilation, with exact pre-native zero-step errors, direction-independent unsigned remaining-iteration counts, scalar baselines, eight-way optimized groups and bounded tails across wrapping indices and `math.mininteger`, exhaustive baseline/optimized stock-Lua differential coverage, and a separate balanced three-engine hosted x64 commercial gate retaining the 1.25x stock Lua and 1.10x LuaJIT floors.
 - Added guarded runtime-parameter starts to Lua 5.5 numeric `for` compilation in both directions, retaining constant nonzero steps, exact per-invocation saturating hotness, zero-iteration behavior, safe scalar and eight-way-unrolled execution, and baseline/optimized stock-Lua differential coverage through both signed boundaries.
 - Added arbitrary nonzero constant integer steps to Lua 5.5 numeric `for` compilation, with exact direction-aware zero-iteration and saturating hotness accounting, overflow-safe scalar continuation, conditional eight-way unrolling for representable group strides, safe optimized fallback for extreme strides including `math.mininteger`, and baseline/optimized differential qualification against stock Lua across both signed boundaries.
 
