@@ -109,3 +109,36 @@ if(UNIJIT_BUILD_TESTS)
 
   add_test(NAME unijit.lua55_frontend COMMAND unijit_lua55_tests)
 endif()
+
+if(UNIJIT_BUILD_BENCHMARKS)
+  add_executable(unijit_lua55_benchmark_runner
+    "${PROJECT_SOURCE_DIR}/benchmark/lua/embedded_runner.cpp")
+  target_compile_features(unijit_lua55_benchmark_runner PRIVATE cxx_std_17)
+  target_link_libraries(unijit_lua55_benchmark_runner
+    PRIVATE unijit_lua55_frontend)
+  set_target_properties(unijit_lua55_benchmark_runner PROPERTIES
+    OUTPUT_NAME "lua5.5-unijit"
+    RUNTIME_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/bin")
+
+  if(MSVC)
+    target_compile_options(unijit_lua55_benchmark_runner
+      PRIVATE /W4 /permissive-)
+    if(UNIJIT_WARNINGS_AS_ERRORS)
+      target_compile_options(unijit_lua55_benchmark_runner PRIVATE /WX)
+    endif()
+  else()
+    target_compile_options(unijit_lua55_benchmark_runner
+      PRIVATE -Wall -Wextra -Wpedantic)
+    if(UNIJIT_WARNINGS_AS_ERRORS)
+      target_compile_options(unijit_lua55_benchmark_runner PRIVATE -Werror)
+    endif()
+  endif()
+
+  if(UNIJIT_BUILD_TESTS)
+    add_test(
+      NAME unijit.lua55_benchmark_smoke
+      COMMAND unijit_lua55_benchmark_runner
+        "${PROJECT_SOURCE_DIR}/benchmark/lua/integer_call.lua"
+        100 1000 1 unijit)
+  endif()
+endif()
