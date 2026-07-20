@@ -34,6 +34,21 @@ end
 cases[#cases + 1] = {math.maxinteger, -1, 1}
 cases[#cases + 1] = {math.mininteger, 1, -1}
 local native_recurrence = compare(recurrence, cases)
+assert(unijit.wait(native_recurrence, 5000))
+local recurrence_stats = unijit.stats(native_recurrence)
+assert(recurrence_stats.tierable)
+assert(not recurrence_stats.loop)
+assert(recurrence_stats.active_tier == "optimized")
+assert(recurrence_stats.invocations == #cases)
+assert(recurrence_stats.backedges == 0)
+assert(recurrence_stats.compilation_attempts == 1)
+assert(recurrence_stats.successful_compilations == 1)
+assert(recurrence_stats.failed_compilations == 0)
+assert(recurrence_stats.promotions == 1)
+assert(recurrence_stats.compilation_state == "succeeded")
+assert(recurrence_stats.scheduler_available)
+assert(recurrence_stats.code_size > 0)
+assert(not unijit.cancel(native_recurrence))
 local cached_recurrence = unijit.compile(recurrence)
 assert(cached_recurrence(9, 3, 5) == 48)
 
@@ -60,6 +75,14 @@ local float_cases = {
   {0.0, -0.0, 7.5},
 }
 local native_float_recurrence = compare_float(float_recurrence, float_cases)
+for _ = 1, 64 do
+  assert(native_float_recurrence(9.0, 3.0, 5.0) == 48.0)
+end
+assert(unijit.wait(native_float_recurrence, 5000))
+local float_stats = unijit.stats(native_float_recurrence)
+assert(float_stats.active_tier == "optimized")
+assert(float_stats.compilation_attempts == 1)
+assert(float_stats.successful_compilations == 1)
 local cached_float_recurrence = unijit.compile_float(float_recurrence)
 assert(cached_float_recurrence(9.0, 3.0, 5.0) == 48.0)
 
@@ -111,6 +134,20 @@ local counted_sum = function(count)
   end
   return sum
 end
+local backedge_counted_sum = unijit.compile(counted_sum)
+local baseline_loop_stats = unijit.stats(backedge_counted_sum)
+assert(baseline_loop_stats.active_tier == "baseline")
+assert(baseline_loop_stats.loop)
+assert(backedge_counted_sum(10000) == counted_sum(10000))
+assert(unijit.wait(backedge_counted_sum, 5000))
+local optimized_loop_stats = unijit.stats(backedge_counted_sum)
+assert(optimized_loop_stats.active_tier == "optimized")
+assert(optimized_loop_stats.invocations == 1)
+assert(optimized_loop_stats.backedges == 10000)
+assert(optimized_loop_stats.compilation_attempts == 1)
+assert(optimized_loop_stats.successful_compilations == 1)
+assert(optimized_loop_stats.promotions == 1)
+assert(optimized_loop_stats.input_ir_nodes > baseline_loop_stats.input_ir_nodes)
 local native_counted_sum = unijit.compile(counted_sum)
 for count = -7, 128 do
   assert(native_counted_sum(count) == counted_sum(count))
@@ -210,6 +247,7 @@ native_recurrence = nil
 cached_recurrence = nil
 native_float_recurrence = nil
 cached_float_recurrence = nil
+backedge_counted_sum = nil
 native_counted_sum = nil
 native_offset_sum = nil
 native_near_max_loop = nil
