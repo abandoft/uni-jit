@@ -1,5 +1,8 @@
 ## 0.1.6
 
+- Added public immutable deoptimization records with semantic reasons, frontend resume offsets, typed recovery of entry arguments, constants, and guarded exit values, compiler validation and optimization pruning, cached-lease lifetime guarantees, and ABI-boundary frame reconstruction.
+- Preserved the exact triggering Float64 value bits for diagnosed guard exits in the reference interpreter and all AArch64, x86-64, and RISC-V 64 native backends, including the sign of zero.
+- Integrated PocketPy checked division with validated deoptimization reconstruction so only a confirmed division-by-zero record becomes `ZeroDivisionError`, while unknown runtime exits fail diagnostically instead of being misclassified.
 - Added overflow-safe eight-way Lua numeric-loop unrolling with a bounded scalar tail and cooperative polling at most every eight source iterations, exceeding LuaJIT on the validated complete-loop x86-64 workload while preserving `math.maxinteger` boundaries.
 - Promoted the complete Lua numeric-loop comparison to a hard commercial CI gate requiring at least 1.25x stock Lua performance and 1.10x LuaJIT performance.
 - Added deterministic seed-replay differential fuzzing that generates straight-line Word and Float64 SSA plus typed loop-and-diamond CFG programs, then compares production native execution bit-for-bit with the reference interpreters.
