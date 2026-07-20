@@ -5,6 +5,7 @@
 
 #include "unijit/ir/function.h"
 #include "unijit/jit/code_cache.h"
+#include "unijit/jit/compilation_scheduler.h"
 #include "unijit/jit/compiler.h"
 #include "unijit/jit/tiering.h"
 #include "unijit/runtime/deoptimization.h"
@@ -168,12 +169,37 @@ int main() {
   }
   const auto optimized_result =
       tiered.invoke(tiered_arguments.data(), tiered_arguments.size());
-  return optimized_result.ok() &&
-                 optimized_result.attempted_handle.generation() ==
-                     optimized_publication.handle.generation() &&
-                 optimized_result.attempted_tier ==
-                     unijit::jit::CodeTier::kOptimized &&
-                 optimized_result.result.value == tiered_arguments[0]
-             ? 0
-             : 23;
+  if (!optimized_result.ok() ||
+      optimized_result.attempted_handle.generation() !=
+          optimized_publication.handle.generation() ||
+      optimized_result.attempted_tier !=
+          unijit::jit::CodeTier::kOptimized ||
+      optimized_result.result.value != tiered_arguments[0]) {
+    return 23;
+  }
+
+  auto scheduler_creation = unijit::jit::CompilationScheduler::create(
+      {1, 2, 1024});
+  if (!scheduler_creation.ok()) {
+    return 24;
+  }
+  auto scheduled = scheduler_creation.scheduler->try_submit(
+      {"package-consumer", 1, 128,
+       unijit::jit::CompilationPriority::kNormal,
+       [](const unijit::jit::CompilationCancellation& cancellation) {
+         return cancellation.stop_requested()
+                    ? unijit::Status{unijit::StatusCode::kCancelled,
+                                     "package task cancelled"}
+                    : unijit::Status::ok_status();
+       }});
+  if (!scheduled.ok() || !scheduled.ticket.wait().ok()) {
+    return 25;
+  }
+  scheduler_creation.scheduler->wait_idle();
+  const auto scheduler_stats = scheduler_creation.scheduler->stats();
+  if (scheduler_stats.submitted != 1 || scheduler_stats.succeeded != 1 ||
+      !scheduler_creation.scheduler->shutdown().ok()) {
+    return 26;
+  }
+  return 0;
 }
