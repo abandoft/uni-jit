@@ -2,6 +2,7 @@
 #define UNIJIT_JIT_COMPILER_H
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -23,6 +24,15 @@ struct CompilationStats final {
   std::size_t spill_slots{0};
   std::size_t input_ir_nodes{0};
   std::size_t optimized_ir_nodes{0};
+};
+
+enum class OptimizationLevel : std::uint8_t {
+  kBaseline = 0,
+  kOptimized,
+};
+
+struct CompilationOptions final {
+  OptimizationLevel optimization_level{OptimizationLevel::kOptimized};
 };
 
 class CompiledFunction final {
@@ -93,6 +103,8 @@ struct CompilationResult final {
 class Compiler final {
  public:
   static CompilationResult compile(const ir::Function& function);
+  static CompilationResult compile(const ir::Function& function,
+                                   CompilationOptions options);
   static CompilationResult compile(
       const ir::Function& function,
       const runtime::DeoptimizationTable& deoptimization_table);
@@ -103,6 +115,11 @@ class Compiler final {
       const ir::Function& function,
       const runtime::DeoptimizationTable& deoptimization_table,
       const runtime::AssumptionSet& assumptions);
+  static CompilationResult compile(
+      const ir::Function& function,
+      const runtime::DeoptimizationTable& deoptimization_table,
+      const runtime::AssumptionSet& assumptions,
+      CompilationOptions options);
   static CompilationResult compile(const ir::ControlFlowFunction& function);
   static CompilationResult compile(
       const ir::ControlFlowFunction& function,

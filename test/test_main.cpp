@@ -990,6 +990,28 @@ void test_optimization_pipeline() {
   const auto native = compilation.function->invoke(args.data(), args.size());
   expect(native.ok() && native.value == 42,
          "optimized native code must preserve observable semantics");
+
+  auto baseline = Compiler::compile(
+      function, unijit::jit::CompilationOptions{
+                    unijit::jit::OptimizationLevel::kBaseline});
+  expect(baseline.ok() &&
+             baseline.function->stats().input_ir_nodes == 7 &&
+             baseline.function->stats().optimized_ir_nodes == 7,
+         "baseline compilation must preserve verified input SSA");
+  if (baseline.ok()) {
+    const auto baseline_native =
+        baseline.function->invoke(args.data(), args.size());
+    expect(baseline_native.ok() && baseline_native.value == 42,
+           "baseline native code must preserve observable semantics");
+  }
+
+  auto invalid_level = Compiler::compile(
+      function, unijit::jit::CompilationOptions{
+                    static_cast<unijit::jit::OptimizationLevel>(255)});
+  expect(!invalid_level.ok() &&
+             invalid_level.status.code() ==
+                 unijit::StatusCode::kInvalidArgument,
+         "compiler must reject an unknown optimization level");
 }
 
 void test_float64_constant_folding() {

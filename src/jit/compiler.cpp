@@ -4,6 +4,7 @@
 #include <cstring>
 #include <memory>
 #include <new>
+#include <optional>
 #include <utility>
 
 #include "jit/executable_memory.h"
@@ -293,49 +294,78 @@ ir::EvaluationResult CompiledFunction::invoke(
 
 CompilationResult Compiler::compile(const ir::Function& function) {
   return compile(function, runtime::DeoptimizationTable{},
-                 runtime::AssumptionSet{});
+                 runtime::AssumptionSet{}, CompilationOptions{});
+}
+
+CompilationResult Compiler::compile(const ir::Function& function,
+                                    CompilationOptions options) {
+  return compile(function, runtime::DeoptimizationTable{},
+                 runtime::AssumptionSet{}, options);
 }
 
 CompilationResult Compiler::compile(
     const ir::Function& function,
     const runtime::DeoptimizationTable& deoptimization_table) {
-  return compile(function, deoptimization_table, runtime::AssumptionSet{});
+  return compile(function, deoptimization_table, runtime::AssumptionSet{},
+                 CompilationOptions{});
 }
 
 CompilationResult Compiler::compile(
     const ir::Function& function,
     const runtime::AssumptionSet& assumptions) {
-  return compile(function, runtime::DeoptimizationTable{}, assumptions);
+  return compile(function, runtime::DeoptimizationTable{}, assumptions,
+                 CompilationOptions{});
 }
 
 CompilationResult Compiler::compile(
     const ir::Function& function,
     const runtime::DeoptimizationTable& deoptimization_table,
     const runtime::AssumptionSet& assumptions) {
+  return compile(function, deoptimization_table, assumptions,
+                 CompilationOptions{});
+}
+
+CompilationResult Compiler::compile(
+    const ir::Function& function,
+    const runtime::DeoptimizationTable& deoptimization_table,
+    const runtime::AssumptionSet& assumptions,
+    CompilationOptions options) {
   const Status verification = ir::verify(function);
   if (!verification.ok()) {
     return {verification, nullptr};
   }
 
-  ir::OptimizationResult optimization = ir::Optimizer::run(function);
-  if (!optimization.ok()) {
-    return {optimization.status, nullptr};
+  std::optional<ir::OptimizationResult> optimization;
+  const ir::Function* lowered = &function;
+  switch (options.optimization_level) {
+    case OptimizationLevel::kBaseline:
+      break;
+    case OptimizationLevel::kOptimized:
+      optimization.emplace(ir::Optimizer::run(function));
+      if (!optimization->ok()) {
+        return {optimization->status, nullptr};
+      }
+      lowered = &optimization->function;
+      break;
+    default:
+      return {{StatusCode::kInvalidArgument,
+               "unknown compiler optimization level"},
+              nullptr};
   }
-  const ir::Function& optimized = optimization.function;
 
   DeoptimizationPreparation deoptimization =
-      prepare_deoptimization(function, optimized, deoptimization_table,
+      prepare_deoptimization(function, *lowered, deoptimization_table,
                              assumptions);
   if (!deoptimization.status.ok()) {
     return {deoptimization.status, nullptr};
   }
 
 #if defined(UNIJIT_TARGET_AARCH64)
-  detail::aarch64::LoweringResult lowering = detail::aarch64::lower(optimized);
+  detail::aarch64::LoweringResult lowering = detail::aarch64::lower(*lowered);
 #elif defined(UNIJIT_TARGET_X86_64)
-  detail::x86_64::LoweringResult lowering = detail::x86_64::lower(optimized);
+  detail::x86_64::LoweringResult lowering = detail::x86_64::lower(*lowered);
 #elif defined(UNIJIT_TARGET_RISCV64)
-  detail::riscv64::LoweringResult lowering = detail::riscv64::lower(optimized);
+  detail::riscv64::LoweringResult lowering = detail::riscv64::lower(*lowered);
 #endif
 
 #if defined(UNIJIT_TARGET_AARCH64) || defined(UNIJIT_TARGET_X86_64) || \
@@ -355,9 +385,9 @@ CompilationResult Compiler::compile(
     CompilationStats stats{lowering.code.size(),
                            implementation->memory.mapping_size(),
                            lowering.spill_slots, function.nodes().size(),
-                           optimized.nodes().size()};
+                           lowered->nodes().size()};
     const bool requires_context = !assumptions.empty() || std::any_of(
-        optimized.nodes().begin(), optimized.nodes().end(),
+        lowered->nodes().begin(), lowered->nodes().end(),
         [](const ir::Node& node) {
           return node.opcode == ir::Opcode::kGuardFloatNonzero;
         });
