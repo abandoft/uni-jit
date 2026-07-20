@@ -352,16 +352,17 @@ TieredInvocationResult TieredCode::invoke(
     const ir::Word* args, std::size_t arg_count,
     runtime::ExecutionContext* context, DeoptimizationPolicy policy) const {
   if (impl_ == nullptr) {
-    return {invalid_tiered_code()};
+    return {invalid_tiered_code(), {}, CodeTier::kNone, 0, false, false};
   }
   impl_->hotness.record_invocation();
   const std::shared_ptr<const Impl::State> state =
       std::atomic_load_explicit(&impl_->state, std::memory_order_acquire);
   if (state == nullptr || !state->active.valid()) {
-    return {invalid_tiered_code()};
+    return {invalid_tiered_code(), {}, CodeTier::kNone, 0, false, false};
   }
 
   TieredInvocationResult invocation;
+  invocation.attempted_handle = state->active;
   invocation.attempted_tier = state->tier;
   invocation.generation = state->generation;
   invocation.result = state->active.invoke(args, arg_count, context);

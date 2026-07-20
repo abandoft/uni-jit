@@ -166,6 +166,8 @@ int main() {
   const auto optimized_result =
       tiered.invoke(tiered_arguments.data(), tiered_arguments.size());
   return optimized_result.ok() &&
+                 optimized_result.attempted_handle.generation() ==
+                     optimized_publication.handle.generation() &&
                  optimized_result.attempted_tier ==
                      unijit::jit::CodeTier::kOptimized &&
                  optimized_result.result.value == tiered_arguments[0]

@@ -77,6 +77,7 @@ struct TieredCodeSnapshot final {
 
 struct TieredInvocationResult final {
   ir::EvaluationResult result;
+  CodeHandle attempted_handle;
   CodeTier attempted_tier{CodeTier::kNone};
   std::uint64_t generation{0};
   bool deoptimized{false};

@@ -1656,6 +1656,8 @@ void test_hotness_and_tiered_switching() {
   const auto optimized_result =
       tiered.invoke(arguments.data(), arguments.size());
   expect(optimized_result.ok() && optimized_result.result.value == 42 &&
+             optimized_result.attempted_handle.generation() ==
+                 optimized_snapshot.handle.generation() &&
              optimized_result.attempted_tier ==
                  unijit::jit::CodeTier::kOptimized,
          "valid assumptions must select the optimized tier");
