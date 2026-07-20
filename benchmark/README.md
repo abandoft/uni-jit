@@ -99,6 +99,12 @@ three-trial record and enforces the same 1.25x stock-Lua and 1.10x LuaJIT
 commercial floors, so support for dynamic loop controls cannot rely on semantic
 tests while regressing to interpreter-class throughput.
 
+Passing `--script benchmark/lua/integer_guarded_loop.lua` measures a complete
+1,000-iteration parameterized loop containing a per-iteration integer branch,
+a conditionally updated recurrence, and an unconditional suffix update. Hosted
+validation retains another balanced three-trial record and enforces the same
+1.25x stock-Lua and 1.10x LuaJIT floors against exact three-engine checksums.
+
 Passing `--script benchmark/lua/float_call.lua` measures the guarded Float64
 specialization with identical floating-point inputs in stock Lua, UniJIT, and
 LuaJIT. Checksums are compared without integer truncation before performance

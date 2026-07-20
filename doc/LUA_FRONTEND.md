@@ -38,7 +38,10 @@ Both entry points publish a verified baseline immediately. Straight-line
 callables claim background optimization after 64 invocations. Accepted numeric
 loops also derive loop-latch executions from their constant or guarded
 parameter start and nonzero step plus guarded integer limit, and can claim
-optimization after 10,000 iterations in one call.
+optimization after 10,000 iterations in one call. Structured `break` and
+early-return guards against the induction value additionally clamp that count
+to the exact first exiting iteration, avoiding premature promotion when a
+large declared range exits early.
 The bounded worker compiles an immutable copy of numeric bytecode and constants;
 it never reads a Lua stack, closure, `Proto`, or other garbage-collected object.
 Publication checks the captured baseline generation so late work cannot replace
@@ -97,7 +100,16 @@ iteration tail without signed-overflow tests. Every form polls one cooperative
 safepoint per dispatch, so no more than eight source iterations occur between
 optimized polls. Starts and limits near either signed boundary, reverse loops,
 zero-iteration loops, and strides that cross zero preserve stock Lua results.
-Nested loops and early returns are not yet supported.
+
+The loop body may contain one single-level integer condition using `==`, `~=`,
+`<`, `<=`, `>`, or `>=`. Its true arm may be a straight-line supported
+arithmetic region, `break`, or a one-value early `return`, with straight-line
+statements allowed before and after the guard. Branch merges and exits carry
+the exact loop-local state. The baseline emits a compact scalar CFG; the
+optimized tier expands eight independently guarded source iterations while
+retaining one cooperative poll per group and a 0–7 iteration tail. Multiple
+conditions, `else` arms, nested loops, calls, tables, and arbitrary jumps remain
+explicitly rejected.
 
 The compiled closure owns shared tier state through a Lua userdata upvalue. Its
 finalizer cancels outstanding compilation and is idempotent, so collection and
