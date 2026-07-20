@@ -99,6 +99,14 @@ Compiled functions and retained cache leases expose the same operation without
 embedding runtime layouts in target backends. The contract is specified in
 `doc/MATERIALIZATION.md`.
 
+Running interpreters can cross the opposite boundary through a site-and-resume
+bound OSR frame and entry plan. The plan maps at most 64 typed logical slots to
+the exact native signature without allocation on a successful transfer, while
+the selected compiled function or cache lease retains both the native mapping
+and deoptimization metadata. Diagnosed exits keep the marshalled arguments for
+generation-correct reconstruction. The contract and frontend integration
+boundary are specified in `doc/ON_STACK_REPLACEMENT.md`.
+
 The optimizing tier adds a separate CFG SSA representation with explicit
 basic-block parameters. Predecessor edges supply every block argument, making
 phi semantics visible in construction, verification, interpretation, and

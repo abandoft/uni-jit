@@ -23,6 +23,9 @@ native site metadata, and compiled-generation ownership.
 [doc/MATERIALIZATION.md](doc/MATERIALIZATION.md) defines bounded atomic object
 graph and logical-frame recovery, cyclic references, rollback, and opaque
 frontend handles.
+[doc/ON_STACK_REPLACEMENT.md](doc/ON_STACK_REPLACEMENT.md) defines bounded
+typed interpreter-frame transfer into generation-stable native regions and
+exact deoptimization from an OSR entry.
 [doc/ASSUMPTIONS.md](doc/ASSUMPTIONS.md) defines one-shot runtime dependencies,
 quiescent invalidation, and stale cache-generation retirement.
 [doc/TIERING.md](doc/TIERING.md) defines saturating hotness profiles, single

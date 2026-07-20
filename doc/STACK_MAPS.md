@@ -70,7 +70,7 @@ Float64 SSA state, within the per-site bound, across normal ABI return.
 `RecoveryOperation::captured_value` consumes that state as a logical-frame
 input: compilation preserves and remaps the requested definition, verifies
 straight-line availability or CFG dominance, forces it through allocation and
-liveness, and resolves it to the exact captured index. Materialized object
-recovery, concrete interpreter-frame installation, unwind registration,
-resumable transfer into a stock runtime, and on-stack replacement build on this
-primitive frame state but are not claimed by the current interface.
+liveness, and resolves it to the exact captured index. Atomic object and
+logical-frame materialization plus bounded OSR entry now consume this primitive
+state. Concrete stock-interpreter frame adapters, unwind registration, and
+resumable transfer remain outside the current interface.

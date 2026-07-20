@@ -95,6 +95,12 @@ emits the production eight-way-unrolled body. Background jobs compile only an
 immutable snapshot of numeric bytecode and constants and never access Lua GC
 objects. Broader language regions still need additional tier-specific lowering.
 
+The core OSR contract can now marshal a bounded typed interpreter frame into a
+generation-stable compiled region and preserve its exact arguments across a
+diagnosed exit; see [ON_STACK_REPLACEMENT.md](ON_STACK_REPLACEMENT.md). Current
+language adapters still switch already-compiled callables between invocations.
+They do not yet trigger OSR from a stock interpreter backedge.
+
 The shared background execution primitive is now
 `CompilationScheduler`. Frontends can deduplicate an expected generation,
 bound queued work by task and byte budgets, select urgency, and retain a ticket
