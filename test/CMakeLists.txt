@@ -11,6 +11,29 @@ endif()
 
 add_test(NAME unijit.unit COMMAND unijit_tests)
 
+if(UNIJIT_BUILD_QUALIFICATION_TESTS)
+  add_executable(unijit_differential_fuzz differential_fuzz.cpp)
+  target_link_libraries(unijit_differential_fuzz PRIVATE UniJIT::unijit)
+  target_compile_features(unijit_differential_fuzz PRIVATE cxx_std_17)
+  if(MSVC)
+    target_compile_options(
+      unijit_differential_fuzz PRIVATE /W4 /permissive-)
+  else()
+    target_compile_options(
+      unijit_differential_fuzz PRIVATE -Wall -Wextra -Wpedantic)
+  endif()
+  add_test(
+    NAME unijit.qualification.differential_fuzz
+    COMMAND unijit_differential_fuzz
+            --seed 0x554E494A4954465A
+            --programs 128
+            --inputs 64
+            --nodes 48)
+  set_tests_properties(
+    unijit.qualification.differential_fuzz
+    PROPERTIES LABELS qualification TIMEOUT 180)
+endif()
+
 find_package(Python3 QUIET COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
   add_test(

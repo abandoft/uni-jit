@@ -14,6 +14,8 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(UNIJIT_BUILD_TESTS "Build UniJIT tests" ON)
+option(UNIJIT_BUILD_QUALIFICATION_TESTS
+  "Build deterministic stress and differential-fuzz qualification tests" OFF)
 option(UNIJIT_BUILD_BENCHMARKS "Build UniJIT benchmarks" OFF)
 option(UNIJIT_BUILD_LUA_REFERENCE "Build the pinned stock Lua runtime" OFF)
 option(UNIJIT_BUILD_LUAJIT_REFERENCE "Build the pinned LuaJIT runtime" OFF)
