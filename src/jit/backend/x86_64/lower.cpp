@@ -18,6 +18,7 @@ constexpr int kRax = 0;
 constexpr int kRcx = 1;
 constexpr int kRdx = 2;
 constexpr int kRsp = 4;
+constexpr int kRsi = 6;
 constexpr int kRdi = 7;
 constexpr int kR8 = 8;
 constexpr int kR9 = 9;
@@ -26,8 +27,14 @@ constexpr int kR11 = 11;
 
 #if defined(_WIN32)
 constexpr int kArgumentRegister = kRcx;
+constexpr int kRuntimeArgument0 = kRcx;
+constexpr int kRuntimeArgument1 = kRdx;
+constexpr std::size_t kCallStackAdjustment = 40;
 #else
 constexpr int kArgumentRegister = kRdi;
+constexpr int kRuntimeArgument0 = kRdi;
+constexpr int kRuntimeArgument1 = kRsi;
+constexpr std::size_t kCallStackAdjustment = 8;
 #endif
 
 constexpr int kReturnRegister = kRax;
@@ -153,6 +160,19 @@ class Assembler final {
     buffer_.emit_u8(0x0FU);
     buffer_.emit_u8(0xB6U);
     emit_modrm(3, destination, destination);
+  }
+
+  void address(int destination, int base, std::size_t byte_offset) {
+    emit_rex(destination, base);
+    buffer_.emit_u8(0x8DU);
+    emit_memory_modrm(destination, base);
+    buffer_.emit_u32(static_cast<std::uint32_t>(byte_offset));
+  }
+
+  void call_register(int target) {
+    emit_rex(2, target);
+    buffer_.emit_u8(0xFFU);
+    emit_modrm(3, 2, target);
   }
 
   std::size_t branch() {
@@ -292,6 +312,46 @@ int load_float_operand(Assembler* assembler, const ValueLocation& location,
   return scratch;
 }
 
+void save_live_across_call(Assembler* assembler,
+                           const ir::Function& function,
+                           const RegisterAllocation& allocation,
+                           std::size_t call_index) {
+  for (std::size_t value_index = 0; value_index < call_index; ++value_index) {
+    const ValueLocation& location = allocation.locations[value_index];
+    if (!location.in_register() ||
+        allocation.last_uses[value_index] <= call_index) {
+      continue;
+    }
+    if (function.nodes()[value_index].type == ir::ValueType::kFloat64) {
+      assembler->store_float(physical_float_register(location), kRsp,
+                             spill_offset(location));
+    } else {
+      assembler->store(physical_register(location), kRsp,
+                       spill_offset(location));
+    }
+  }
+}
+
+void restore_live_across_call(Assembler* assembler,
+                              const ir::Function& function,
+                              const RegisterAllocation& allocation,
+                              std::size_t call_index) {
+  for (std::size_t value_index = 0; value_index < call_index; ++value_index) {
+    const ValueLocation& location = allocation.locations[value_index];
+    if (!location.in_register() ||
+        allocation.last_uses[value_index] <= call_index) {
+      continue;
+    }
+    if (function.nodes()[value_index].type == ir::ValueType::kFloat64) {
+      assembler->load_float(physical_float_register(location), kRsp,
+                            spill_offset(location));
+    } else {
+      assembler->load(physical_register(location), kRsp,
+                      spill_offset(location));
+    }
+  }
+}
+
 LoweringResult lower_impl(const ir::Function& function) {
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
   return {{StatusCode::kUnsupportedArchitecture,
@@ -313,9 +373,27 @@ LoweringResult lower_impl(const ir::Function& function) {
     return {allocation.status, {}, 0};
   }
 
+  std::size_t maximum_call_arguments = 0;
+  for (const ir::Node& node : function.nodes()) {
+    if (node.opcode == ir::Opcode::kCall) {
+      maximum_call_arguments =
+          std::max(maximum_call_arguments,
+                   static_cast<std::size_t>(node.argument_count));
+    }
+  }
+  const std::size_t call_argument_base = allocation.spill_slots;
+  const std::size_t total_slots =
+      call_argument_base + maximum_call_arguments;
+  if (total_slots > kMaximumStackSize / sizeof(ir::Word)) {
+    return {{StatusCode::kResourceExhausted,
+             "x86-64 runtime-call frame exceeds the backend limit"},
+            {},
+            0};
+  }
+
   Assembler assembler;
   assembler.move_register(kArgumentBaseRegister, kArgumentRegister);
-  const std::size_t raw_stack_size = allocation.spill_slots * sizeof(ir::Word);
+  const std::size_t raw_stack_size = total_slots * sizeof(ir::Word);
   const std::size_t stack_size = (raw_stack_size + 15U) & ~std::size_t{15U};
   if (stack_size != 0) {
     assembler.reserve_stack(stack_size);
@@ -414,6 +492,49 @@ LoweringResult lower_impl(const ir::Function& function) {
         }
         break;
       }
+      case ir::Opcode::kCall: {
+        save_live_across_call(&assembler, function, allocation, index);
+        for (std::size_t argument_index = 0;
+             argument_index < node.argument_count; ++argument_index) {
+          const ir::Value argument = function.call_arguments()[
+              static_cast<std::size_t>(node.argument_begin) + argument_index];
+          const ValueLocation& source = allocation.locations[argument.id()];
+          const std::size_t argument_offset =
+              (call_argument_base + argument_index) * sizeof(ir::Word);
+          if (function.value_type(argument) == ir::ValueType::kFloat64) {
+            const int source_register = load_float_operand(
+                &assembler, source, kFloatScratch0);
+            assembler.store_float(source_register, kRsp, argument_offset);
+          } else {
+            const int source_register =
+                load_operand(&assembler, source, kScratch0);
+            assembler.store(source_register, kRsp, argument_offset);
+          }
+        }
+        assembler.address(kRuntimeArgument0, kRsp,
+                          call_argument_base * sizeof(ir::Word));
+        assembler.move_immediate(
+            kRuntimeArgument1, static_cast<ir::Word>(node.argument_count));
+        assembler.move_immediate(kScratch0, node.immediate);
+        assembler.reserve_stack(kCallStackAdjustment);
+        assembler.call_register(kScratch0);
+        assembler.release_stack(kCallStackAdjustment);
+        if (node.type == ir::ValueType::kFloat64) {
+          if (destination.in_register()) {
+            assembler.move_word_to_float(physical_float_register(destination),
+                                         kReturnRegister);
+          } else {
+            assembler.store(kReturnRegister, kRsp, spill_offset(destination));
+          }
+        } else if (destination.in_register()) {
+          assembler.move_register(physical_register(destination),
+                                  kReturnRegister);
+        } else {
+          assembler.store(kReturnRegister, kRsp, spill_offset(destination));
+        }
+        restore_live_across_call(&assembler, function, allocation, index);
+        break;
+      }
     }
   }
 
@@ -436,7 +557,7 @@ LoweringResult lower_impl(const ir::Function& function) {
   }
   assembler.return_to_caller();
 
-  return {Status::ok_status(), assembler.take_code(), allocation.spill_slots};
+  return {Status::ok_status(), assembler.take_code(), total_slots};
 }
 
 struct BranchFixup final {

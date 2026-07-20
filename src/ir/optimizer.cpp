@@ -52,6 +52,11 @@ PassResult transform_once(const Function& input) {
   const std::size_t node_count = input.nodes().size();
   std::vector<bool> live(node_count, false);
   live[input.return_value().id()] = true;
+  for (std::size_t index = 0; index < node_count; ++index) {
+    if (input.nodes()[index].opcode == Opcode::kCall) {
+      live[index] = true;
+    }
+  }
   for (std::size_t reverse = node_count; reverse > 0; --reverse) {
     const std::size_t index = reverse - 1;
     if (!live[index]) {
@@ -61,6 +66,13 @@ PassResult transform_once(const Function& input) {
     if (is_binary(node.opcode)) {
       live[node.lhs.id()] = true;
       live[node.rhs.id()] = true;
+    } else if (node.opcode == Opcode::kCall) {
+      for (std::size_t argument_index = 0;
+           argument_index < node.argument_count; ++argument_index) {
+        const Value argument = input.call_arguments()[
+            static_cast<std::size_t>(node.argument_begin) + argument_index];
+        live[argument.id()] = true;
+      }
     }
   }
 
@@ -95,6 +107,20 @@ PassResult transform_once(const Function& input) {
         known_constant[index] = true;
         constant_value[index] = node.immediate;
       }
+      continue;
+    }
+
+    if (node.opcode == Opcode::kCall) {
+      std::vector<Value> arguments;
+      arguments.reserve(node.argument_count);
+      for (std::size_t argument_index = 0;
+           argument_index < node.argument_count; ++argument_index) {
+        const Value argument = input.call_arguments()[
+            static_cast<std::size_t>(node.argument_begin) + argument_index];
+        arguments.push_back(mapped[argument.id()]);
+      }
+      mapped[index] = builder.call(unpack_runtime_helper(node.immediate),
+                                   std::move(arguments), node.type);
       continue;
     }
 

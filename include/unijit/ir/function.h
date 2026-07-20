@@ -11,9 +11,12 @@
 namespace unijit::ir {
 
 using Word = std::int64_t;
+using RuntimeHelper = Word (*)(const Word* arguments, std::size_t count);
 
 Word pack_float64(double value) noexcept;
 double unpack_float64(Word bits) noexcept;
+Word pack_runtime_helper(RuntimeHelper helper) noexcept;
+RuntimeHelper unpack_runtime_helper(Word bits) noexcept;
 
 class Value final {
  public:
@@ -47,6 +50,7 @@ enum class Opcode : std::uint8_t {
   kFloatAdd,
   kFloatSubtract,
   kFloatMultiply,
+  kCall,
 };
 
 enum class ValueType : std::uint8_t {
@@ -60,6 +64,8 @@ struct Node final {
   Value rhs;
   Word immediate{0};
   ValueType type{ValueType::kWord};
+  std::uint32_t argument_begin{0};
+  std::uint32_t argument_count{0};
 };
 
 class Function final {
@@ -72,6 +78,9 @@ class Function final {
                                            : ValueType::kWord;
   }
   const std::vector<Node>& nodes() const noexcept { return nodes_; }
+  const std::vector<Value>& call_arguments() const noexcept {
+    return call_arguments_;
+  }
   Value return_value() const noexcept { return return_value_; }
   ValueType return_type() const noexcept {
     return return_value_.valid() && return_value_.id() < nodes_.size()
@@ -90,6 +99,7 @@ class Function final {
   std::size_t parameter_count_{0};
   std::vector<ValueType> parameter_types_;
   std::vector<Node> nodes_;
+  std::vector<Value> call_arguments_;
   Value return_value_;
 };
 
@@ -112,6 +122,8 @@ class FunctionBuilder final {
   Value float64_add(Value lhs, Value rhs);
   Value float64_subtract(Value lhs, Value rhs);
   Value float64_multiply(Value lhs, Value rhs);
+  Value call(RuntimeHelper helper, std::vector<Value> arguments,
+             ValueType result_type = ValueType::kWord);
   Status set_return(Value value);
 
   Function build() && noexcept;

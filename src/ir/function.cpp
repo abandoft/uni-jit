@@ -20,6 +20,20 @@ double unpack_float64(Word bits) noexcept {
   return value;
 }
 
+Word pack_runtime_helper(RuntimeHelper helper) noexcept {
+  Word bits = 0;
+  static_assert(sizeof(bits) == sizeof(helper),
+                "runtime helpers must fit in one IR word");
+  std::memcpy(&bits, &helper, sizeof(bits));
+  return bits;
+}
+
+RuntimeHelper unpack_runtime_helper(Word bits) noexcept {
+  RuntimeHelper helper = nullptr;
+  std::memcpy(&helper, &bits, sizeof(helper));
+  return helper;
+}
+
 FunctionBuilder::FunctionBuilder(std::size_t parameter_count)
     : FunctionBuilder(std::vector<ValueType>(parameter_count,
                                              ValueType::kWord)) {}
@@ -107,6 +121,31 @@ Value FunctionBuilder::float64_subtract(Value lhs, Value rhs) {
 
 Value FunctionBuilder::float64_multiply(Value lhs, Value rhs) {
   return append_binary(Opcode::kFloatMultiply, lhs, rhs);
+}
+
+Value FunctionBuilder::call(RuntimeHelper helper,
+                            std::vector<Value> arguments,
+                            ValueType result_type) {
+  if (function_.nodes_.size() >= Value::kInvalidId ||
+      arguments.size() > std::numeric_limits<std::uint32_t>::max() ||
+      function_.call_arguments_.size() >
+          std::numeric_limits<std::uint32_t>::max() - arguments.size()) {
+    return {};
+  }
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  const auto argument_begin =
+      static_cast<std::uint32_t>(function_.call_arguments_.size());
+  const auto argument_count = static_cast<std::uint32_t>(arguments.size());
+  function_.call_arguments_.insert(function_.call_arguments_.end(),
+                                   arguments.begin(), arguments.end());
+  function_.nodes_.push_back(Node{Opcode::kCall,
+                                  {},
+                                  {},
+                                  pack_runtime_helper(helper),
+                                  result_type,
+                                  argument_begin,
+                                  argument_count});
+  return Value{id};
 }
 
 Status FunctionBuilder::set_return(Value value) {

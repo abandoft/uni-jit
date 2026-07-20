@@ -21,7 +21,7 @@ RegisterAllocation allocate_impl(const ir::Function& function,
   if (register_count == 0) {
     return {{StatusCode::kInvalidArgument,
              "linear scan requires at least one allocatable register"},
-            {}, 0};
+            {}, 0, {}};
   }
 
   const std::size_t value_count = function.nodes().size();
@@ -37,6 +37,15 @@ RegisterAllocation allocate_impl(const ir::Function& function,
         node.opcode == ir::Opcode::kFloatMultiply) {
       note_use(&last_use, node.lhs, index);
       note_use(&last_use, node.rhs, index);
+    } else if (node.opcode == ir::Opcode::kCall) {
+      for (std::size_t argument_index = 0;
+           argument_index < node.argument_count; ++argument_index) {
+        note_use(&last_use,
+                 function.call_arguments()[
+                     static_cast<std::size_t>(node.argument_begin) +
+                     argument_index],
+                 index);
+      }
     }
   }
   note_use(&last_use, function.return_value(), value_count);
@@ -84,12 +93,27 @@ RegisterAllocation allocate_impl(const ir::Function& function,
     }
   }
 
+  for (std::size_t call_index = 0; call_index < value_count; ++call_index) {
+    if (function.nodes()[call_index].opcode != ir::Opcode::kCall) {
+      continue;
+    }
+    for (std::size_t value_index = 0; value_index < call_index;
+         ++value_index) {
+      ValueLocation& location = locations[value_index];
+      if (location.in_register() && last_use[value_index] > call_index &&
+          location.spill_slot == ValueLocation::kNone) {
+        location.spill_slot = spill_slots++;
+      }
+    }
+  }
+
   if (spill_slots > maximum_spill_slots) {
     return {{StatusCode::kResourceExhausted,
              "linear scan exceeded the backend spill-frame limit"},
-            {}, 0};
+            {}, 0, {}};
   }
-  return {Status::ok_status(), std::move(locations), spill_slots};
+  return {Status::ok_status(), std::move(locations), spill_slots,
+          std::move(last_use)};
 }
 
 ControlFlowRegisterAllocation allocate_control_flow_impl(
@@ -328,7 +352,7 @@ RegisterAllocation allocate_linear_scan(const ir::Function& function,
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate linear-scan state"},
-            {}, 0};
+            {}, 0, {}};
   }
 }
 

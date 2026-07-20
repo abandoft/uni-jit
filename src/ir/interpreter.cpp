@@ -39,6 +39,7 @@ Word evaluate_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
       return pack_float64(unpack_float64(lhs) * unpack_float64(rhs));
     case Opcode::kParameter:
     case Opcode::kConstant:
+    case Opcode::kCall:
       return 0;
   }
   return 0;
@@ -66,6 +67,7 @@ EvaluationResult Interpreter::evaluate(const Function& function,
 
   try {
     std::vector<Word> values(function.nodes().size());
+    std::vector<Word> helper_arguments;
     for (std::size_t index = 0; index < function.nodes().size(); ++index) {
       const Node& node = function.nodes()[index];
       switch (node.opcode) {
@@ -75,6 +77,19 @@ EvaluationResult Interpreter::evaluate(const Function& function,
         case Opcode::kConstant:
           values[index] = node.immediate;
           break;
+        case Opcode::kCall: {
+          helper_arguments.resize(node.argument_count);
+          for (std::size_t argument_index = 0;
+               argument_index < node.argument_count; ++argument_index) {
+            const Value argument = function.call_arguments()[
+                static_cast<std::size_t>(node.argument_begin) +
+                argument_index];
+            helper_arguments[argument_index] = values[argument.id()];
+          }
+          values[index] = unpack_runtime_helper(node.immediate)(
+              helper_arguments.data(), helper_arguments.size());
+          break;
+        }
         case Opcode::kAdd:
         case Opcode::kSubtract:
         case Opcode::kMultiply:

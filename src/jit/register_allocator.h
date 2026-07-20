@@ -26,6 +26,7 @@ struct RegisterAllocation final {
   Status status;
   std::vector<ValueLocation> locations;
   std::size_t spill_slots{0};
+  std::vector<std::size_t> last_uses;
 };
 
 struct ControlFlowRegisterAllocation final {
