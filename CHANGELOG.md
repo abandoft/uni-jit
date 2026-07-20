@@ -1,3 +1,7 @@
+## 0.1.6
+
+- Added typed Float64 CFG parameters, constants, arithmetic, loop-carried edge validation, interpreter execution, and native lowering on AArch64, x86-64, and RISC-V 64.
+
 ## 0.1.5
 
 - Added a single-source language-loop benchmark across QuickJS, UniJIT, V8 Jitless, and V8 with pinned Node execution, bit-exact validation, engine metadata, and retained CI records.
