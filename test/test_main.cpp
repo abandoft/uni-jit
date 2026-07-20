@@ -94,6 +94,116 @@ void test_differential_arithmetic() {
   }
 }
 
+Function float64_function() {
+  FunctionBuilder builder(
+      std::vector<unijit::ir::ValueType>(2,
+                                         unijit::ir::ValueType::kFloat64));
+  const Value sum =
+      builder.float64_add(builder.parameter(0), builder.parameter(1));
+  const Value scaled =
+      builder.float64_multiply(sum, builder.float64_constant(0.5));
+  const Value result = builder.float64_subtract(scaled, builder.parameter(1));
+  expect(builder.set_return(result).ok(), "Float64 return must be accepted");
+  return std::move(builder).build();
+}
+
+void test_float64_ir_and_interpreter() {
+  const Function function = float64_function();
+  expect(unijit::ir::verify(function).ok(),
+         "typed Float64 SSA must pass verification");
+  expect(function.return_type() == unijit::ir::ValueType::kFloat64,
+         "Float64 result type must remain visible in the function");
+
+  const std::array<Word, 2> args = {unijit::ir::pack_float64(19.25),
+                                    unijit::ir::pack_float64(-4.75)};
+  const auto interpreted =
+      Interpreter::evaluate(function, args.data(), args.size());
+  expect(interpreted.ok(), "Float64 interpreter execution must succeed");
+  expect(unijit::ir::unpack_float64(interpreted.value) == 12.0,
+         "Float64 interpreter must preserve IEEE-754 arithmetic");
+
+  const auto optimization = unijit::ir::Optimizer::run(function);
+  expect(optimization.ok() &&
+             optimization.function.return_type() ==
+                 unijit::ir::ValueType::kFloat64,
+         "optimizer must preserve Float64 types and operations");
+
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "Float64 SSA must compile to native code");
+  if (!compilation.ok()) {
+    return;
+  }
+  const std::array<double, 8> samples = {0.0,      -0.0,   1.25,   -7.5,
+                                         1024.75, -33.125, 1.0e12, -1.0e-9};
+  for (std::size_t lhs = 0; lhs < samples.size(); ++lhs) {
+    const std::array<Word, 2> native_args = {
+        unijit::ir::pack_float64(samples[lhs]),
+        unijit::ir::pack_float64(samples[samples.size() - lhs - 1])};
+    const auto expected =
+        Interpreter::evaluate(function, native_args.data(), native_args.size());
+    const auto native =
+        compilation.function->invoke(native_args.data(), native_args.size());
+    expect(native.ok() && expected.ok() && native.value == expected.value,
+           "native Float64 arithmetic must match the interpreter bits");
+  }
+}
+
+void test_verifier_rejects_mixed_arithmetic() {
+  FunctionBuilder builder(
+      std::vector<unijit::ir::ValueType>{unijit::ir::ValueType::kFloat64});
+  const Value invalid =
+      builder.add(builder.parameter(0), builder.float64_constant(1.0));
+  expect(builder.set_return(invalid).ok(),
+         "mixed-type fixture must contain a return");
+  expect(!unijit::ir::verify(std::move(builder).build()).ok(),
+         "verifier must reject mixed Word and Float64 arithmetic");
+}
+
+void test_float64_spill_path() {
+  constexpr std::size_t kParameters = 16;
+  FunctionBuilder builder(std::vector<unijit::ir::ValueType>(
+      kParameters, unijit::ir::ValueType::kFloat64));
+  std::vector<Value> values;
+  values.reserve(kParameters);
+  for (std::size_t index = 0; index < kParameters; ++index) {
+    values.push_back(builder.parameter(index));
+  }
+  while (values.size() > 1) {
+    std::vector<Value> reduced;
+    reduced.reserve((values.size() + 1) / 2);
+    for (std::size_t index = 0; index < values.size(); index += 2) {
+      if (index + 1 < values.size()) {
+        reduced.push_back(
+            builder.float64_add(values[index], values[index + 1]));
+      } else {
+        reduced.push_back(values[index]);
+      }
+    }
+    values = std::move(reduced);
+  }
+  expect(builder.set_return(values.front()).ok(),
+         "Float64 spill fixture must return its reduction");
+  const Function function = std::move(builder).build();
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "Float64 register pressure must compile");
+  if (!compilation.ok()) {
+    return;
+  }
+  expect(compilation.function->stats().spill_slots > 0,
+         "Float64 register pressure must exercise spill slots");
+
+  std::array<Word, kParameters> args{};
+  for (std::size_t index = 0; index < args.size(); ++index) {
+    args[index] = unijit::ir::pack_float64(
+        static_cast<double>(index + 1) * 0.25);
+  }
+  const auto expected =
+      Interpreter::evaluate(function, args.data(), args.size());
+  const auto native = compilation.function->invoke(args.data(), args.size());
+  expect(native.ok() && expected.ok() && native.value == expected.value,
+         "spilled native Float64 values must match the interpreter bits");
+}
+
 void test_spill_path() {
   constexpr std::size_t kParameters = 16;
   FunctionBuilder builder(kParameters);
@@ -394,6 +504,9 @@ int main() {
   test_verifier_rejects_forward_reference();
   test_constant_native_function();
   test_differential_arithmetic();
+  test_float64_ir_and_interpreter();
+  test_verifier_rejects_mixed_arithmetic();
+  test_float64_spill_path();
   test_spill_path();
   test_argument_validation();
   test_optimization_pipeline();
