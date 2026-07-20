@@ -508,6 +508,29 @@ int main() {
     py_finalize();
     return EXIT_FAILURE;
   }
+  constexpr char kNativeStridedLoopSource[] =
+      "native_strided_loop = unijit.compile('''def descending_range():\n"
+      "    sum = 0.0\n"
+      "    for iteration in range(10.0, -1.0, -2.0):\n"
+      "        if iteration < 4.0:\n"
+      "            continue\n"
+      "        sum += iteration\n"
+      "    return sum\n''')\n"
+      "strided_loop_result = native_strided_loop()\n";
+  if (!py_exec(kNativeStridedLoopSource,
+               "<unijit-pocketpy-strided-loop>", EXEC_MODE, nullptr)) {
+    py_printexc();
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  const py_Ref strided_loop_result =
+      py_getglobal(py_name("strided_loop_result"));
+  if (strided_loop_result == nullptr || !py_isfloat(strided_loop_result) ||
+      py_tofloat(strided_loop_result) != 28.0) {
+    std::cerr << "PocketPy runtime did not execute a strided range loop\n";
+    py_finalize();
+    return EXIT_FAILURE;
+  }
   if (!py_exec("loop_tier = unijit.stats(native_loop)\n"
                "assert loop_tier['active_tier'] == 'baseline'\n"
                "assert not loop_tier['tierable']\n"

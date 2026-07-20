@@ -382,6 +382,20 @@ int main() {
   }
   JS_FreeValue(context, result);
 
+  const std::string strided_loop_call =
+      std::string("const nativeStridedLoop = unijit.compile(") +
+      kStridedLoopSources[1] + "); nativeStridedLoop();";
+  result = JS_Eval(context, strided_loop_call.data(), strided_loop_call.size(),
+                   "<unijit-quickjs-strided-loop>", JS_EVAL_TYPE_GLOBAL);
+  number = 0.0;
+  if (JS_IsException(result) ||
+      JS_ToFloat64(context, &number, result) != 0 || number != 28.0) {
+    std::cerr << "QuickJS runtime did not execute a strided loop\n";
+    JS_FreeValue(context, result);
+    return EXIT_FAILURE;
+  }
+  JS_FreeValue(context, result);
+
   constexpr char kLoopStatsSource[] =
       "const loopStats = unijit.stats(nativeLoop);"
       "loopStats.tierable === false &&"
