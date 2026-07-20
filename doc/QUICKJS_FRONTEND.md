@@ -49,10 +49,13 @@ later prototype mutation therefore cannot substitute different source for the
 function being compiled. The compiled closure owns its executable allocation
 through a QuickJS class object and releases it from the class finalizer.
 
-## Reproducible call benchmark
+## Reproducible V8 target benchmark
 
-The embedded benchmark compares stock bytecode and the UniJIT closure through
-the same `JS_Call` boundary and checks a bitwise checksum for every sample:
+The embedded benchmark and Node execute the same
+`benchmark/quickjs/numeric_call.js` source. Timing surrounds a language-level
+loop that calls the selected kernel, so the comparison does not include one
+C++-to-VM transition per measured iteration. Every QuickJS, UniJIT, V8
+Jitless, and V8 sample must produce the same Float64 bit pattern:
 
 ```sh
 cmake -S . -B build/quickjs -G Ninja \
@@ -60,12 +63,15 @@ cmake -S . -B build/quickjs -G Ninja \
   -DUNIJIT_BUILD_QUICKJS_REFERENCE=ON \
   -DUNIJIT_BUILD_BENCHMARKS=ON
 cmake --build build/quickjs --target unijit_quickjs_benchmark
-build/quickjs/bin/unijit_quickjs_benchmark \
-  --warmup 10000 --iterations 100000 --samples 7
+python3 benchmark/quickjs/run_v8.py \
+  --unijit build/quickjs/bin/unijit_quickjs_benchmark \
+  --node "$(command -v node)" \
+  --warmup 10000 --iterations 100000 --samples 7 \
+  > build/quickjs/quickjs-targets.json
 ```
 
-On the initial Darwin AArch64 validation host, the current arithmetic call
-workload measured 22.292 ns for stock QuickJS and 17.922 ns for UniJIT, a
-1.244x speedup. This is a narrow call-boundary result, not yet a claim of
-V8-Jitless parity; shared V8-Jitless workloads and larger functions remain a
-delivery gate.
+The record includes the exact UniJIT and QuickJS revisions, Node and V8
+versions, host OS and architecture, measurement policy, medians, checksums,
+and UniJIT ratios against both V8 modes. This remains one numeric kernel rather
+than a whole-language performance claim; CI retains every target record for
+trend analysis.

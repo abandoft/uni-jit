@@ -79,11 +79,35 @@ specialization with identical floating-point inputs in stock Lua, UniJIT, and
 LuaJIT. Checksums are compared without integer truncation before performance
 ratios are emitted.
 
-## PocketPy call comparison
+## QuickJS, V8 Jitless, and V8 target comparison
 
-The PocketPy benchmark compares stock 2.1.8 bytecode and a guarded UniJIT
-Float64 callable through the same `py_call` API. It uses identical inputs,
-warmup, sample counts, and bitwise result checksums:
+The JavaScript target runner executes one checked-in source file in stock
+QuickJS, the UniJIT QuickJS closure, V8 Jitless, and normal V8. The measured
+loop lives inside JavaScript in every engine, and all results must have the
+same Float64 bit pattern:
+
+```sh
+cmake -S . -B build/quickjs -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DUNIJIT_BUILD_QUICKJS_REFERENCE=ON \
+  -DUNIJIT_BUILD_BENCHMARKS=ON
+cmake --build build/quickjs --target unijit_quickjs_benchmark
+python3 benchmark/quickjs/run_v8.py \
+  --unijit build/quickjs/bin/unijit_quickjs_benchmark \
+  --node "$(command -v node)" \
+  > build/quickjs/quickjs-targets.json
+```
+
+The JSON records exact source revisions and Node/V8 versions. Hosted
+validation pins Node, runs both V8 modes, and retains the record as an
+artifact.
+
+## PocketPy and CPython 3.14.6 JIT target comparison
+
+The Python target runner executes one checked-in workload in PocketPy, the
+UniJIT PocketPy callable, CPython 3.14.6 with JIT disabled, and CPython 3.14.6
+with JIT enabled. The measured loop lives inside Python in every engine, and
+all results must have the same Float64 bit pattern:
 
 ```sh
 cmake -S . -B build/pocketpy -G Ninja \
@@ -91,10 +115,13 @@ cmake -S . -B build/pocketpy -G Ninja \
   -DUNIJIT_BUILD_POCKETPY_REFERENCE=ON \
   -DUNIJIT_BUILD_BENCHMARKS=ON
 cmake --build build/pocketpy --target unijit_pocketpy_benchmark
-build/pocketpy/bin/unijit_pocketpy_benchmark \
-  --warmup 10000 --iterations 100000 --samples 7 \
-  > build/pocketpy/pocketpy-call.json
+python3 benchmark/pocketpy/run_cpython.py \
+  --unijit build/pocketpy/bin/unijit_pocketpy_benchmark \
+  --python /path/to/jit-capable/python3.14 \
+  > build/pocketpy/pocketpy-targets.json
 ```
 
-This isolates the current numeric call tier. It does not substitute for the
-planned shared-kernel comparison with Python 3.14.6 JIT.
+The runner requires exactly CPython 3.14.6, checks `sys._jit` availability and
+the requested runtime mode, and records exact source revisions. Hosted
+validation verifies the official Python.org package checksum before extracting
+it below `build/` and retains the comparison record as an artifact.

@@ -60,11 +60,14 @@ PocketPy's `ZeroDivisionError("float division by zero")`. This narrow contract
 prevents fallback-free native code from silently changing unsupported Python
 behavior.
 
-## Reproducible call benchmark
+## Reproducible CPython JIT target benchmark
 
-The embedded benchmark compares PocketPy bytecode and the UniJIT callable
-through the same `py_call` boundary. Every sample must produce the same bitwise
-checksum:
+PocketPy, UniJIT, and CPython execute the same
+`benchmark/pocketpy/numeric_call.py` workload. Timing surrounds a
+language-level loop that calls the selected kernel, so the comparison does not
+include one C-to-VM transition per measured iteration. The CPython driver
+requires exactly 3.14.6, verifies that `sys._jit` is available, and rejects a
+process whose actual mode disagrees with `PYTHON_JIT=0` or `PYTHON_JIT=1`:
 
 ```sh
 cmake -S . -B build/pocketpy -G Ninja \
@@ -72,12 +75,14 @@ cmake -S . -B build/pocketpy -G Ninja \
   -DUNIJIT_BUILD_POCKETPY_REFERENCE=ON \
   -DUNIJIT_BUILD_BENCHMARKS=ON
 cmake --build build/pocketpy --target unijit_pocketpy_benchmark
-build/pocketpy/bin/unijit_pocketpy_benchmark \
-  --warmup 10000 --iterations 100000 --samples 7
+python3 benchmark/pocketpy/run_cpython.py \
+  --unijit build/pocketpy/bin/unijit_pocketpy_benchmark \
+  --python /path/to/jit-capable/python3.14 \
+  --warmup 10000 --iterations 100000 --samples 7 \
+  > build/pocketpy/pocketpy-targets.json
 ```
 
-On the initial Darwin AArch64 validation host, this arithmetic call workload
-measured 132.661 ns for stock PocketPy and 93.617 ns for UniJIT, a 1.417x
-speedup. This is a narrow call-boundary result, not yet a claim of parity with
-Python 3.14.6 JIT. Shared Python/PocketPy kernels and broader language coverage
-remain delivery gates.
+The hosted baseline downloads the official Python.org macOS 3.14.6 package,
+checks its published SHA-256 before use, runs interpreter and JIT modes, and
+retains the complete comparison record. The current workload is a target
+baseline, not a whole-language parity claim.
