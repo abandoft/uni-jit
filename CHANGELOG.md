@@ -1,5 +1,7 @@
 ## 0.1.3
 
+- Added effect-aware typed runtime-helper calls with flat value-bits arguments,
+  cross-call liveness preservation, and native ABI lowering on all targets.
 - Added guarded stock Lua 5.5 Float64 bytecode compilation and a reproducible
   three-engine floating-point call benchmark.
 

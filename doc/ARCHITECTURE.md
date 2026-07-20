@@ -55,6 +55,13 @@ dynamic-language runtimes. Each backend keeps Float64 values in its native
 floating-point register bank and only transfers result bits to the shared
 return register at the compiled-function boundary.
 
+Effectful runtime helpers use one portable signature: a pointer to a flat
+value-bits argument area plus its element count, returning one value-bits word.
+Calls are explicit SSA definitions and cannot be removed when their result is
+dead. Lowering saves caller-clobbered Word and Float64 values that remain live,
+materializes the per-call argument area, satisfies each platform's stack and
+shadow-space ABI, and preserves the link register on AArch64 and RISC-V 64.
+
 The optimizing tier adds a separate CFG SSA representation with explicit
 basic-block parameters. Predecessor edges supply every block argument, making
 phi semantics visible in construction, verification, interpretation, and
