@@ -295,12 +295,17 @@ ControlFlowEdgeMoves plan_control_flow_edge_impl(
   const ir::BasicBlock& target = function.blocks()[edge.target.id()];
   std::vector<ControlFlowRegisterMove> pending;
   pending.reserve(edge.arguments.size());
+  std::vector<std::size_t> destinations;
+  destinations.reserve(edge.arguments.size());
   for (std::size_t index = 0; index < edge.arguments.size(); ++index) {
     const ir::Value parameter = target.parameters[index];
     const std::size_t destination = allocation.register_indices[parameter.id()];
-    if (destination == ValueLocation::kNone) {
+    if (destination == ValueLocation::kNone ||
+        std::find(destinations.begin(), destinations.end(), destination) !=
+            destinations.end()) {
       return {false, {}};
     }
+    destinations.push_back(destination);
 
     const ir::Value argument = edge.arguments[index];
     const bool source_in_register =

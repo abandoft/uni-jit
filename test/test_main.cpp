@@ -981,6 +981,57 @@ void test_control_flow_parallel_edge_copy() {
   }
 }
 
+void test_control_flow_preserves_nonlocal_merge_state() {
+  using unijit::ir::ValueType;
+  const std::vector<ValueType> state_types(4, ValueType::kFloat64);
+  unijit::ir::ControlFlowBuilder builder(state_types);
+  const unijit::ir::Block state = builder.create_block(state_types);
+  const unijit::ir::Block true_arm = builder.create_block(0);
+  const unijit::ir::Block false_arm = builder.create_block(0);
+  const unijit::ir::Block merge = builder.create_block(state_types);
+  expect(builder
+             .jump(state, {builder.parameter(0), builder.parameter(1),
+                           builder.parameter(2), builder.parameter(3)})
+             .ok(),
+         "nonlocal merge fixture must enter its state block");
+
+  expect(builder.set_insertion_block(state).ok(),
+         "nonlocal merge state block must exist");
+  const Value condition = builder.float64_less_than(
+      builder.block_parameter(state, 1), builder.float64_constant(10.0));
+  expect(builder.branch(condition, true_arm, {}, false_arm, {}).ok(),
+         "nonlocal merge fixture must branch through empty arms");
+
+  const std::vector<Value> state_values = {
+      builder.block_parameter(state, 0), builder.block_parameter(state, 1),
+      builder.block_parameter(state, 2), builder.block_parameter(state, 3)};
+  expect(builder.set_insertion_block(true_arm).ok() &&
+             builder.jump(merge, state_values).ok(),
+         "true arm must forward nonlocal state");
+  expect(builder.set_insertion_block(false_arm).ok() &&
+             builder.jump(merge, state_values).ok(),
+         "false arm must forward nonlocal state");
+  expect(builder.set_insertion_block(merge).ok() &&
+             builder.set_return(builder.block_parameter(merge, 2)).ok(),
+         "merge must return the third state value");
+
+  const unijit::ir::ControlFlowFunction function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "nonlocal merge state must satisfy CFG verification");
+  const std::array<Word, 4> arguments = {
+      unijit::ir::pack_float64(1.0), unijit::ir::pack_float64(2.0),
+      unijit::ir::pack_float64(3.0), unijit::ir::pack_float64(4.0)};
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "nonlocal merge state must compile");
+  if (compilation.ok()) {
+    const auto result =
+        compilation.function->invoke(arguments.data(), arguments.size());
+    expect(result.ok() &&
+               result.value == unijit::ir::pack_float64(3.0),
+           "edge copies must preserve simultaneously live nonlocal state");
+  }
+}
+
 void test_control_flow_rejects_non_dominating_value() {
   unijit::ir::ControlFlowBuilder builder(0);
   const unijit::ir::Block left = builder.create_block(0);
@@ -1135,6 +1186,7 @@ int main() {
   test_control_flow_float64_comparisons();
   test_control_flow_merge();
   test_control_flow_parallel_edge_copy();
+  test_control_flow_preserves_nonlocal_merge_state();
   test_control_flow_rejects_non_dominating_value();
   test_control_flow_safepoint();
   test_control_flow_execution_budget();
