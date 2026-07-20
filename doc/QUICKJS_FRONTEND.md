@@ -81,9 +81,9 @@ At installation, the module captures the original
 later prototype mutation therefore cannot substitute different source for the
 function being compiled. The compiled closure owns its executable allocation
 through a QuickJS class object and releases it from the class finalizer. The
-complete counted-loop path remains a single optimized CFG tier and reports
-`tierable: false`, because repeating the same CFG compilation currently has no
-distinct lower-latency form.
+complete counted-loop path currently installs one optimized CFG code version
+in the baseline slot and reports `tierable: false`, because repeating the same
+CFG compilation has no distinct lower-latency form.
 
 ## Reproducible V8 target benchmark
 

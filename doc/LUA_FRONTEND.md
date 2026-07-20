@@ -32,8 +32,30 @@ addition, subtraction, and multiplication.
 `unijit.compile_float(function)` creates a separate Float64 specialization.
 Every declared argument must carry Lua's Float64 tag (integer values are not
 silently converted at the guard boundary), and the result is returned with the
-Float64 tag. This explicit entry point keeps the initial specialization policy
-deterministic until runtime type profiling and multi-version dispatch land.
+Float64 tag. This explicit entry point keeps numeric dispatch deterministic.
+
+Both entry points publish a verified baseline immediately. Straight-line
+callables claim background optimization after 64 invocations. Accepted numeric
+loops also derive loop-latch executions from their constant start and guarded
+integer limit and can claim optimization after 10,000 iterations in one call.
+The bounded worker compiles an immutable copy of numeric bytecode and constants;
+it never reads a Lua stack, closure, `Proto`, or other garbage-collected object.
+Publication checks the captured baseline generation so late work cannot replace
+a newer callable version.
+
+The module exposes lifecycle controls and telemetry:
+
+```lua
+local completed = unijit.wait(native, 5000)
+local state = unijit.stats(native)
+local cancelled = unijit.cancel(native)
+```
+
+`stats` reports active tier and generation, invocation and backedge hotness,
+compilation outcomes, promotions, scheduler state, code size, and IR size.
+`wait` bounds only the caller's wait. `cancel` immediately removes queued work
+or requests cooperative cancellation from a running compiler; collection of
+the callable requests the same cancellation automatically.
 
 ## Supported bytecode contract
 
@@ -60,15 +82,17 @@ The first CFG path also accepts one structured numeric `for` loop when its
 start and step are integer constants and the step is exactly 1. The limit is a
 guarded runtime integer. Loop-carried Lua registers become explicit CFG block
 parameters, and a bytecode liveness scan avoids carrying dead setup
-registers. The production path uses overflow-safe eight-way body unrolling, a
-bounded scalar tail, and one cooperative safepoint poll per dispatch, so no
-more than eight source iterations occur between polls. Starts near
+registers. The baseline path emits one scalar body copy; the optimized path uses
+overflow-safe eight-way body unrolling, a bounded scalar tail, and one
+cooperative safepoint poll per dispatch, so no more than eight source iterations
+occur between optimized polls. Starts near
 `math.maxinteger`, zero-iteration loops, and signed limits preserve stock Lua
 results; nested loops, non-unit steps, and early returns are rejected for now.
 
-The compiled closure owns its executable allocation through a Lua userdata
-upvalue. Its finalizer is idempotent, so collection and adversarial repeated
-finalizer calls cannot double-free native code.
+The compiled closure owns shared tier state through a Lua userdata upvalue. Its
+finalizer cancels outstanding compilation and is idempotent, so collection and
+adversarial repeated finalizer calls cannot double-free native code. A running
+job retains the snapshot and tier state until it reaches a terminal result.
 
 The invocation fast path reads guarded arguments directly from Lua 5.5's
 current `CallInfo` and `TValue` frame, then writes the integer result to the

@@ -27,8 +27,9 @@ background admission, global version deduplication, cooperative cancellation,
 weighted priorities, deterministic shutdown, and scheduler telemetry.
 [doc/QUALIFICATION.md](doc/QUALIFICATION.md) defines deterministic fuzzing,
 concurrency stress, sanitizers, and commercial performance floors.
-[doc/LUA_FRONTEND.md](doc/LUA_FRONTEND.md) describes the first stock Lua 5.5
-integration contract, and [doc/QUICKJS_FRONTEND.md](doc/QUICKJS_FRONTEND.md)
+[doc/LUA_FRONTEND.md](doc/LUA_FRONTEND.md) describes the stock Lua 5.5
+integration contract, invocation/backedge tiering, and lifecycle telemetry;
+[doc/QUICKJS_FRONTEND.md](doc/QUICKJS_FRONTEND.md)
 defines the stock QuickJS specialization boundary, asynchronous live tiering,
 callable telemetry, bounded waiting, and cancellation.
 [doc/POCKETPY_FRONTEND.md](doc/POCKETPY_FRONTEND.md) documents the PocketPy

@@ -5,6 +5,8 @@
 - Added production compilation-scheduler stress that coordinates many producers through a deterministic barrier, compiles and publishes native code concurrently, validates cache residency and execution, reconciles lifecycle counters, retains machine-readable records, runs under ThreadSanitizer, and is consumed through the installed CMake package.
 - Integrated live QuickJS baseline-to-optimized tiering so accepted straight-line callables publish low-latency baseline code immediately, claim optimization after 64 calls, compile through a bounded runtime-independent worker, reuse an exact-source optimized cache, reject stale generations, and cancel queued work during garbage collection.
 - Added QuickJS callable telemetry plus bounded waiting and explicit cancellation through `unijit.stats`, `unijit.wait`, and `unijit.cancel`, with deterministic tests for distinct compilation levels, asynchronous promotion, scheduler completion, non-tierable CFG reporting, and retained executable lifetime.
+- Integrated live Lua 5.5 integer and Float64 tiering with immutable numeric prototype snapshots, independent mode-and-tier caches, scalar-loop baselines, eight-way-unrolled optimized loops, atomic expected-generation publication, and runtime-independent background compilation after 64 calls or 10,000 measured loop iterations.
+- Added Lua callable and loop telemetry plus bounded waiting, explicit cancellation, and GC cancellation through `unijit.stats`, `unijit.wait`, and `unijit.cancel`, with deterministic tests proving invocation-triggered straight-line promotion, exact parameter-derived backedge accounting, structurally distinct optimized loop IR, and idempotent finalization.
 
 ## 0.1.6
 

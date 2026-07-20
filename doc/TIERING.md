@@ -79,9 +79,16 @@ callables, but submits optimization to a bounded frontend-owned scheduler after
 translates retained immutable source, publishes through the thread-safe cache,
 checks cancellation, and installs against the captured tier generation. The
 QuickJS class finalizer cancels outstanding work while the job's shared state
-keeps all native publication inputs alive through terminal completion. Lua
-still needs frontend-owned invocation and backedge profiling, and broader
-language regions need additional tier-specific lowering.
+keeps all native publication inputs alive through terminal completion.
+
+Lua 5.5 applies invocation profiling to straight-line integer and Float64
+specializations and derives loop-latch counts from the accepted numeric-loop
+start and guarded limit. A callable claims optimization after 64 calls or
+10,000 loop iterations. Straight-line baseline compilation skips the optimizer;
+numeric-loop baseline compilation emits a scalar body, while the optimized tier
+emits the production eight-way-unrolled body. Background jobs compile only an
+immutable snapshot of numeric bytecode and constants and never access Lua GC
+objects. Broader language regions still need additional tier-specific lowering.
 
 The shared background execution primitive is now
 `CompilationScheduler`. Frontends can deduplicate an expected generation,
