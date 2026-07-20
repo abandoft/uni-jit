@@ -4,6 +4,8 @@ file(GLOB_RECURSE UNIJIT_POCKETPY_SOURCES CONFIGURE_DEPENDS
   "${UNIJIT_POCKETPY_SOURCE_DIR}/src/*.c")
 
 add_library(unijit_pocketpy_reference STATIC ${UNIJIT_POCKETPY_SOURCES})
+set_source_files_properties(${UNIJIT_POCKETPY_SOURCES}
+  PROPERTIES UNITY_GROUP pocketpy)
 target_include_directories(unijit_pocketpy_reference SYSTEM
   PUBLIC "${UNIJIT_POCKETPY_SOURCE_DIR}/include")
 target_compile_features(unijit_pocketpy_reference PRIVATE c_std_17)
@@ -36,7 +38,9 @@ endif()
 set_target_properties(unijit_pocketpy_reference PROPERTIES
   ARCHIVE_OUTPUT_DIRECTORY "${PROJECT_BINARY_DIR}/lib"
   C_VISIBILITY_PRESET hidden
-  POSITION_INDEPENDENT_CODE ON)
+  POSITION_INDEPENDENT_CODE ON
+  UNITY_BUILD ON
+  UNITY_BUILD_MODE GROUP)
 
 add_library(unijit_pocketpy_frontend STATIC
   jit_module.cpp
