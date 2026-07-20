@@ -107,6 +107,9 @@ if(UNIJIT_BUILD_BENCHMARKS)
   add_executable(unijit_quickjs_benchmark
     "${PROJECT_SOURCE_DIR}/benchmark/quickjs/call_runner.cpp")
   target_compile_features(unijit_quickjs_benchmark PRIVATE cxx_std_17)
+  target_compile_definitions(unijit_quickjs_benchmark PRIVATE
+    "UNIJIT_QUICKJS_BENCHMARK_SOURCE=\"${PROJECT_SOURCE_DIR}/benchmark/quickjs/numeric_call.js\""
+    "UNIJIT_QUICKJS_BENCHMARK_VERSION=\"${UNIJIT_QUICKJS_VERSION}\"")
   target_link_libraries(unijit_quickjs_benchmark
     PRIVATE unijit_quickjs_frontend)
   set_target_properties(unijit_quickjs_benchmark PROPERTIES
@@ -129,5 +132,11 @@ if(UNIJIT_BUILD_BENCHMARKS)
     if(UNIJIT_WARNINGS_AS_ERRORS)
       target_compile_options(unijit_quickjs_benchmark PRIVATE -Werror)
     endif()
+  endif()
+
+  if(UNIJIT_BUILD_TESTS)
+    add_test(NAME unijit.quickjs_benchmark_smoke
+      COMMAND unijit_quickjs_benchmark
+        --warmup 100 --iterations 1000 --samples 1)
   endif()
 endif()
