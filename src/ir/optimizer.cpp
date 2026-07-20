@@ -53,20 +53,35 @@ Word fold_float_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
   if (opcode == Opcode::kFloatMultiply) {
     return pack_float64(lhs_value * rhs_value);
   }
-  return pack_float64(lhs_value / rhs_value);
+  if (opcode == Opcode::kFloatDivide) {
+    return pack_float64(lhs_value / rhs_value);
+  }
+  if (opcode == Opcode::kFloatLessThan) {
+    return lhs_value < rhs_value ? 1 : 0;
+  }
+  return lhs_value <= rhs_value ? 1 : 0;
 }
 
 bool is_binary(Opcode opcode) noexcept {
   return opcode == Opcode::kAdd || opcode == Opcode::kSubtract ||
          opcode == Opcode::kMultiply || opcode == Opcode::kFloatAdd ||
          opcode == Opcode::kFloatSubtract ||
-         opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide;
+         opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide ||
+         opcode == Opcode::kFloatLessThan ||
+         opcode == Opcode::kFloatLessEqual;
 }
 
 bool is_float_binary(Opcode opcode) noexcept {
   return opcode == Opcode::kFloatAdd ||
          opcode == Opcode::kFloatSubtract ||
-         opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide;
+         opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide ||
+         opcode == Opcode::kFloatLessThan ||
+         opcode == Opcode::kFloatLessEqual;
+}
+
+bool is_float_comparison(Opcode opcode) noexcept {
+  return opcode == Opcode::kFloatLessThan ||
+         opcode == Opcode::kFloatLessEqual;
 }
 
 PassResult transform_once(const Function& input) {
@@ -177,7 +192,10 @@ PassResult transform_once(const Function& input) {
       if (known_constant[lhs_id] && known_constant[rhs_id]) {
         constant_value[index] = fold_float_binary(
             node.opcode, constant_value[lhs_id], constant_value[rhs_id]);
-        mapped[index] = builder.float64_constant_bits(constant_value[index]);
+        mapped[index] = is_float_comparison(node.opcode)
+                            ? builder.constant(constant_value[index])
+                            : builder.float64_constant_bits(
+                                  constant_value[index]);
         known_constant[index] = true;
         ++folded;
         changed = true;
@@ -189,9 +207,15 @@ PassResult transform_once(const Function& input) {
       } else if (node.opcode == Opcode::kFloatMultiply) {
         mapped[index] =
             builder.float64_multiply(mapped[lhs_id], mapped[rhs_id]);
-      } else {
+      } else if (node.opcode == Opcode::kFloatDivide) {
         mapped[index] =
             builder.float64_divide(mapped[lhs_id], mapped[rhs_id]);
+      } else if (node.opcode == Opcode::kFloatLessThan) {
+        mapped[index] =
+            builder.float64_less_than(mapped[lhs_id], mapped[rhs_id]);
+      } else {
+        mapped[index] =
+            builder.float64_less_equal(mapped[lhs_id], mapped[rhs_id]);
       }
       continue;
     }

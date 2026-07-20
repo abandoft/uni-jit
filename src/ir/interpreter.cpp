@@ -39,6 +39,10 @@ Word evaluate_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
       return pack_float64(unpack_float64(lhs) * unpack_float64(rhs));
     case Opcode::kFloatDivide:
       return pack_float64(unpack_float64(lhs) / unpack_float64(rhs));
+    case Opcode::kFloatLessThan:
+      return unpack_float64(lhs) < unpack_float64(rhs) ? 1 : 0;
+    case Opcode::kFloatLessEqual:
+      return unpack_float64(lhs) <= unpack_float64(rhs) ? 1 : 0;
     case Opcode::kGuardFloatNonzero:
     case Opcode::kParameter:
     case Opcode::kConstant:
@@ -128,6 +132,8 @@ EvaluationResult Interpreter::evaluate(const Function& function,
         case Opcode::kFloatSubtract:
         case Opcode::kFloatMultiply:
         case Opcode::kFloatDivide:
+        case Opcode::kFloatLessThan:
+        case Opcode::kFloatLessEqual:
           values[index] = evaluate_binary(node.opcode, values[node.lhs.id()],
                                           values[node.rhs.id()]);
           break;

@@ -127,6 +127,14 @@ Value FunctionBuilder::float64_divide(Value lhs, Value rhs) {
   return append_binary(Opcode::kFloatDivide, lhs, rhs);
 }
 
+Value FunctionBuilder::float64_less_than(Value lhs, Value rhs) {
+  return append_binary(Opcode::kFloatLessThan, lhs, rhs);
+}
+
+Value FunctionBuilder::float64_less_equal(Value lhs, Value rhs) {
+  return append_binary(Opcode::kFloatLessEqual, lhs, rhs);
+}
+
 Value FunctionBuilder::guard_float64_nonzero(Value value, std::size_t site) {
   if (function_.nodes_.size() >= Value::kInvalidId ||
       site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {

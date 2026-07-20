@@ -469,6 +469,69 @@ void test_float64_division() {
   }
 }
 
+void test_float64_comparisons() {
+  using unijit::ir::ValueType;
+  FunctionBuilder builder(
+      std::vector<ValueType>{ValueType::kFloat64, ValueType::kFloat64});
+  const Value less =
+      builder.float64_less_than(builder.parameter(0), builder.parameter(1));
+  const Value less_equal =
+      builder.float64_less_equal(builder.parameter(0), builder.parameter(1));
+  const Value encoded =
+      builder.add(builder.multiply(less, builder.constant(10)), less_equal);
+  expect(builder.set_return(encoded).ok(),
+         "Float64 comparison fixture must record its Word result");
+  const Function function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok() &&
+             function.return_type() == ValueType::kWord,
+         "Float64 comparisons must accept Float64 operands and return Word");
+
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "Float64 comparisons must compile to native code");
+  const auto check = [&](double lhs, double rhs, Word expected,
+                         const char* message) {
+    const std::array<Word, 2> arguments = {
+        unijit::ir::pack_float64(lhs), unijit::ir::pack_float64(rhs)};
+    const auto interpreted =
+        Interpreter::evaluate(function, arguments.data(), arguments.size());
+    expect(interpreted.ok() && interpreted.value == expected, message);
+    if (compilation.ok()) {
+      const auto native =
+          compilation.function->invoke(arguments.data(), arguments.size());
+      expect(native.ok() && native.value == interpreted.value,
+             "native Float64 comparison must match the interpreter");
+    }
+  };
+  check(1.0, 2.0, 11, "less operands must set both comparison flags");
+  check(2.0, 2.0, 1, "equal operands must only set the inclusive flag");
+  check(3.0, 2.0, 0, "greater operands must clear both comparison flags");
+  check(std::numeric_limits<double>::quiet_NaN(), 2.0, 0,
+        "unordered operands must clear both comparison flags");
+
+  FunctionBuilder constant_builder(0);
+  const Value constant_result = constant_builder.float64_less_than(
+      constant_builder.float64_constant(1.0),
+      constant_builder.float64_constant(2.0));
+  expect(constant_builder.set_return(constant_result).ok(),
+         "constant Float64 comparison fixture must record its result");
+  const auto optimized =
+      unijit::ir::Optimizer::run(std::move(constant_builder).build());
+  expect(optimized.ok() && optimized.function.return_type() == ValueType::kWord &&
+             optimized.function.nodes().size() == 1 &&
+             optimized.function.nodes()[0].opcode ==
+                 unijit::ir::Opcode::kConstant &&
+             optimized.function.nodes()[0].immediate == 1,
+         "optimizer must fold a constant Float64 comparison to a Word");
+
+  FunctionBuilder malformed(2);
+  const Value invalid =
+      malformed.float64_less_than(malformed.parameter(0),
+                                  malformed.parameter(1));
+  expect(malformed.set_return(invalid).ok() &&
+             !unijit::ir::verify(std::move(malformed).build()).ok(),
+         "verifier must reject Float64 comparison over Word operands");
+}
+
 void test_float64_nonzero_guard() {
   FunctionBuilder builder(
       std::vector<unijit::ir::ValueType>(2,
@@ -2138,6 +2201,7 @@ int main() {
   test_differential_arithmetic();
   test_float64_ir_and_interpreter();
   test_float64_division();
+  test_float64_comparisons();
   test_float64_nonzero_guard();
   test_deoptimization_reconstruction();
   test_constant_float64_nonzero_guard_elimination();

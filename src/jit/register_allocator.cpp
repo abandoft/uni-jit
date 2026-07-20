@@ -35,7 +35,9 @@ RegisterAllocation allocate_impl(const ir::Function& function,
         node.opcode == ir::Opcode::kFloatAdd ||
         node.opcode == ir::Opcode::kFloatSubtract ||
         node.opcode == ir::Opcode::kFloatMultiply ||
-        node.opcode == ir::Opcode::kFloatDivide) {
+        node.opcode == ir::Opcode::kFloatDivide ||
+        node.opcode == ir::Opcode::kFloatLessThan ||
+        node.opcode == ir::Opcode::kFloatLessEqual) {
       note_use(&last_use, node.lhs, index);
       note_use(&last_use, node.rhs, index);
     } else if (node.opcode == ir::Opcode::kGuardFloatNonzero) {

@@ -14,13 +14,22 @@ bool is_binary(Opcode opcode) {
   return opcode == Opcode::kAdd || opcode == Opcode::kSubtract ||
          opcode == Opcode::kMultiply || opcode == Opcode::kFloatAdd ||
          opcode == Opcode::kFloatSubtract ||
-         opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide;
+         opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide ||
+         opcode == Opcode::kFloatLessThan ||
+         opcode == Opcode::kFloatLessEqual;
 }
 
-bool is_float_binary(Opcode opcode) {
+bool has_float_operands(Opcode opcode) {
   return opcode == Opcode::kFloatAdd ||
          opcode == Opcode::kFloatSubtract ||
-         opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide;
+         opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide ||
+         opcode == Opcode::kFloatLessThan ||
+         opcode == Opcode::kFloatLessEqual;
+}
+
+bool is_float_comparison(Opcode opcode) {
+  return opcode == Opcode::kFloatLessThan ||
+         opcode == Opcode::kFloatLessEqual;
 }
 
 }  // namespace
@@ -103,14 +112,17 @@ Status verify(const Function& function) {
     if (node.argument_begin != 0 || node.argument_count != 0) {
       return invalid_node(index, "binary node has call arguments");
     }
-    const ValueType expected_type = is_float_binary(node.opcode)
-                                        ? ValueType::kFloat64
-                                        : ValueType::kWord;
-    if (node.type != expected_type ||
-        nodes[node.lhs.id()].type != expected_type ||
-        nodes[node.rhs.id()].type != expected_type) {
+    const ValueType operand_type = has_float_operands(node.opcode)
+                                       ? ValueType::kFloat64
+                                       : ValueType::kWord;
+    const ValueType result_type = is_float_comparison(node.opcode)
+                                      ? ValueType::kWord
+                                      : operand_type;
+    if (node.type != result_type ||
+        nodes[node.lhs.id()].type != operand_type ||
+        nodes[node.rhs.id()].type != operand_type) {
       return invalid_node(index,
-                          "binary operands and result must have one type");
+                          "binary operands or result have incompatible types");
     }
   }
 

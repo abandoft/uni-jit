@@ -488,6 +488,22 @@ LoweringResult lower_impl(const ir::Function& function) {
         }
         break;
       }
+      case ir::Opcode::kFloatLessThan:
+      case ir::Opcode::kFloatLessEqual: {
+        const int lhs = load_float_operand(
+            &assembler, allocation.locations[node.lhs.id()], kFloatScratch0);
+        const int rhs = load_float_operand(
+            &assembler, allocation.locations[node.rhs.id()], kFloatScratch1);
+        const int target = destination.in_register()
+                               ? physical_register(destination)
+                               : kScratch0;
+        assembler.compare_float(target, lhs, rhs,
+                                node.opcode == ir::Opcode::kFloatLessEqual);
+        if (!destination.in_register()) {
+          assembler.store(target, kStackPointer, spill_offset(destination));
+        }
+        break;
+      }
       case ir::Opcode::kCall: {
         save_live_across_call(&assembler, function, allocation, index);
         for (std::size_t argument_index = 0;
