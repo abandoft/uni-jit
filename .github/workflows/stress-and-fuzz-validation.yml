@@ -62,7 +62,7 @@ jobs:
           if-no-files-found: error
 
   thread-sanitized-cache-stress:
-    name: ThreadSanitizer code-cache stress
+    name: ThreadSanitizer runtime stress
     runs-on: ubuntu-24.04
     env:
       CC: clang
@@ -82,10 +82,10 @@ jobs:
           -DCMAKE_CXX_FLAGS=-fsanitize=thread
           -DCMAKE_EXE_LINKER_FLAGS=-fsanitize=thread
 
-      - name: Build ThreadSanitizer cache stress
+      - name: Build ThreadSanitizer runtime tests
         run: >-
           cmake --build build/thread-sanitize --parallel
-          --target unijit_code_cache_stress
+          --target unijit_code_cache_stress unijit_tests
 
       - name: Run ThreadSanitizer cache stress
         run: >-
@@ -93,3 +93,6 @@ jobs:
           --seed 0x5453524541444348
           --readers 8 --writers 2 --reads 10000
           --publications 500 --keys 16
+
+      - name: Run ThreadSanitizer assumption invalidation
+        run: build/thread-sanitize/test/unijit_tests
