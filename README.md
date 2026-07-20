@@ -16,6 +16,8 @@ gates, [doc/PORTABILITY.md](doc/PORTABILITY.md) for verified platforms, and
 [doc/RUNTIME.md](doc/RUNTIME.md) for execution contexts, exits, and safepoints.
 [doc/CODE_CACHE.md](doc/CODE_CACHE.md) defines native-code publication,
 capacity, invalidation, telemetry, and concurrent lifetime guarantees.
+[doc/DEOPTIMIZATION.md](doc/DEOPTIMIZATION.md) defines diagnosed exits,
+immutable recovery metadata, and ABI-boundary frame reconstruction.
 [doc/QUALIFICATION.md](doc/QUALIFICATION.md) defines deterministic fuzzing,
 concurrency stress, sanitizers, and commercial performance floors.
 [doc/LUA_FRONTEND.md](doc/LUA_FRONTEND.md) describes the first stock Lua 5.5

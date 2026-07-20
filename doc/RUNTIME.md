@@ -53,17 +53,19 @@ without a signal handler or writable executable memory.
 Float64 nonzero guards are explicit effectful SSA nodes. A passing finite,
 infinite, subnormal, or NaN value continues with a zero Word effect result.
 Either signed zero records `ExitReason::kRuntime`, the frontend-provided source
-site, and a zero exit value before restoring the native frame. Managed
-invocation reports `StatusCode::kRuntimeExit`; a frontend can then reconstruct
-the language exception without unwinding through generated code. Calling a raw
-native entry with a null context is only supported when `requires_context()` is
-false. Optimization proves guards over known nonzero constants cannot exit and
-removes them, so functions such as division by a literal keep the raw-entry
-fast path without weakening dynamic-divisor checks.
+site, and the exact guarded value bits before restoring the native frame.
+Managed invocation reports `StatusCode::kRuntimeExit`; the frontend can then
+use the compiled function's immutable metadata to reconstruct typed logical
+slots and the language-level reason without unwinding through generated code.
+Calling a raw native entry with a null context is only supported when
+`requires_context()` is false. Optimization proves guards over known nonzero
+constants cannot exit and removes both the guard and its reconstruction record,
+so functions such as division by a literal keep the raw-entry fast path without
+weakening dynamic-divisor checks.
 
 Runtime helpers and generated code must not unwind a C++ exception across a
-native entry. Later tiers will extend diagnosed runtime exits with full
-deoptimization reconstruction metadata.
+native entry. The supported ABI-boundary reconstruction model and its explicit
+limits are defined in [DEOPTIMIZATION.md](DEOPTIMIZATION.md).
 
 ## Compiled-code ownership
 

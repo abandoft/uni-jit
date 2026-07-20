@@ -49,8 +49,10 @@ A `CodeHandle` is a copyable execution lease. Invalidation, replacement,
 eviction, `clear`, moving the cache, or destroying the cache removes lookup
 visibility but does not revoke an existing handle. The executable mapping is
 reclaimed only after the last handle and resident cache reference are gone.
-This guarantees that one thread may execute a leased function while another
-thread replaces or invalidates its cache entry.
+Compiled deoptimization records share the same immutable lifetime and remain
+queryable through the handle. This guarantees that one thread may execute and
+reconstruct an exit from a leased function while another thread replaces or
+invalidates its cache entry.
 
 `invalidate(key, fingerprint)` performs assumption-specific invalidation;
 `invalidate(key)` removes the currently resident generation for the whole key.

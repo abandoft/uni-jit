@@ -56,9 +56,12 @@ statements, calls, attribute access, and non-ASCII identifiers are rejected with
 a source byte position. Python keywords are rejected as function or parameter
 names. Every division emits an inline Float64 nonzero guard at the `/` source
 site; both `+0.0` and `-0.0` exit through the execution context and become
-PocketPy's `ZeroDivisionError("float division by zero")`. This narrow contract
-prevents fallback-free native code from silently changing unsupported Python
-behavior.
+PocketPy's `ZeroDivisionError("float division by zero")`. The compiled record
+retains the source resume offset and reconstructs every entry parameter plus
+the exact guarded divisor bits. The adapter maps the exit only after validating
+that record and reconstructed trigger, so future runtime exits cannot be
+silently misclassified as division errors. This narrow contract prevents
+fallback-free native code from silently changing unsupported Python behavior.
 
 The counted-loop tier accepts four-space-indented numeric functions with
 Float64 local initializers, one `for name in range(count)` loop, arithmetic or

@@ -68,10 +68,13 @@ safepoints poll its lock-free sticky interrupt flag, publish a stable exit site,
 restore the complete native frame, and return through the normal ABI boundary.
 Effectful Float64 nonzero guards distinguish both signed zeroes using value bits
 without misclassifying NaNs, then publish a diagnosed runtime exit for frontend
-exception reconstruction. The same semantics are implemented by the reference
-interpreters and native lowering on all three architectures. Null contexts
-bypass polling for bounded trusted code; guarded functions use managed
-invocation as described in `doc/RUNTIME.md`.
+exception reconstruction. Immutable site metadata describes the semantic exit,
+frontend resume offset, and typed recovery of entry arguments, constants, and
+the exact guarded value. The same exit semantics are implemented by the
+reference interpreters and native lowering on all three architectures. Null
+contexts bypass polling for bounded trusted code; guarded functions use managed
+invocation as described in `doc/RUNTIME.md`, with the reconstruction boundary
+defined in `doc/DEOPTIMIZATION.md`.
 
 The optimizing tier adds a separate CFG SSA representation with explicit
 basic-block parameters. Predecessor edges supply every block argument, making
@@ -104,6 +107,7 @@ published.
 
 - `include/unijit/ir`: target-independent SSA values and construction API.
 - `include/unijit/jit`: compilation and invocation API.
+- `include/unijit/runtime`: execution contexts and deoptimization metadata.
 - `src/ir`: verification and the reference interpreter.
 - `src/jit`: lowering orchestration, code ownership, and executable memory.
 - `src/jit/backend/<arch>`: MIR constraints and native instruction encoding
@@ -129,9 +133,9 @@ Code is created writable, populated, instruction-cache synchronized, and only
 then published executable. Published code is never writable. A bounded,
 thread-safe LRU cache publishes immutable functions behind copyable execution
 leases. Replacement, invalidation, eviction, and cache destruction remove
-lookup visibility while active leases keep mappings alive. The current shared
-ownership implementation can later move to epoch-based reclamation without
-changing the public contract in `doc/CODE_CACHE.md`.
+lookup visibility while active leases keep mappings and reconstruction metadata
+alive. The current shared ownership implementation can later move to epoch-based
+reclamation without changing the public contract in `doc/CODE_CACHE.md`.
 
 ## Performance policy
 
