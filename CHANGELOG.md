@@ -6,4 +6,5 @@
 - Added spill-capable linear-scan register allocation and W^X code publication.
 - Added deterministic differential tests across macOS, Linux, and Windows.
 - Added installable CMake package metadata and a cross-platform CI matrix.
- 
+- Added canonical SSA optimization passes and a reproducible core benchmark.
+- Added decimal version validation and changelog-driven GitHub releases.
