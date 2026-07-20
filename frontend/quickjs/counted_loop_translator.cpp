@@ -136,7 +136,7 @@ class CountedLoopParser final {
     }
     Symbol& induction = symbols_[induction_symbol];
     induction.value = builder_->float64_add(
-        induction.value, builder_->float64_constant(1.0));
+        induction.value, induction_step_);
     if (!induction.value.valid() || !builder_->jump(header, loop_values()).ok()) {
       return fail(invalid("unable to close counted-loop backedge"));
     }
@@ -344,13 +344,16 @@ class CountedLoopParser final {
 
   bool parse_increment_clause(std::string_view induction_name) {
     skip_space();
-    if (source_.substr(position_, 2) == "++") {
+    if (source_.substr(position_, 2) == "++" ||
+        source_.substr(position_, 2) == "--") {
+      const bool increments = source_[position_] == '+';
       position_ += 2;
       std::string name;
       if (!parse_identifier(&name) || name != induction_name) {
         invalid("counted-loop increment must update its induction variable");
         return false;
       }
+      induction_step_ = builder_->float64_constant(increments ? 1.0 : -1.0);
       return true;
     }
     std::string name;
@@ -359,11 +362,32 @@ class CountedLoopParser final {
       return false;
     }
     skip_space();
-    if (source_.substr(position_, 2) != "++") {
-      invalid("only unit counted-loop increments are supported");
+    if (source_.substr(position_, 2) == "++" ||
+        source_.substr(position_, 2) == "--") {
+      induction_step_ = builder_->float64_constant(
+          source_[position_] == '+' ? 1.0 : -1.0);
+      position_ += 2;
+      return true;
+    }
+    if (source_.substr(position_, 2) != "+=" &&
+        source_.substr(position_, 2) != "-=") {
+      invalid("unsupported counted-loop induction update");
       return false;
     }
+    const bool adds = source_[position_] == '+';
     position_ += 2;
+    const ir::Value magnitude = parse_expression(0);
+    if (!magnitude.valid()) {
+      return false;
+    }
+    induction_step_ =
+        adds ? magnitude
+             : builder_->float64_subtract(builder_->float64_constant(0.0),
+                                          magnitude);
+    if (!induction_step_.valid()) {
+      invalid("unable to lower counted-loop induction update");
+      return false;
+    }
     return true;
   }
 
@@ -700,6 +724,7 @@ class CountedLoopParser final {
   std::vector<std::size_t> loop_symbol_indices_;
   ir::Block continue_target_;
   ir::Block break_target_;
+  ir::Value induction_step_;
   std::unique_ptr<ir::ControlFlowBuilder> builder_;
 };
 
