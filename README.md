@@ -17,6 +17,8 @@ gates, [doc/PORTABILITY.md](doc/PORTABILITY.md) for verified platforms, and
 [doc/LUA_FRONTEND.md](doc/LUA_FRONTEND.md) describes the first stock Lua 5.5
 integration contract, and [doc/QUICKJS_FRONTEND.md](doc/QUICKJS_FRONTEND.md)
 defines the current stock QuickJS specialization boundary.
+[doc/POCKETPY_FRONTEND.md](doc/POCKETPY_FRONTEND.md) documents the PocketPy
+2.1.8 embedding API, ownership rules, and strict numeric tier.
 
 ## Build
 
@@ -36,4 +38,13 @@ cmake -S . -B build/lua -G Ninja \
   -DUNIJIT_BUILD_LUA_REFERENCE=ON -DUNIJIT_BUILD_TESTS=ON
 cmake --build build/lua --target unijit_lua55_tests
 ctest --test-dir build/lua -R unijit.lua55_frontend --output-on-failure
+```
+
+To build the pinned PocketPy 2.1.8 runtime and its UniJIT frontend:
+
+```sh
+cmake -S . -B build/pocketpy -G Ninja \
+  -DUNIJIT_BUILD_POCKETPY_REFERENCE=ON -DUNIJIT_BUILD_TESTS=ON
+cmake --build build/pocketpy --target unijit_pocketpy_translator_tests
+ctest --test-dir build/pocketpy -R unijit.pocketpy_ --output-on-failure
 ```

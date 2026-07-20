@@ -1,5 +1,7 @@
 ## 0.1.3
 
+- 新增隔离的 PocketPy 2.1.8 构建、严格 Python 数值源码翻译、由 GC 管理
+  生命周期的受守卫原生 callable，以及带校验和的 stock/UniJIT 调用基准。
 - 新增隔离的 stock QuickJS 构建、严格数值函数到 Float64 SSA 的翻译、由 GC
   管理代码生命周期的受守卫原生闭包，以及带校验和的 stock/UniJIT 调用基准。
 - 新增显式执行上下文 ABI、无锁协作式中断、可诊断运行时退出，以及

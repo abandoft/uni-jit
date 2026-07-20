@@ -78,3 +78,23 @@ Passing `--script benchmark/lua/float_call.lua` measures the guarded Float64
 specialization with identical floating-point inputs in stock Lua, UniJIT, and
 LuaJIT. Checksums are compared without integer truncation before performance
 ratios are emitted.
+
+## PocketPy call comparison
+
+The PocketPy benchmark compares stock 2.1.8 bytecode and a guarded UniJIT
+Float64 callable through the same `py_call` API. It uses identical inputs,
+warmup, sample counts, and bitwise result checksums:
+
+```sh
+cmake -S . -B build/pocketpy -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DUNIJIT_BUILD_POCKETPY_REFERENCE=ON \
+  -DUNIJIT_BUILD_BENCHMARKS=ON
+cmake --build build/pocketpy --target unijit_pocketpy_benchmark
+build/pocketpy/bin/unijit_pocketpy_benchmark \
+  --warmup 10000 --iterations 100000 --samples 7 \
+  > build/pocketpy/pocketpy-call.json
+```
+
+This isolates the current numeric call tier. It does not substitute for the
+planned shared-kernel comparison with Python 3.14.6 JIT.
