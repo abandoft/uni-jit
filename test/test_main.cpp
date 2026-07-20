@@ -778,6 +778,77 @@ void test_control_flow_counted_loop() {
   }
 }
 
+void test_control_flow_float64_loop() {
+  using unijit::ir::ValueType;
+  unijit::ir::ControlFlowBuilder builder(
+      std::vector<ValueType>{ValueType::kWord, ValueType::kFloat64});
+  const unijit::ir::Block loop = builder.create_block(
+      std::vector<ValueType>{ValueType::kWord, ValueType::kFloat64});
+  const unijit::ir::Block exit =
+      builder.create_block(std::vector<ValueType>{ValueType::kFloat64});
+  expect(builder.jump(loop, {builder.parameter(0), builder.parameter(1)}).ok(),
+         "typed CFG entry must pass Word and Float64 parameters");
+
+  expect(builder.set_insertion_block(loop).ok(),
+         "typed Float64 loop block must exist");
+  const Value remaining = builder.block_parameter(loop, 0);
+  const Value accumulator = builder.block_parameter(loop, 1);
+  const Value scaled = builder.float64_multiply(
+      accumulator, builder.float64_constant(1.5));
+  const Value adjusted = builder.float64_subtract(
+      scaled, builder.float64_constant(0.25));
+  const Value divided =
+      builder.float64_divide(adjusted, builder.float64_constant(2.0));
+  const Value next_accumulator =
+      builder.float64_add(divided, builder.float64_constant(0.5));
+  const Value next_remaining = builder.subtract(remaining, builder.constant(1));
+  const Value continues =
+      builder.less_than(builder.constant(0), next_remaining);
+  expect(builder
+             .branch(continues, loop,
+                     {next_remaining, next_accumulator}, exit,
+                     {next_accumulator})
+             .ok(),
+         "typed Float64 loop must preserve edge types");
+
+  expect(builder.set_insertion_block(exit).ok(),
+         "typed Float64 exit block must exist");
+  expect(builder.set_return(builder.block_parameter(exit, 0)).ok(),
+         "typed Float64 exit must return its block parameter");
+  const unijit::ir::ControlFlowFunction function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "typed Float64 CFG must satisfy verifier invariants");
+
+  double expected = 1.0;
+  for (int iteration = 0; iteration < 4; ++iteration) {
+    expected = ((expected * 1.5) - 0.25) / 2.0 + 0.5;
+  }
+  const std::array<Word, 2> arguments = {
+      4, unijit::ir::pack_float64(1.0)};
+  const auto interpreted = unijit::ir::ControlFlowInterpreter::evaluate(
+      function, arguments.data(), arguments.size());
+  expect(interpreted.ok() &&
+             interpreted.value == unijit::ir::pack_float64(expected),
+         "typed CFG interpreter must preserve Float64 loop values");
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "typed Float64 CFG must compile to native code");
+  if (compilation.ok()) {
+    const auto native =
+        compilation.function->invoke(arguments.data(), arguments.size());
+    expect(native.ok() && native.value == interpreted.value,
+           "native typed Float64 CFG must match the interpreter");
+  }
+}
+
+void test_control_flow_rejects_mixed_edge_types() {
+  using unijit::ir::ValueType;
+  unijit::ir::ControlFlowBuilder builder(0);
+  const unijit::ir::Block target =
+      builder.create_block(std::vector<ValueType>{ValueType::kFloat64});
+  expect(!builder.jump(target, {builder.constant(1)}).ok(),
+         "CFG builder must reject a Word edge argument for Float64 parameter");
+}
+
 void test_control_flow_merge() {
   unijit::ir::ControlFlowBuilder builder(2);
   const unijit::ir::Block take_lhs = builder.create_block(0);
@@ -1013,6 +1084,8 @@ int main() {
   test_optimization_pipeline();
   test_float64_constant_folding();
   test_control_flow_counted_loop();
+  test_control_flow_float64_loop();
+  test_control_flow_rejects_mixed_edge_types();
   test_control_flow_merge();
   test_control_flow_parallel_edge_copy();
   test_control_flow_rejects_non_dominating_value();
