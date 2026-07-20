@@ -202,6 +202,55 @@ int main() {
     return EXIT_FAILURE;
   }
 
+  constexpr std::array<const char*, 4> kStridedLoopSources = {
+      "function stepped() {"
+      "  let sum = 0.0;"
+      "  for (let iteration = 1.0; iteration <= 9.0; iteration += 2.0) {"
+      "    if (iteration > 5.0) { break; }"
+      "    sum += iteration;"
+      "  }"
+      "  return sum;"
+      "}",
+      "function descending() {"
+      "  let sum = 0.0;"
+      "  for (let iteration = 10.0; iteration >= 0.0; iteration -= 2.0) {"
+      "    if (iteration < 4.0) { continue; }"
+      "    sum += iteration;"
+      "  }"
+      "  return sum;"
+      "}",
+      "function decrement() {"
+      "  let sum = 0.0;"
+      "  for (let iteration = 3.0; iteration > 0.0; iteration--) {"
+      "    sum += iteration;"
+      "  }"
+      "  return sum;"
+      "}",
+      "function prefixDecrement() {"
+      "  let sum = 0.0;"
+      "  for (let iteration = 3.0; iteration > 0.0; --iteration) {"
+      "    sum += iteration;"
+      "  }"
+      "  return sum;"
+      "}"};
+  constexpr std::array<double, 4> kStridedLoopResults = {9.0, 28.0, 6.0,
+                                                         6.0};
+  for (std::size_t index = 0; index < kStridedLoopSources.size(); ++index) {
+    const auto strided =
+        unijit::frontend::quickjs::translate_numeric_function(
+            kStridedLoopSources[index]);
+    const auto strided_result =
+        strided.ok() ? strided.function->invoke(nullptr, 0)
+                     : unijit::ir::EvaluationResult{};
+    if (!strided.ok() || !strided_result.ok() ||
+        strided_result.value !=
+            unijit::ir::pack_float64(kStridedLoopResults[index])) {
+      std::cerr << "QuickJS strided loop semantics were not preserved: "
+                << strided.status.message() << '\n';
+      return EXIT_FAILURE;
+    }
+  }
+
   constexpr std::array<const char*, 4> kRejectedSources = {
       "function(a, a) { return a; }",
       "function(a) { return external + a; }",
