@@ -75,7 +75,7 @@ switches with an expected-generation check. PocketPy userdata cancels queued
 work during finalization while shared immutable state remains alive until the
 job terminates. Its complete counted-loop CFG path remains a single native tier
 because repeating the same compilation would add latency without improving
-code.
+code; its CFG safepoints and checked-division exits remain active in that tier.
 
 QuickJS applies the same baseline and optimized split to accepted straight-line
 callables, but submits optimization to a bounded frontend-owned scheduler after

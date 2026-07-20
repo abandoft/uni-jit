@@ -89,10 +89,13 @@ Word/Float64 types as straight-line SSA. Edges must preserve each destination
 parameter's type, and Float64 addition, subtraction, multiplication, and
 division retain exact value bits through loop backedges. Ordered Float64
 comparisons return false for NaN inputs and produce Word conditions suitable
-for CFG branches. The initial portable lowering keeps Float64 bits in the
-common CFG register/stack transport and uses native floating-point registers
-at arithmetic and comparison operations; a split register class allocator
-will remove the remaining transfer traffic.
+for CFG branches. Effectful CFG Float64 nonzero guards consume one dominated
+Float64 value, retain their source site, and use the same diagnosed runtime-exit
+ABI and immutable frame-reconstruction metadata as straight-line guards. The
+initial portable lowering keeps Float64 bits in the common CFG register/stack
+transport and uses native floating-point registers at arithmetic and comparison
+operations; a split register class allocator will remove the remaining transfer
+traffic.
 
 Native CFG lowering applies block-local lifetime analysis on AArch64, x86-64,
 and RISC-V 64. Values stay in registers within a block; only actual spills and

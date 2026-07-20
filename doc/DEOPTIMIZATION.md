@@ -54,11 +54,11 @@ quiescent invalidation protocol described in [ASSUMPTIONS.md](ASSUMPTIONS.md).
 
 ## Frontend policy and current boundary
 
-PocketPy numeric division records all source parameters plus the guarded
-divisor. Its adapter raises `ZeroDivisionError` only after successful frame
-reconstruction identifies a division-by-zero record and a zero Float64 trigger;
-an unknown runtime exit becomes a diagnostic runtime error instead of being
-silently misclassified.
+PocketPy numeric division in both straight-line SSA and counted-loop CFG code
+records all source parameters plus the guarded divisor. Its adapter raises
+`ZeroDivisionError` only after successful frame reconstruction identifies a
+division-by-zero record and a zero Float64 trigger; an unknown runtime exit
+becomes a diagnostic runtime error instead of being silently misclassified.
 
 The current recovery vocabulary is sufficient for entry-argument
 specializations and language exceptions at the ABI boundary. Broader optimized

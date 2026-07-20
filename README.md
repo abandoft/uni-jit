@@ -35,7 +35,7 @@ callable telemetry, bounded waiting, and cancellation.
 [doc/POCKETPY_FRONTEND.md](doc/POCKETPY_FRONTEND.md) documents the PocketPy
 2.1.8 embedding API, ownership rules, strict numeric tier, live baseline-to-
 optimized background promotion, script-visible tier telemetry, bounded waits,
-and cancellation.
+checked straight-line and counted-loop division, and cancellation.
 
 ## Build
 

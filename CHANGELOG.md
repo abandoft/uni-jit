@@ -11,6 +11,8 @@
 - Made tier-claim admission atomic with code publication and ordered promotion telemetry before executable visibility, preventing a fast background compiler from triggering a redundant optimization attempt or exposing partially updated statistics.
 - Moved PocketPy optimized compilation off the VM thread onto a one-worker scheduler bounded to 64 queued tasks and 8 MiB, with immutable retained-source jobs, exact-cache reuse, cooperative cancellation, expected-generation publication, and GC-safe shared state lifetime.
 - Added PocketPy compilation-task and scheduler telemetry plus timeout-bounded waiting and explicit cancellation through `unijit.stats`, `unijit.wait`, and `unijit.cancel`, with deterministic cold, asynchronous promotion, optimized checked-division, timeout validation, and foreign-object rejection coverage.
+- Added effectful CFG Float64 nonzero guards with dominance and type verification, exact signed-zero exits in the reference interpreter, immutable deoptimization metadata, managed-context provisioning, and independent native lowering on AArch64, x86-64, and RISC-V 64.
+- Enabled checked PocketPy counted-loop `/` and `/=` with exact source-site reconstruction and `ZeroDivisionError` mapping for both signed zeroes while preserving zero-iteration semantics where dormant division is not executed.
 
 ## 0.1.6
 

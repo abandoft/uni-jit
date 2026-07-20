@@ -94,16 +94,19 @@ The counted-loop tier accepts four-space-indented numeric functions with
 Float64 local initializers, one `for name in range(count)` loop, arithmetic or
 augmented assignments, and ordered `if`/`else` arms that update loop locals.
 Mutable state is carried through typed CFG block parameters, branches merge via
-SSA edges, and every backedge polls an execution-context safepoint. Calls,
-nested loops, `break`, `continue`, and loop division are currently rejected;
-division stays out of this tier until CFG exits can reproduce PocketPy's
-checked exception semantics.
+SSA edges, and every backedge polls an execution-context safepoint. `/` and
+`/=` emit effectful CFG Float64 nonzero guards at their exact source positions;
+entered iterations reconstruct the original parameters and signed-zero divisor
+before raising `ZeroDivisionError`, while a zero-iteration loop does not execute
+or reject its dormant division. Calls, nested loops, `break`, and `continue`
+remain rejected.
 
 Counted loops already enter the CFG native path directly and therefore remain
 a single baseline publication instead of recompiling identical code at the
 invocation threshold. Their `tierable` metric is false. Straight-line checked
-division is tierable, and runtime exits reconstruct through the exact code
-lease attempted by the call, including when an optimized generation is active.
+division is tierable, while checked counted-loop division remains in the direct
+CFG tier. Runtime exits reconstruct through the exact code lease attempted by
+the call, including when an optimized generation is active.
 
 ## Reproducible CPython JIT target benchmark
 

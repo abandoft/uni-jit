@@ -56,6 +56,8 @@ Float64 nonzero guards are explicit effectful SSA nodes. A passing finite,
 infinite, subnormal, or NaN value continues with a zero Word effect result.
 Either signed zero records `ExitReason::kRuntime`, the frontend-provided source
 site, and the exact guarded value bits before restoring the native frame.
+Straight-line and CFG representations share this contract on AArch64, x86-64,
+and RISC-V 64, including guards executed inside loop bodies.
 Managed invocation reports `StatusCode::kRuntimeExit`; the frontend can then
 use the compiled function's immutable metadata to reconstruct typed logical
 slots and the language-level reason without unwinding through generated code.
