@@ -72,6 +72,8 @@ class CompiledFunction final {
   const StackMapRecord* stack_map(std::size_t site) const noexcept {
     return stack_maps_.find(site);
   }
+  StackMapCaptureResult reconstruct_stack_map(
+      const runtime::ExecutionContext& context) const;
 
   const runtime::DeoptimizationTable& deoptimization_table() const noexcept {
     return deoptimization_table_;

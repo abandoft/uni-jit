@@ -407,6 +407,25 @@ void spill_straight_stack_map_values(
   }
 }
 
+void capture_straight_stack_map_values(
+    Assembler* assembler, const std::vector<ir::Value>& live_values,
+    std::size_t stack_map_base, int context) {
+  for (std::size_t index = 0; index < live_values.size(); ++index) {
+    assembler->load(kScratch1, kRsp,
+                    (stack_map_base + live_values[index].id()) *
+                        sizeof(ir::Word));
+    assembler->store(
+        kScratch1, context,
+        runtime::ExecutionContext::captured_values_offset() +
+            index * sizeof(ir::Word));
+  }
+  assembler->move_immediate(kScratch1,
+                            static_cast<ir::Word>(live_values.size()));
+  assembler->store(
+      kScratch1, context,
+      runtime::ExecutionContext::captured_value_count_offset());
+}
+
 StackMapRecord make_stack_map_record(
     const ir::Function& function, const ir::Node& node,
     const std::vector<ir::Value>& live_values, std::size_t native_offset,
@@ -497,10 +516,10 @@ LoweringResult lower_impl(const ir::Function& function) {
   for (std::size_t index = 0; index < function.nodes().size(); ++index) {
     const ir::Node& node = function.nodes()[index];
     const ValueLocation& destination = allocation.locations[index];
+    const std::vector<ir::Value>& live_values =
+        stack_map_liveness.live_values_by_node[index];
     if (node.opcode == ir::Opcode::kSafepoint ||
         node.opcode == ir::Opcode::kGuardFloatNonzero) {
-      const std::vector<ir::Value>& live_values =
-          stack_map_liveness.live_values_by_node[index];
       spill_straight_stack_map_values(&assembler, function, allocation,
                                       live_values, stack_map_base);
       stack_maps.push_back(make_stack_map_record(
@@ -671,6 +690,8 @@ LoweringResult lower_impl(const ir::Function& function) {
         const std::size_t no_context = assembler.branch_zero(kScratch0);
         assembler.store(kScratch1, kScratch0,
                         runtime::ExecutionContext::exit_value_offset());
+        capture_straight_stack_map_values(
+            &assembler, live_values, stack_map_base, kScratch0);
         assembler.move_immediate(kScratch1, node.immediate);
         assembler.store(kScratch1, kScratch0,
                         runtime::ExecutionContext::exit_site_offset());
@@ -717,6 +738,8 @@ LoweringResult lower_impl(const ir::Function& function) {
         assembler.move_immediate(kScratch1, 0);
         assembler.store(kScratch1, kScratch0,
                         runtime::ExecutionContext::exit_value_offset());
+        capture_straight_stack_map_values(
+            &assembler, live_values, stack_map_base, kScratch0);
         assembler.move_immediate(kScratch1, node.immediate);
         assembler.store(kScratch1, kScratch0,
                         runtime::ExecutionContext::exit_site_offset());
@@ -819,6 +842,24 @@ void spill_control_stack_map_values(
       assembler->store(source, kRsp, control_spill_offset(value.id()));
     }
   }
+}
+
+void capture_control_stack_map_values(
+    Assembler* assembler, const std::vector<ir::Value>& live_values,
+    int context) {
+  for (std::size_t index = 0; index < live_values.size(); ++index) {
+    assembler->load(kScratch1, kRsp,
+                    control_spill_offset(live_values[index].id()));
+    assembler->store(
+        kScratch1, context,
+        runtime::ExecutionContext::captured_values_offset() +
+            index * sizeof(ir::Word));
+  }
+  assembler->move_immediate(kScratch1,
+                            static_cast<ir::Word>(live_values.size()));
+  assembler->store(
+      kScratch1, context,
+      runtime::ExecutionContext::captured_value_count_offset());
 }
 
 StackMapRecord make_stack_map_record(
@@ -971,10 +1012,10 @@ LoweringResult lower_control_flow_impl(
       const int allocated =
           control_value_register(allocation, value, block_index);
       const int destination = allocated >= 0 ? allocated : kScratch0;
+      const std::vector<ir::Value>& live_values =
+          stack_map_liveness.live_values_by_node[value.id()];
       if (node.opcode == ir::ControlOpcode::kSafepoint ||
           node.opcode == ir::ControlOpcode::kGuardFloatNonzero) {
-        const std::vector<ir::Value>& live_values =
-            stack_map_liveness.live_values_by_node[value.id()];
         spill_control_stack_map_values(&assembler, allocation, live_values,
                                        block_index);
         stack_maps.push_back(make_stack_map_record(
@@ -1012,6 +1053,8 @@ LoweringResult lower_control_flow_impl(
           const std::size_t no_context = assembler.branch_zero(kScratch0);
           assembler.store(kScratch1, kScratch0,
                           runtime::ExecutionContext::exit_value_offset());
+          capture_control_stack_map_values(&assembler, live_values,
+                                           kScratch0);
           assembler.move_immediate(kScratch1, node.immediate);
           assembler.store(kScratch1, kScratch0,
                           runtime::ExecutionContext::exit_site_offset());
@@ -1055,6 +1098,8 @@ LoweringResult lower_control_flow_impl(
           assembler.move_immediate(kScratch1, 0);
           assembler.store(kScratch1, kScratch0,
                           runtime::ExecutionContext::exit_value_offset());
+          capture_control_stack_map_values(&assembler, live_values,
+                                           kScratch0);
           assembler.move_immediate(kScratch1, node.immediate);
           assembler.store(kScratch1, kScratch0,
                           runtime::ExecutionContext::exit_site_offset());

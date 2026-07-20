@@ -50,6 +50,8 @@ class CodeHandle final {
   const CompilationStats* compilation_stats() const noexcept;
   const StackMapTable* stack_maps() const noexcept;
   const StackMapRecord* stack_map(std::size_t site) const noexcept;
+  StackMapCaptureResult reconstruct_stack_map(
+      const runtime::ExecutionContext& context) const;
   const runtime::DeoptimizationRecord* deoptimization_record(
       std::size_t site) const noexcept;
   runtime::ReconstructionResult reconstruct_deoptimization(

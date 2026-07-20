@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "unijit/ir/function.h"
+#include "unijit/status.h"
 
 namespace unijit::jit {
 
@@ -61,6 +62,34 @@ class StackMapTable final {
 
  private:
   std::vector<StackMapRecord> records_;
+};
+
+struct CapturedStackMapValue final {
+  ir::Value value;
+  ir::ValueType type{ir::ValueType::kWord};
+  ir::Word value_bits{0};
+};
+
+struct CapturedStackMap final {
+  std::size_t site{0};
+  StackMapKind kind{StackMapKind::kSafepoint};
+  std::vector<CapturedStackMapValue> values;
+
+  const CapturedStackMapValue* find(ir::Value value) const noexcept {
+    for (const CapturedStackMapValue& entry : values) {
+      if (entry.value == value) {
+        return &entry;
+      }
+    }
+    return nullptr;
+  }
+};
+
+struct StackMapCaptureResult final {
+  Status status;
+  CapturedStackMap capture;
+
+  bool ok() const noexcept { return status.ok(); }
 };
 
 }  // namespace unijit::jit

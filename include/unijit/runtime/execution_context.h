@@ -1,6 +1,7 @@
 #ifndef UNIJIT_RUNTIME_EXECUTION_CONTEXT_H
 #define UNIJIT_RUNTIME_EXECUTION_CONTEXT_H
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -24,6 +25,8 @@ enum class ExitReason : std::uint64_t {
 
 class ExecutionContext final {
  public:
+  static constexpr std::size_t kMaximumCapturedValues = 64;
+
   ExecutionContext() noexcept = default;
 
   ExecutionContext(const ExecutionContext&) = delete;
@@ -52,6 +55,7 @@ class ExecutionContext final {
     exit_reason_ = static_cast<std::uint64_t>(ExitReason::kNone);
     exit_site_ = 0;
     exit_value_ = 0;
+    captured_value_count_ = 0;
   }
 
   void record_exit(ExitReason reason, std::size_t site,
@@ -71,6 +75,13 @@ class ExecutionContext final {
 
   ir::Word exit_value() const noexcept { return exit_value_; }
 
+  std::size_t captured_value_count() const noexcept {
+    return static_cast<std::size_t>(captured_value_count_);
+  }
+  const ir::Word* captured_values() const noexcept {
+    return captured_values_.data();
+  }
+
   void* user_data() const noexcept { return user_data_; }
   void set_user_data(void* value) noexcept { user_data_ = value; }
 
@@ -78,6 +89,8 @@ class ExecutionContext final {
   static constexpr std::size_t exit_reason_offset() noexcept;
   static constexpr std::size_t exit_site_offset() noexcept;
   static constexpr std::size_t exit_value_offset() noexcept;
+  static constexpr std::size_t captured_value_count_offset() noexcept;
+  static constexpr std::size_t captured_values_offset() noexcept;
 
  private:
   friend class Assumption;
@@ -100,6 +113,8 @@ class ExecutionContext final {
   std::uint64_t exit_reason_{static_cast<std::uint64_t>(ExitReason::kNone)};
   std::uint64_t exit_site_{0};
   ir::Word exit_value_{0};
+  std::uint64_t captured_value_count_{0};
+  std::array<ir::Word, kMaximumCapturedValues> captured_values_;
   void* user_data_{nullptr};
 };
 
@@ -117,6 +132,15 @@ constexpr std::size_t ExecutionContext::exit_site_offset() noexcept {
 
 constexpr std::size_t ExecutionContext::exit_value_offset() noexcept {
   return offsetof(ExecutionContext, exit_value_);
+}
+
+constexpr std::size_t
+ExecutionContext::captured_value_count_offset() noexcept {
+  return offsetof(ExecutionContext, captured_value_count_);
+}
+
+constexpr std::size_t ExecutionContext::captured_values_offset() noexcept {
+  return offsetof(ExecutionContext, captured_values_);
 }
 
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free,

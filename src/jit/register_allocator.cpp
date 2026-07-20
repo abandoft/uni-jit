@@ -6,6 +6,8 @@
 #include <utility>
 #include <vector>
 
+#include "unijit/runtime/execution_context.h"
+
 namespace unijit::jit::detail {
 namespace {
 
@@ -417,6 +419,12 @@ StackMapLiveness plan_straight_stack_map_liveness_impl(
     for (std::size_t value_index = 0; value_index < node_index;
          ++value_index) {
       if (allocation.last_uses[value_index] >= node_index) {
+        if (site_values.size() ==
+            runtime::ExecutionContext::kMaximumCapturedValues) {
+          return {{StatusCode::kResourceExhausted,
+                   "straight-line stack map exceeds the capture capacity"},
+                  {}};
+        }
         if (total_live_values == kMaximumStackMapValues) {
           return {{StatusCode::kResourceExhausted,
                    "straight-line stack maps exceed the metadata limit"},
@@ -556,6 +564,12 @@ StackMapLiveness plan_control_stack_map_liveness_impl(
       for (std::size_t value_index = 0; value_index < value_count;
            ++value_index) {
         if (live[value_index]) {
+          if (site_values.size() ==
+              runtime::ExecutionContext::kMaximumCapturedValues) {
+            return {{StatusCode::kResourceExhausted,
+                     "CFG stack map exceeds the capture capacity"},
+                    {}};
+          }
           if (total_live_values == kMaximumStackMapValues) {
             return {{StatusCode::kResourceExhausted,
                      "CFG stack maps exceed the metadata limit"},

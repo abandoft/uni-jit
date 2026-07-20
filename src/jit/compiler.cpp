@@ -333,6 +333,56 @@ NativeEntry CompiledFunction::native_entry() const noexcept {
   return impl_ == nullptr ? nullptr : impl_->entry();
 }
 
+StackMapCaptureResult CompiledFunction::reconstruct_stack_map(
+    const runtime::ExecutionContext& context) const {
+  if (context.exit_reason() == runtime::ExitReason::kNone) {
+    return {{StatusCode::kInvalidArgument,
+             "execution context has no captured runtime exit"},
+            {}};
+  }
+  const StackMapRecord* record = stack_map(context.exit_site());
+  if (record == nullptr) {
+    return {{StatusCode::kInvalidArgument,
+             "execution context does not identify a compiled stack map",
+             context.exit_site()},
+            {}};
+  }
+  const runtime::ExitReason expected_reason =
+      record->kind == StackMapKind::kSafepoint
+          ? runtime::ExitReason::kSafepoint
+          : runtime::ExitReason::kRuntime;
+  if (context.exit_reason() != expected_reason) {
+    return {{StatusCode::kInvalidArgument,
+             "execution context exit kind does not match its stack map",
+             record->site},
+            {}};
+  }
+  if (context.captured_value_count() != record->live_values.size()) {
+    return {{StatusCode::kInvalidArgument,
+             "execution context has incomplete stack-map values",
+             record->site},
+            {}};
+  }
+
+  try {
+    CapturedStackMap capture;
+    capture.site = record->site;
+    capture.kind = record->kind;
+    capture.values.reserve(record->live_values.size());
+    for (std::size_t index = 0; index < record->live_values.size(); ++index) {
+      const StackMapValue& value = record->live_values[index];
+      capture.values.push_back(
+          {value.value, value.type, context.captured_values()[index]});
+    }
+    return {Status::ok_status(), std::move(capture)};
+  } catch (const std::bad_alloc&) {
+    return {{StatusCode::kResourceExhausted,
+             "unable to reconstruct captured stack-map values",
+             record->site},
+            {}};
+  }
+}
+
 ir::EvaluationResult CompiledFunction::invoke(
     const ir::Word* args, std::size_t arg_count,
     runtime::ExecutionContext* context) const {
