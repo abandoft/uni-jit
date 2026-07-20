@@ -76,6 +76,12 @@ and through the stock language runtime, and bit-match the result with the source
 semantics. Separate negative fixtures require an explicit rejection when a
 control guard contains an unsupported `else` arm.
 
+Strided-loop coverage executes QuickJS prefix/postfix decrement and `+=`/`-=`
+updates plus PocketPy one-, two-, and three-argument `range` forms. Positive
+and reverse loops are combined with early control guards, while zero and
+dynamic PocketPy steps must fail translation. Stock-runtime tests execute the
+reverse-step variants through the public module boundary.
+
 ## CFG register-residency benchmark
 
 `unijit_cfg_float64_benchmark` executes one typed CFG with four loop-carried

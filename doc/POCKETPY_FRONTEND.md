@@ -101,8 +101,12 @@ Source larger than 1 MiB is rejected before it is retained or translated, and
 accepted IR remains subject to the core compilation budgets.
 
 The counted-loop tier accepts four-space-indented numeric functions with
-Float64 local initializers, one `for name in range(count)` loop, arithmetic or
+Float64 local initializers, one `for name in range(...)` loop, arithmetic or
 augmented assignments, and ordered `if`/`else` arms that update loop locals.
+`range(stop)` and `range(start, stop)` use a positive unit step;
+`range(start, stop, step)` accepts a finite nonzero numeric-literal step and
+selects the matching forward or reverse strict bound. Dynamic and zero steps
+are rejected before CFG construction.
 Mutable state is carried through typed CFG block parameters, branches merge via
 SSA edges, and every backedge polls an execution-context safepoint. `/` and
 `/=` emit effectful CFG Float64 nonzero guards at their exact source positions;

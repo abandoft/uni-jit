@@ -75,8 +75,12 @@ Function source larger than 1 MiB is rejected before it is retained or
 translated, and accepted IR remains subject to the core compilation budgets.
 
 The counted-loop tier additionally accepts a conventional body with Float64
-`let` initializers, one unit-increment `for` loop, arithmetic assignments, and
-ordered `if`/`else` comparisons whose arms update loop locals. Every mutable
+`let` initializers, one `for` loop, arithmetic assignments, and ordered
+`if`/`else` comparisons whose arms update loop locals. The induction update may
+use prefix/postfix `++` or `--`, or `+=`/`-=` with a finite nonzero numeric
+literal applied by the common update block. Dynamic update expressions are
+rejected until they can be evaluated after every possible body mutation.
+Every mutable
 value becomes a typed CFG block parameter, conditional updates merge through
 SSA edges, and the loop backedge polls an execution-context safepoint. A
 single-statement true arm may use `if (condition) { break; }` or
