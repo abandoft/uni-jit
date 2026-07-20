@@ -13,6 +13,32 @@ from performance_gate import GateError, evaluate  # noqa: E402
 
 
 class PerformanceGateTest(unittest.TestCase):
+    def test_lua_target_passes(self) -> None:
+        result = evaluate(
+            "lua",
+            {
+                "schema": "unijit.lua-integer-comparison.v1",
+                "measurement_boundary": "complete_numeric_loop",
+                "unijit_speedup_over_stock": 4.0,
+                "unijit_speedup_over_luajit": 1.5,
+            },
+            {"stock_lua": 1.25, "luajit": 1.10},
+        )
+        self.assertEqual(result["target"], "lua")
+
+    def test_lua_target_fails_below_luajit(self) -> None:
+        with self.assertRaisesRegex(GateError, "luajit ratio"):
+            evaluate(
+                "lua",
+                {
+                    "schema": "unijit.lua-integer-comparison.v1",
+                    "measurement_boundary": "complete_numeric_loop",
+                    "unijit_speedup_over_stock": 4.0,
+                    "unijit_speedup_over_luajit": 0.95,
+                },
+                {"stock_lua": 1.25, "luajit": 1.10},
+            )
+
     def test_quickjs_target_passes(self) -> None:
         result = evaluate(
             "quickjs",

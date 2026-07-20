@@ -37,7 +37,13 @@ def evaluate(
     if document.get("measurement_boundary") != "complete_numeric_loop":
         raise GateError("performance gates require the complete numeric-loop boundary")
 
-    if target == "quickjs":
+    if target == "lua":
+        expected_schema = "unijit.lua-integer-comparison.v1"
+        observed = {
+            "stock_lua": number_at(document, "unijit_speedup_over_stock"),
+            "luajit": number_at(document, "unijit_speedup_over_luajit"),
+        }
+    elif target == "quickjs":
         expected_schema = "unijit.quickjs-target-comparison.v1"
         observed = {
             "stock_quickjs": number_at(
@@ -105,6 +111,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="target", required=True)
 
+    lua = subparsers.add_parser("lua")
+    lua.add_argument("record", type=Path)
+    lua.add_argument("--minimum-stock-speedup", type=float, default=1.25)
+    lua.add_argument("--minimum-luajit-speedup", type=float, default=1.10)
+
     quickjs = subparsers.add_parser("quickjs")
     quickjs.add_argument("record", type=Path)
     quickjs.add_argument("--minimum-stock-speedup", type=float, default=1.25)
@@ -123,7 +134,12 @@ def main() -> int:
     arguments = parser.parse_args()
     try:
         document = load_record(arguments.record)
-        if arguments.target == "quickjs":
+        if arguments.target == "lua":
+            thresholds = {
+                "stock_lua": arguments.minimum_stock_speedup,
+                "luajit": arguments.minimum_luajit_speedup,
+            }
+        elif arguments.target == "quickjs":
             thresholds = {
                 "stock_quickjs": arguments.minimum_stock_speedup,
                 "v8_jitless": arguments.minimum_v8_jitless_speedup,
