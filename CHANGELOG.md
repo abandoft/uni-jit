@@ -1,5 +1,6 @@
 ## 0.1.8
 
+- Added typed effectful runtime-helper calls to CFG SSA with verified dominating flattened arguments, exact interpreter execution, bounded compilation accounting, call-local Word/Float64 liveness, mixed register-and-stack argument marshalling, ABI-correct native lowering on AArch64, x86-64 System V/Windows, and RISC-V 64, safe guard/safepoint exits after calls, loop and excess-argument qualification, and installed-package coverage.
 - Added independent Word and Float64 CFG register classes on AArch64, x86-64, and RISC-V 64, keeping loop-carried floating-point values resident through arithmetic and typed parallel edges, preserving exact guard and stack-map capture plus oversubscribed stack fallback, and enforcing checksum-matched hosted floors of at least 5x reference-interpreter speed with no more than 400 bytes for the fixed 29-node workload.
 
 ## 0.1.7
