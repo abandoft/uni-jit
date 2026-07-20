@@ -280,6 +280,58 @@ for _, bounds in ipairs({{-7, 7}, {-7, -7}, {-7, -8}, {19, -17},
          reverse_parameter_start_sum(bounds[1], bounds[2]))
 end
 
+local parameter_step_sum = function(start, limit, step)
+  local sum = 0
+  for index = start, limit, step do
+    sum = sum + index
+  end
+  return sum
+end
+local native_parameter_step_sum = unijit.compile(parameter_step_sum)
+local parameter_step_baseline_stats = unijit.stats(native_parameter_step_sum)
+assert(native_parameter_step_sum(0, 30000, 3) ==
+       parameter_step_sum(0, 30000, 3))
+assert(unijit.wait(native_parameter_step_sum, 5000))
+local parameter_step_stats = unijit.stats(native_parameter_step_sum)
+assert(parameter_step_stats.active_tier == "optimized")
+assert(parameter_step_stats.backedges == 10001)
+assert(parameter_step_stats.input_ir_nodes >
+       parameter_step_baseline_stats.input_ir_nodes)
+local parameter_step_cases = {
+  {7, -7, 3},
+  {7, 7, 3},
+  {-17, 19, 3},
+  {19, -17, -3},
+  {-7, 7, -3},
+  {math.maxinteger - 17, math.maxinteger, 3},
+  {math.mininteger + 17, math.mininteger, -3},
+  {math.mininteger, math.maxinteger, math.maxinteger},
+  {math.maxinteger, math.mininteger, math.mininteger},
+}
+for _, values in ipairs(parameter_step_cases) do
+  assert(native_parameter_step_sum(values[1], values[2], values[3]) ==
+         parameter_step_sum(values[1], values[2], values[3]))
+end
+for remaining = 0, 20 do
+  local positive_limit = remaining * 3
+  assert(native_parameter_step_sum(0, positive_limit, 3) ==
+         parameter_step_sum(0, positive_limit, 3))
+  assert(native_parameter_step_sum(positive_limit, 0, -3) ==
+         parameter_step_sum(positive_limit, 0, -3))
+end
+local invocations_before_zero_step =
+    unijit.stats(native_parameter_step_sum).invocations
+local original_zero_ok, original_zero_message =
+    pcall(parameter_step_sum, 1, 10, 0)
+local native_zero_ok, native_zero_message =
+    pcall(native_parameter_step_sum, 1, 10, 0)
+assert(not original_zero_ok and
+       tostring(original_zero_message):find("'for' step is zero"))
+assert(not native_zero_ok and
+       tostring(native_zero_message):find("'for' step is zero"))
+assert(unijit.stats(native_parameter_step_sum).invocations ==
+       invocations_before_zero_step)
+
 local near_max_stride = function(limit)
   local visits = 0
   for index = 9223372036854775790, limit, 3 do
@@ -414,6 +466,7 @@ native_positive_stride_sum = nil
 native_negative_stride_sum = nil
 native_parameter_start_sum = nil
 native_reverse_parameter_start_sum = nil
+native_parameter_step_sum = nil
 native_near_max_stride = nil
 native_near_min_stride = nil
 native_huge_positive_stride = nil
