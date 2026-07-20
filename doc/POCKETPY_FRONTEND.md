@@ -49,15 +49,16 @@ uninitialized native ownership cannot be created from script.
 The first tier accepts one conventional `def` with zero to 64 unique ASCII
 parameter names and exactly one `return` expression. The expression may contain
 parameters, decimal numeric literals, parentheses, unary `+`/`-`, and binary
-`+`, `-`, and `*`. All accepted operations lower to Float64 SSA.
+`+`, `-`, `*`, and `/`. All accepted operations lower to Float64 SSA.
 
 Closures, annotations, default or variadic parameters, assignments, multiple
-statements, calls, attribute access, division, and non-ASCII identifiers are
-rejected with a source byte position. Python keywords are rejected as function
-or parameter names. Division remains excluded until native guards can preserve
-PocketPy's `ZeroDivisionError` instead of exposing the hardware IEEE-754 result.
-This narrow contract prevents fallback-free native code from silently changing
-unsupported Python behavior.
+statements, calls, attribute access, and non-ASCII identifiers are rejected with
+a source byte position. Python keywords are rejected as function or parameter
+names. Every division emits an inline Float64 nonzero guard at the `/` source
+site; both `+0.0` and `-0.0` exit through the execution context and become
+PocketPy's `ZeroDivisionError("float division by zero")`. This narrow contract
+prevents fallback-free native code from silently changing unsupported Python
+behavior.
 
 ## Reproducible call benchmark
 

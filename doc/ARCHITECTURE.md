@@ -66,10 +66,12 @@ shadow-space ABI, and preserves the link register on AArch64 and RISC-V 64.
 Native entries also accept an optional execution context. Explicit effectful
 safepoints poll its lock-free sticky interrupt flag, publish a stable exit site,
 restore the complete native frame, and return through the normal ABI boundary.
-The same semantics are implemented by both reference interpreters and by
-straight-line and CFG lowering on all three architectures. Null contexts bypass
-polling for bounded trusted code; see `doc/RUNTIME.md` for ownership and memory
-ordering rules.
+Effectful Float64 nonzero guards distinguish both signed zeroes using value bits
+without misclassifying NaNs, then publish a diagnosed runtime exit for frontend
+exception reconstruction. The same semantics are implemented by the reference
+interpreters and native lowering on all three architectures. Null contexts
+bypass polling for bounded trusted code; guarded functions use managed
+invocation as described in `doc/RUNTIME.md`.
 
 The optimizing tier adds a separate CFG SSA representation with explicit
 basic-block parameters. Predecessor edges supply every block argument, making
