@@ -45,6 +45,19 @@ int main() {
               << translation.status.message() << '\n';
     return EXIT_FAILURE;
   }
+  const auto baseline_translation =
+      unijit::frontend::quickjs::translate_numeric_function(
+          "function affine(a, b) { return (a + 2.5) * (b - -3) / 2; }",
+          unijit::jit::OptimizationLevel::kBaseline);
+  if (!baseline_translation.ok() ||
+      baseline_translation.parameter_count != translation.parameter_count ||
+      baseline_translation.function->stats().optimized_ir_nodes !=
+          baseline_translation.function->stats().input_ir_nodes ||
+      translation.function->stats().optimized_ir_nodes >
+          baseline_translation.function->stats().optimized_ir_nodes) {
+    std::cerr << "QuickJS baseline and optimized translations are not distinct\n";
+    return EXIT_FAILURE;
+  }
   const std::array<unijit::ir::Word, 2> arguments = {
       unijit::ir::pack_float64(1.5), unijit::ir::pack_float64(4.0)};
   const auto native = translation.function->invoke(arguments.data(),
@@ -144,6 +157,34 @@ int main() {
   }
   JS_FreeValue(context, result);
 
+  constexpr char kTieringSource[] =
+      "let tieringChecksum = 0.0;"
+      "for (let index = 0; index < 64; ++index) {"
+      "  tieringChecksum += native(1.5, 4.0);"
+      "}"
+      "const tieringWaited = unijit.wait(native, 5000);"
+      "const tieringStats = unijit.stats(native);"
+      "tieringWaited && tieringChecksum === 896.0 &&"
+      "tieringStats.tierable === true &&"
+      "tieringStats.active_tier === 'optimized' &&"
+      "tieringStats.invocations >= 65 &&"
+      "tieringStats.compilation_attempts === 1 &&"
+      "tieringStats.successful_compilations === 1 &&"
+      "tieringStats.failed_compilations === 0 &&"
+      "tieringStats.promotions === 1 &&"
+      "tieringStats.compilation_state === 'succeeded' &&"
+      "tieringStats.scheduler_available === true &&"
+      "tieringStats.code_size > 0 &&"
+      "unijit.cancel(native) === false;";
+  result = JS_Eval(context, kTieringSource, std::strlen(kTieringSource),
+                   "<unijit-quickjs-tiering>", JS_EVAL_TYPE_GLOBAL);
+  if (JS_IsException(result) || JS_ToBool(context, result) != 1) {
+    std::cerr << "QuickJS did not promote a hot callable asynchronously\n";
+    JS_FreeValue(context, result);
+    return EXIT_FAILURE;
+  }
+  JS_FreeValue(context, result);
+
   const std::string counted_loop_call =
       std::string("const nativeLoop = unijit.compile(") +
       kCountedLoopSource + "); nativeLoop(10000);";
@@ -155,6 +196,20 @@ int main() {
       unijit::ir::pack_float64(number) !=
           unijit::ir::pack_float64(expected_loop)) {
     std::cerr << "QuickJS did not execute the compiled counted-loop closure\n";
+    JS_FreeValue(context, result);
+    return EXIT_FAILURE;
+  }
+  JS_FreeValue(context, result);
+
+  constexpr char kLoopStatsSource[] =
+      "const loopStats = unijit.stats(nativeLoop);"
+      "loopStats.tierable === false &&"
+      "loopStats.active_tier === 'baseline' &&"
+      "loopStats.compilation_state === 'idle';";
+  result = JS_Eval(context, kLoopStatsSource, std::strlen(kLoopStatsSource),
+                   "<unijit-quickjs-loop-stats>", JS_EVAL_TYPE_GLOBAL);
+  if (JS_IsException(result) || JS_ToBool(context, result) != 1) {
+    std::cerr << "QuickJS reported invalid counted-loop tiering state\n";
     JS_FreeValue(context, result);
     return EXIT_FAILURE;
   }
