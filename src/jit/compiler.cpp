@@ -1,5 +1,7 @@
 #include "unijit/jit/compiler.h"
 
+#include "unijit/ir/optimizer.h"
+
 #include <cstring>
 #include <memory>
 #include <new>
@@ -70,15 +72,21 @@ CompilationResult Compiler::compile(const ir::Function& function) {
     return {verification, nullptr};
   }
 
+  ir::OptimizationResult optimization = ir::Optimizer::run(function);
+  if (!optimization.ok()) {
+    return {optimization.status, nullptr};
+  }
+  const ir::Function& optimized = optimization.function;
+
 #if defined(UNIJIT_TARGET_AARCH64)
   detail::aarch64::LoweringResult lowering =
-      detail::aarch64::lower(function);
+      detail::aarch64::lower(optimized);
 #elif defined(UNIJIT_TARGET_X86_64)
   detail::x86_64::LoweringResult lowering =
-      detail::x86_64::lower(function);
+      detail::x86_64::lower(optimized);
 #elif defined(UNIJIT_TARGET_RISCV64)
   detail::riscv64::LoweringResult lowering =
-      detail::riscv64::lower(function);
+      detail::riscv64::lower(optimized);
 #endif
 
 #if defined(UNIJIT_TARGET_AARCH64) || defined(UNIJIT_TARGET_X86_64) || \
@@ -95,7 +103,8 @@ CompilationResult Compiler::compile(const ir::Function& function) {
       return {publication, nullptr};
     }
 
-    CompilationStats stats{lowering.code.size(), lowering.spill_slots};
+    CompilationStats stats{lowering.code.size(), lowering.spill_slots,
+                           function.nodes().size(), optimized.nodes().size()};
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
         std::move(implementation), function.parameter_count(), stats));
     return {Status::ok_status(), std::move(compiled)};

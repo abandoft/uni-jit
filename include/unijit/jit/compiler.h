@@ -14,6 +14,8 @@ namespace unijit::jit {
 struct CompilationStats final {
   std::size_t code_size{0};
   std::size_t spill_slots{0};
+  std::size_t input_ir_nodes{0};
+  std::size_t optimized_ir_nodes{0};
 };
 
 class CompiledFunction final {
