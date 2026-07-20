@@ -320,6 +320,52 @@ void test_float64_spill_path() {
          "spilled native Float64 values must match the interpreter bits");
 }
 
+#if defined(_MSC_VER)
+__declspec(noinline)
+#elif defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline))
+#endif
+bool preserves_host_float_registers(unijit::jit::NativeEntry entry) {
+  double lhs = 1.25;
+  double rhs = -7.5;
+  for (std::size_t iteration = 0; iteration < 512; ++iteration) {
+    const std::array<Word, 2> arguments = {
+        unijit::ir::pack_float64(lhs), unijit::ir::pack_float64(rhs)};
+    const double expected = (lhs + rhs) * (lhs - 3.25) + rhs * 0.75;
+    const double native =
+        unijit::ir::unpack_float64(entry(arguments.data(), nullptr));
+    if (native != expected) {
+      return false;
+    }
+    lhs += 0.125;
+    rhs -= 0.0625;
+  }
+  return lhs == 65.25 && rhs == -39.5;
+}
+
+void test_float64_preserves_host_abi() {
+  FunctionBuilder builder(
+      std::vector<unijit::ir::ValueType>(2,
+                                         unijit::ir::ValueType::kFloat64));
+  const Value lhs = builder.parameter(0);
+  const Value rhs = builder.parameter(1);
+  const Value product = builder.float64_multiply(
+      builder.float64_add(lhs, rhs),
+      builder.float64_subtract(lhs, builder.float64_constant(3.25)));
+  const Value result = builder.float64_add(
+      product,
+      builder.float64_multiply(rhs, builder.float64_constant(0.75)));
+  expect(builder.set_return(result).ok(),
+         "host-ABI fixture must return its Float64 expression");
+  auto compilation = Compiler::compile(std::move(builder).build());
+  expect(compilation.ok(), "host-ABI Float64 fixture must compile");
+  if (compilation.ok()) {
+    expect(preserves_host_float_registers(
+               compilation.function->native_entry()),
+           "native Float64 code must preserve host callee-saved registers");
+  }
+}
+
 void test_runtime_helper_call() {
   FunctionBuilder builder(2);
   const Value live = builder.add(builder.parameter(0), builder.constant(5));
@@ -781,6 +827,7 @@ int main() {
   test_float64_ir_and_interpreter();
   test_verifier_rejects_mixed_arithmetic();
   test_float64_spill_path();
+  test_float64_preserves_host_abi();
   test_runtime_helper_call();
   test_effectful_dead_runtime_call();
   test_float64_runtime_helper_call();
