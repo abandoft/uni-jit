@@ -3,12 +3,15 @@
 #include "float_translator.h"
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <optional>
 #include <string>
@@ -25,7 +28,9 @@ extern "C" {
 #include "unijit/ir/control_flow.h"
 #include "unijit/ir/function.h"
 #include "unijit/jit/code_cache.h"
+#include "unijit/jit/compilation_scheduler.h"
 #include "unijit/jit/compiler.h"
+#include "unijit/jit/tiering.h"
 #include "unijit/status.h"
 
 namespace {
@@ -55,24 +60,177 @@ enum class NumericMode : unsigned char {
   kFloat64,
 };
 
-struct OwnedFunction final {
-  CodeHandle *function{nullptr};
-  std::size_t parameter_count{0};
-  NumericMode mode{NumericMode::kInteger};
+struct PrototypeSnapshot final {
+  Proto view() const noexcept {
+    Proto prototype{};
+    prototype.numparams = numparams;
+    prototype.flag = flag;
+    prototype.maxstacksize = maxstacksize;
+    prototype.sizeupvalues = sizeupvalues;
+    prototype.sizek = static_cast<int>(constants.size());
+    prototype.sizecode = static_cast<int>(instructions.size());
+    prototype.sizep = 0;
+    prototype.k = const_cast<TValue *>(constants.data());
+    prototype.code = const_cast<Instruction *>(instructions.data());
+    return prototype;
+  }
+
+  lu_byte numparams{0};
+  lu_byte flag{0};
+  lu_byte maxstacksize{0};
+  int sizeupvalues{0};
+  std::vector<TValue> constants;
+  std::vector<Instruction> instructions;
 };
 
-constexpr std::uint64_t kIntegerCacheFingerprint = 0x554A4C5541494E54ULL;
-constexpr std::uint64_t kFloatCacheFingerprint = 0x554A4C5541464C54ULL;
+struct LoopHotnessPlan final {
+  enum class LimitKind : unsigned char {
+    kUnknown,
+    kConstant,
+    kParameter,
+  };
 
-CodeCache &compiled_function_cache(NumericMode mode) {
-  static CodeCache integer_cache;
-  static CodeCache float_cache;
-  return mode == NumericMode::kInteger ? integer_cache : float_cache;
+  std::uint64_t estimate(const Word *arguments,
+                         std::size_t argument_count) const noexcept {
+    if (!is_loop) {
+      return 0;
+    }
+    Word limit = 0;
+    if (limit_kind == LimitKind::kConstant) {
+      limit = limit_constant;
+    } else if (limit_kind == LimitKind::kParameter &&
+               limit_parameter < argument_count) {
+      limit = arguments[limit_parameter];
+    } else {
+      return 1;
+    }
+    if (limit < start) {
+      return 0;
+    }
+    const std::uint64_t distance =
+        static_cast<std::uint64_t>(limit) -
+        static_cast<std::uint64_t>(start);
+    return distance == std::numeric_limits<std::uint64_t>::max()
+               ? distance
+               : distance + 1;
+  }
+
+  bool is_loop{false};
+  LimitKind limit_kind{LimitKind::kUnknown};
+  Word start{0};
+  Word limit_constant{0};
+  std::size_t limit_parameter{0};
+};
+
+constexpr std::uint64_t kIntegerBaselineFingerprint =
+    0x554A4C5549424153ULL;
+constexpr std::uint64_t kIntegerOptimizedFingerprint =
+    0x554A4C5541494E54ULL;
+constexpr std::uint64_t kFloatBaselineFingerprint = 0x554A4C5546424153ULL;
+constexpr std::uint64_t kFloatOptimizedFingerprint = 0x554A4C5541464C54ULL;
+constexpr unijit::jit::TieringThresholds kLuaTieringThresholds{64, 10000,
+                                                               64};
+constexpr std::size_t kLuaSchedulerBytes = 16U * 1024U * 1024U;
+
+struct CompiledFunctionState final {
+  CompiledFunctionState(
+      std::uint64_t id, std::size_t parameters, NumericMode numeric_mode,
+      std::shared_ptr<const PrototypeSnapshot> retained_prototype,
+      std::string retained_cache_key, LoopHotnessPlan retained_loop_hotness,
+      bool supports_tiering)
+      : parameter_count(parameters),
+        mode(numeric_mode),
+        prototype(std::move(retained_prototype)),
+        cache_key(std::move(retained_cache_key)),
+        loop_hotness(retained_loop_hotness),
+        tierable(supports_tiering),
+        scheduling_identity("lua55:" + std::to_string(id)),
+        code(kLuaTieringThresholds) {}
+
+  void retain_ticket(unijit::jit::CompilationTicket retained) {
+    std::lock_guard<std::mutex> lock(ticket_mutex);
+    ticket = std::move(retained);
+  }
+
+  unijit::jit::CompilationTicket current_ticket() const {
+    std::lock_guard<std::mutex> lock(ticket_mutex);
+    return ticket;
+  }
+
+  std::size_t parameter_count;
+  NumericMode mode;
+  std::shared_ptr<const PrototypeSnapshot> prototype;
+  std::string cache_key;
+  LoopHotnessPlan loop_hotness;
+  bool tierable;
+  std::string scheduling_identity;
+  unijit::jit::TieredCode code;
+  mutable std::mutex ticket_mutex;
+  unijit::jit::CompilationTicket ticket;
+};
+
+struct OwnedFunction final {
+  std::shared_ptr<CompiledFunctionState> *state{nullptr};
+};
+
+struct LuaService final {
+  LuaService() : uncached_cache(unijit::jit::CodeCacheLimits{0, 0}) {
+    unijit::jit::CompilationSchedulerOptions options;
+    options.worker_count = 1;
+    options.maximum_queued_tasks = 64;
+    options.maximum_queued_bytes = kLuaSchedulerBytes;
+    unijit::jit::CompilationSchedulerCreation creation =
+        unijit::jit::CompilationScheduler::create(options);
+    scheduler_status = std::move(creation.status);
+    scheduler = std::move(creation.scheduler);
+  }
+
+  CodeCache &cache(NumericMode mode,
+                   unijit::jit::OptimizationLevel level) noexcept {
+    if (mode == NumericMode::kInteger) {
+      return level == unijit::jit::OptimizationLevel::kBaseline
+                 ? integer_baseline_cache
+                 : integer_optimized_cache;
+    }
+    return level == unijit::jit::OptimizationLevel::kBaseline
+               ? float_baseline_cache
+               : float_optimized_cache;
+  }
+
+  std::uint64_t allocate_identity() noexcept {
+    std::uint64_t current =
+        next_identity.fetch_add(1, std::memory_order_relaxed);
+    if (current == 0) {
+      current = next_identity.fetch_add(1, std::memory_order_relaxed);
+    }
+    return current;
+  }
+
+  CodeCache integer_baseline_cache;
+  CodeCache integer_optimized_cache;
+  CodeCache float_baseline_cache;
+  CodeCache float_optimized_cache;
+  CodeCache uncached_cache;
+  unijit::Status scheduler_status;
+  std::unique_ptr<unijit::jit::CompilationScheduler> scheduler;
+  std::atomic<std::uint64_t> next_identity{1};
+};
+
+LuaService &lua_service() {
+  static LuaService service;
+  return service;
 }
 
-CodeCache &uncached_publication_cache() {
-  static CodeCache cache(unijit::jit::CodeCacheLimits{0, 0});
-  return cache;
+std::uint64_t cache_fingerprint(
+    NumericMode mode, unijit::jit::OptimizationLevel level) noexcept {
+  if (mode == NumericMode::kInteger) {
+    return level == unijit::jit::OptimizationLevel::kBaseline
+               ? kIntegerBaselineFingerprint
+               : kIntegerOptimizedFingerprint;
+  }
+  return level == unijit::jit::OptimizationLevel::kBaseline
+             ? kFloatBaselineFingerprint
+             : kFloatOptimizedFingerprint;
 }
 
 template <typename T>
@@ -128,6 +286,125 @@ bool prototype_cache_key(const Proto &prototype, NumericMode mode,
     output->clear();
     return false;
   }
+}
+
+std::shared_ptr<const PrototypeSnapshot> capture_prototype(
+    const Proto &prototype) {
+  if (prototype.sizecode < 0 || prototype.sizek < 0 ||
+      prototype.sizeupvalues < 0 || prototype.sizep != 0 ||
+      (prototype.sizecode != 0 && prototype.code == nullptr) ||
+      (prototype.sizek != 0 && prototype.k == nullptr)) {
+    return {};
+  }
+  try {
+    auto snapshot = std::make_shared<PrototypeSnapshot>();
+    snapshot->numparams = prototype.numparams;
+    snapshot->flag = prototype.flag;
+    snapshot->maxstacksize = prototype.maxstacksize;
+    snapshot->sizeupvalues = prototype.sizeupvalues;
+    if (prototype.sizecode != 0) {
+      snapshot->instructions.assign(
+          prototype.code, prototype.code + prototype.sizecode);
+    }
+    snapshot->constants.reserve(static_cast<std::size_t>(prototype.sizek));
+    for (int index = 0; index < prototype.sizek; ++index) {
+      const TValue &constant = prototype.k[index];
+      if (!ttisinteger(&constant) && !ttisfloat(&constant)) {
+        return {};
+      }
+      snapshot->constants.push_back(constant);
+    }
+    return snapshot;
+  } catch (const std::bad_alloc &) {
+    return {};
+  }
+}
+
+LoopHotnessPlan analyze_loop_hotness(const Proto &prototype) {
+  struct SymbolicInteger final {
+    std::optional<Word> constant;
+    std::optional<std::size_t> parameter;
+  };
+
+  LoopHotnessPlan plan;
+  if (prototype.maxstacksize == 0 || prototype.code == nullptr) {
+    return plan;
+  }
+  std::vector<SymbolicInteger> registers(prototype.maxstacksize);
+  for (std::size_t index = 0; index < prototype.numparams; ++index) {
+    registers[index].parameter = index;
+  }
+
+  for (int pc = 0; pc < prototype.sizecode; ++pc) {
+    const Instruction instruction = prototype.code[pc];
+    const OpCode opcode = GET_OPCODE(instruction);
+    const int destination = GETARG_A(instruction);
+    if (opcode == OP_FORPREP) {
+      plan.is_loop = true;
+      const int state_base = destination;
+      if (state_base < 0 || state_base + 2 >= prototype.maxstacksize) {
+        return plan;
+      }
+      const SymbolicInteger &start =
+          registers[static_cast<std::size_t>(state_base)];
+      const SymbolicInteger &limit =
+          registers[static_cast<std::size_t>(state_base + 1)];
+      const SymbolicInteger &step =
+          registers[static_cast<std::size_t>(state_base + 2)];
+      if (!start.constant.has_value() || !step.constant.has_value() ||
+          step.constant.value() != 1) {
+        return plan;
+      }
+      plan.start = start.constant.value();
+      if (limit.constant.has_value()) {
+        plan.limit_kind = LoopHotnessPlan::LimitKind::kConstant;
+        plan.limit_constant = limit.constant.value();
+      } else if (limit.parameter.has_value()) {
+        plan.limit_kind = LoopHotnessPlan::LimitKind::kParameter;
+        plan.limit_parameter = limit.parameter.value();
+      }
+      return plan;
+    }
+
+    if (destination < 0 || destination >= prototype.maxstacksize) {
+      continue;
+    }
+    SymbolicInteger &result =
+        registers[static_cast<std::size_t>(destination)];
+    switch (opcode) {
+      case OP_MOVE: {
+        const int source = GETARG_B(instruction);
+        result = source >= 0 && source < prototype.maxstacksize
+                     ? registers[static_cast<std::size_t>(source)]
+                     : SymbolicInteger{};
+        break;
+      }
+      case OP_LOADI:
+        result.constant = static_cast<Word>(GETARG_sBx(instruction));
+        result.parameter.reset();
+        break;
+      case OP_LOADK: {
+        const int constant_index = GETARG_Bx(instruction);
+        if (constant_index >= 0 && constant_index < prototype.sizek &&
+            ttisinteger(&prototype.k[constant_index])) {
+          result.constant =
+              static_cast<Word>(ivalue(&prototype.k[constant_index]));
+          result.parameter.reset();
+        } else {
+          result = {};
+        }
+        break;
+      }
+      case OP_MMBIN:
+      case OP_MMBINI:
+      case OP_MMBINK:
+        break;
+      default:
+        result = {};
+        break;
+    }
+  }
+  return plan;
 }
 
 CompilationResult translation_error(std::size_t pc, const char *message) {
@@ -898,11 +1175,146 @@ CompilationResult compile_prototype(
   return compile_straight_prototype(prototype, optimization_level);
 }
 
+CompilationResult compile_numeric_mode(
+    const Proto &prototype, NumericMode mode,
+    unijit::jit::OptimizationLevel optimization_level) {
+  return mode == NumericMode::kInteger
+             ? compile_prototype(prototype, optimization_level)
+             : unijit::frontend::lua55::detail::compile_float64_prototype(
+                   prototype, optimization_level);
+}
+
+Status cancelled_compilation_status() {
+  return {StatusCode::kCancelled, "Lua optimization was cancelled"};
+}
+
+Status fail_optimization(
+    const std::shared_ptr<CompiledFunctionState> &compiled,
+    Status status) {
+  (void)compiled->code.report_optimization_failure();
+  return status;
+}
+
+Status compile_optimized(
+    LuaService *service,
+    const std::shared_ptr<CompiledFunctionState> &compiled,
+    std::uint64_t generation,
+    const unijit::jit::CompilationCancellation &cancellation) {
+  if (cancellation.stop_requested()) {
+    return fail_optimization(compiled, cancelled_compilation_status());
+  }
+  if (compiled->prototype == nullptr || compiled->cache_key.empty()) {
+    return fail_optimization(
+        compiled,
+        {StatusCode::kInvalidArgument,
+         "Lua optimized compilation has no retained prototype"});
+  }
+
+  constexpr auto kOptimized = unijit::jit::OptimizationLevel::kOptimized;
+  const std::uint64_t fingerprint =
+      cache_fingerprint(compiled->mode, kOptimized);
+  CodeHandle optimized = service->cache(compiled->mode, kOptimized)
+                             .find(compiled->cache_key, fingerprint);
+  if (!optimized.valid()) {
+    const Proto prototype = compiled->prototype->view();
+    CompilationResult result =
+        compile_numeric_mode(prototype, compiled->mode, kOptimized);
+    if (!result.ok()) {
+      return fail_optimization(compiled, std::move(result.status));
+    }
+    if (result.function->parameter_count() != compiled->parameter_count) {
+      return fail_optimization(
+          compiled,
+          {StatusCode::kCodeGenerationFailed,
+           "Lua optimized signature differs from its baseline"});
+    }
+    if (cancellation.stop_requested()) {
+      return fail_optimization(compiled, cancelled_compilation_status());
+    }
+    unijit::jit::CodeCachePublication publication =
+        service->cache(compiled->mode, kOptimized)
+            .publish(compiled->cache_key, fingerprint,
+                     std::move(result.function));
+    if (!publication.ok()) {
+      return fail_optimization(compiled, std::move(publication.status));
+    }
+    optimized = std::move(publication.handle);
+  }
+
+  if (optimized.parameter_count() != compiled->parameter_count) {
+    return fail_optimization(
+        compiled,
+        {StatusCode::kCodeGenerationFailed,
+         "cached Lua optimized signature differs from baseline"});
+  }
+  if (cancellation.stop_requested()) {
+    return fail_optimization(compiled, cancelled_compilation_status());
+  }
+  const Status promotion =
+      compiled->code.publish_optimized(std::move(optimized), generation);
+  if (!promotion.ok()) {
+    return fail_optimization(compiled, promotion);
+  }
+  return Status::ok_status();
+}
+
+void schedule_if_hot(
+    const std::shared_ptr<CompiledFunctionState> &compiled) noexcept {
+  if (!compiled->tierable || !compiled->code.try_begin_optimization()) {
+    return;
+  }
+  const unijit::jit::TieredCodeSnapshot baseline = compiled->code.snapshot();
+  if (baseline.tier != unijit::jit::CodeTier::kBaseline) {
+    (void)compiled->code.report_optimization_failure();
+    return;
+  }
+
+  try {
+    LuaService &service = lua_service();
+    if (service.scheduler == nullptr) {
+      (void)compiled->code.report_optimization_failure();
+      return;
+    }
+    std::size_t estimated_bytes = compiled->cache_key.size();
+    const auto add_estimate = [&estimated_bytes](std::size_t bytes) {
+      estimated_bytes =
+          bytes > std::numeric_limits<std::size_t>::max() - estimated_bytes
+              ? std::numeric_limits<std::size_t>::max()
+              : estimated_bytes + bytes;
+    };
+    add_estimate(compiled->prototype->instructions.size() *
+                 sizeof(Instruction));
+    add_estimate(compiled->prototype->constants.size() * sizeof(TValue));
+    add_estimate(4096U);
+
+    unijit::jit::CompilationRequest request;
+    request.identity = compiled->scheduling_identity;
+    request.generation = baseline.generation;
+    request.estimated_bytes = estimated_bytes;
+    request.priority = unijit::jit::CompilationPriority::kNormal;
+    request.job = [&service, compiled, generation = baseline.generation](
+                      const unijit::jit::CompilationCancellation &
+                          cancellation) {
+      return compile_optimized(&service, compiled, generation, cancellation);
+    };
+    unijit::jit::CompilationSubmission submission =
+        service.scheduler->try_submit(std::move(request));
+    if (!submission.ok()) {
+      (void)compiled->code.report_optimization_failure();
+      return;
+    }
+    compiled->retain_ticket(std::move(submission.ticket));
+  } catch (...) {
+    (void)compiled->code.report_optimization_failure();
+  }
+}
+
 int destroy_compiled_function(lua_State *state) {
   auto *owned = static_cast<OwnedFunction *>(lua_touserdata(state, 1));
-  if (owned != nullptr) {
-    delete owned->function;
-    owned->function = nullptr;
+  if (owned != nullptr && owned->state != nullptr) {
+    (void)(*owned->state)->current_ticket().cancel();
+    delete owned->state;
+    owned->state = nullptr;
   }
   return 0;
 }
@@ -912,32 +1324,33 @@ int invoke_compiled_function(lua_State *state) {
   const CClosure *closure = clCvalue(s2v(call->func.p));
   auto *owned = reinterpret_cast<OwnedFunction *>(
       getudatamem(uvalue(&closure->upvalue[0])));
-  if (owned == nullptr || owned->function == nullptr ||
-      !owned->function->valid()) {
+  if (owned == nullptr || owned->state == nullptr ||
+      !(*owned->state)->code.snapshot().valid()) {
     return luaL_error(state, "invalid UniJIT compiled function");
   }
+  CompiledFunctionState *compiled = owned->state->get();
 
   const StkId argument_base = call->func.p + 1;
   const std::size_t supplied =
       static_cast<std::size_t>(state->top.p - argument_base);
-  if (supplied < owned->parameter_count) {
+  if (supplied < compiled->parameter_count) {
     return luaL_error(state, "compiled function requires %d arguments",
-                      static_cast<int>(owned->parameter_count));
+                      static_cast<int>(compiled->parameter_count));
   }
 
   std::array<Word, kMaximumLuaParameters> arguments;
-  for (std::size_t index = 0; index < owned->parameter_count; ++index) {
+  for (std::size_t index = 0; index < compiled->parameter_count; ++index) {
     const TValue *argument = s2v(argument_base + index);
-    if (owned->mode == NumericMode::kInteger && !ttisinteger(argument)) {
+    if (compiled->mode == NumericMode::kInteger && !ttisinteger(argument)) {
       return luaL_error(state, "argument %d must be a Lua integer",
                         static_cast<int>(index + 1));
     }
-    if (owned->mode == NumericMode::kFloat64 && !ttisfloat(argument)) {
+    if (compiled->mode == NumericMode::kFloat64 && !ttisfloat(argument)) {
       return luaL_error(state, "argument %d must be a Lua Float64",
                         static_cast<int>(index + 1));
     }
     arguments[index] =
-        owned->mode == NumericMode::kInteger
+        compiled->mode == NumericMode::kInteger
             ? static_cast<Word>(ivalue(argument))
             : unijit::ir::pack_float64(static_cast<double>(fltvalue(argument)));
   }
@@ -946,33 +1359,209 @@ int invoke_compiled_function(lua_State *state) {
   bool invoked = false;
   char invocation_error[256] = {};
   {
-    if (owned->function->requires_context()) {
-      const unijit::ir::EvaluationResult result =
-          owned->function->invoke(arguments.data(), owned->parameter_count);
-      if (result.ok()) {
-        value = result.value;
-        invoked = true;
-      } else {
-        std::snprintf(invocation_error, sizeof(invocation_error),
-                      "UniJIT invocation failed at site %zu: %s",
-                      result.status.location(),
-                      result.status.message().c_str());
-      }
-    } else {
-      value = owned->function->native_entry()(arguments.data(), nullptr);
+    unijit::runtime::ExecutionContext execution_context;
+    const unijit::jit::TieredInvocationResult result = compiled->code.invoke(
+        arguments.data(), compiled->parameter_count, &execution_context);
+    if (result.ok()) {
+      value = result.result.value;
       invoked = true;
+    } else {
+      std::snprintf(invocation_error, sizeof(invocation_error),
+                    "UniJIT invocation failed at site %zu: %s",
+                    result.result.status.location(),
+                    result.result.status.message().c_str());
     }
   }
   if (!invoked) {
     return luaL_error(state, "%s", invocation_error);
   }
-  if (owned->mode == NumericMode::kInteger) {
+  compiled->code.record_backedges(
+      compiled->loop_hotness.estimate(arguments.data(),
+                                      compiled->parameter_count));
+  schedule_if_hot(*owned->state);
+  if (compiled->mode == NumericMode::kInteger) {
     setivalue(s2v(state->top.p), static_cast<lua_Integer>(value));
   } else {
     setfltvalue(s2v(state->top.p),
                 static_cast<lua_Number>(unijit::ir::unpack_float64(value)));
   }
   ++state->top.p;
+  return 1;
+}
+
+CompiledFunctionState *compiled_state_argument(lua_State *state, int index) {
+  if (lua_type(state, index) != LUA_TFUNCTION ||
+      lua_iscfunction(state, index) == 0 ||
+      lua_getupvalue(state, index, 1) == nullptr) {
+    return nullptr;
+  }
+  auto *owned = static_cast<OwnedFunction *>(
+      luaL_testudata(state, -1, kCompiledFunctionMetatable));
+  CompiledFunctionState *compiled =
+      owned == nullptr || owned->state == nullptr ? nullptr
+                                                  : owned->state->get();
+  lua_pop(state, 1);
+  return compiled;
+}
+
+const char *tier_name(unijit::jit::CodeTier tier) noexcept {
+  switch (tier) {
+    case unijit::jit::CodeTier::kBaseline:
+      return "baseline";
+    case unijit::jit::CodeTier::kOptimized:
+      return "optimized";
+    default:
+      return "none";
+  }
+}
+
+const char *task_state_name(
+    unijit::jit::CompilationTaskState task_state) noexcept {
+  switch (task_state) {
+    case unijit::jit::CompilationTaskState::kQueued:
+      return "queued";
+    case unijit::jit::CompilationTaskState::kRunning:
+      return "running";
+    case unijit::jit::CompilationTaskState::kSucceeded:
+      return "succeeded";
+    case unijit::jit::CompilationTaskState::kFailed:
+      return "failed";
+    case unijit::jit::CompilationTaskState::kCancelled:
+      return "cancelled";
+    default:
+      return "idle";
+  }
+}
+
+lua_Integer metric_value(std::uint64_t value) noexcept {
+  constexpr auto kMaximum =
+      static_cast<std::uint64_t>(std::numeric_limits<lua_Integer>::max());
+  return static_cast<lua_Integer>(value > kMaximum ? kMaximum : value);
+}
+
+void set_metric(lua_State *state, const char *name, std::uint64_t value) {
+  lua_pushinteger(state, metric_value(value));
+  lua_setfield(state, -2, name);
+}
+
+void set_flag(lua_State *state, const char *name, bool value) {
+  lua_pushboolean(state, value ? 1 : 0);
+  lua_setfield(state, -2, name);
+}
+
+void set_text(lua_State *state, const char *name, const char *value) {
+  lua_pushstring(state, value);
+  lua_setfield(state, -2, name);
+}
+
+int compiled_function_stats(lua_State *state) {
+  if (lua_gettop(state) != 1) {
+    return luaL_error(state, "unijit.stats expects one compiled function");
+  }
+  CompiledFunctionState *compiled = compiled_state_argument(state, 1);
+  if (compiled == nullptr) {
+    return luaL_error(state,
+                      "unijit.stats expects a function from unijit.compile");
+  }
+  unijit::jit::TieredCodeStats stats;
+  unijit::jit::CompilationTaskState task_state =
+      unijit::jit::CompilationTaskState::kInvalid;
+  bool cancellation_requested = false;
+  unijit::jit::CompilationSchedulerStats scheduler_stats;
+  std::size_t code_size = 0;
+  std::size_t input_ir_nodes = 0;
+  std::size_t active_ir_nodes = 0;
+  {
+    stats = compiled->code.stats();
+    const unijit::jit::TieredCodeSnapshot snapshot =
+        compiled->code.snapshot();
+    const unijit::jit::CompilationStats *compilation =
+        snapshot.handle.compilation_stats();
+    if (compilation != nullptr) {
+      code_size = compilation->code_size;
+      input_ir_nodes = compilation->input_ir_nodes;
+      active_ir_nodes = compilation->optimized_ir_nodes;
+    }
+    const unijit::jit::CompilationTicket ticket =
+        compiled->current_ticket();
+    task_state = ticket.state();
+    cancellation_requested = ticket.cancellation_requested();
+    LuaService &service = lua_service();
+    if (service.scheduler != nullptr) {
+      scheduler_stats = service.scheduler->stats();
+    }
+  }
+  LuaService &service = lua_service();
+
+  lua_createtable(state, 0, 19);
+  set_text(state, "active_tier", tier_name(stats.active_tier));
+  set_flag(state, "tierable", compiled->tierable);
+  set_flag(state, "loop", compiled->loop_hotness.is_loop);
+  set_metric(state, "generation", stats.generation);
+  set_metric(state, "invocations", stats.hotness.invocations);
+  set_metric(state, "backedges", stats.hotness.backedges);
+  set_metric(state, "compilation_attempts",
+             stats.hotness.compilation_attempts);
+  set_metric(state, "successful_compilations",
+             stats.hotness.successful_compilations);
+  set_metric(state, "failed_compilations",
+             stats.hotness.failed_compilations);
+  set_metric(state, "promotions", stats.promotions);
+  set_metric(state, "withdrawals", stats.withdrawals);
+  set_text(state, "compilation_state", task_state_name(task_state));
+  set_flag(state, "cancellation_requested", cancellation_requested);
+  set_flag(state, "scheduler_available", service.scheduler != nullptr);
+  set_metric(state, "scheduler_queued_tasks", scheduler_stats.queued_tasks);
+  set_metric(state, "scheduler_active_workers",
+             scheduler_stats.active_workers);
+  set_metric(state, "code_size", code_size);
+  set_metric(state, "input_ir_nodes", input_ir_nodes);
+  set_metric(state, "active_ir_nodes", active_ir_nodes);
+  return 1;
+}
+
+int wait_for_compiled_function(lua_State *state) {
+  if (lua_gettop(state) != 2 || !lua_isinteger(state, 2)) {
+    return luaL_error(
+        state,
+        "unijit.wait expects a compiled function and integer timeout");
+  }
+  const lua_Integer timeout = lua_tointeger(state, 2);
+  if (timeout < 0) {
+    return luaL_error(state, "unijit.wait timeout cannot be negative");
+  }
+  CompiledFunctionState *compiled = compiled_state_argument(state, 1);
+  if (compiled == nullptr) {
+    return luaL_error(state,
+                      "unijit.wait expects a function from unijit.compile");
+  }
+  bool completed = false;
+  {
+    const unijit::jit::CompilationTicket ticket =
+        compiled->current_ticket();
+    completed =
+        !ticket.valid() || ticket.wait_for(std::chrono::milliseconds(timeout));
+  }
+  lua_pushboolean(state, completed ? 1 : 0);
+  return 1;
+}
+
+int cancel_compiled_function(lua_State *state) {
+  if (lua_gettop(state) != 1) {
+    return luaL_error(state, "unijit.cancel expects one compiled function");
+  }
+  CompiledFunctionState *compiled = compiled_state_argument(state, 1);
+  if (compiled == nullptr) {
+    return luaL_error(state,
+                      "unijit.cancel expects a function from unijit.compile");
+  }
+  bool cancelled = false;
+  {
+    const unijit::jit::CompilationTicket ticket =
+        compiled->current_ticket();
+    cancelled = ticket.cancel();
+  }
+  lua_pushboolean(state, cancelled ? 1 : 0);
   return 1;
 }
 
@@ -994,55 +1583,77 @@ int compile_lua_function_mode(lua_State *state, NumericMode mode,
   char error[512] = {};
   bool compiled = false;
   {
-    std::string cache_key;
-    const bool cacheable = prototype_cache_key(*closure->p, mode, &cache_key);
-    const std::uint64_t fingerprint =
-        mode == NumericMode::kInteger ? kIntegerCacheFingerprint
-                                      : kFloatCacheFingerprint;
-    CodeHandle code = cacheable
-                          ? compiled_function_cache(mode).find(cache_key,
-                                                               fingerprint)
-                          : CodeHandle{};
-    if (!code.valid()) {
-      CompilationResult result =
-          mode == NumericMode::kInteger
-              ? compile_prototype(
-                    *closure->p,
-                    unijit::jit::OptimizationLevel::kOptimized)
-              : unijit::frontend::lua55::detail::compile_float64_prototype(
-                    *closure->p,
-                    unijit::jit::OptimizationLevel::kOptimized);
-      if (result.ok()) {
-        unijit::jit::CodeCachePublication publication =
-            cacheable
-                ? compiled_function_cache(mode).publish(
-                      cache_key, fingerprint, std::move(result.function))
-                : uncached_publication_cache().publish(
-                      "uncached-lua-prototype", fingerprint,
-                      std::move(result.function));
-        if (publication.ok()) {
-          code = std::move(publication.handle);
+    try {
+      std::string cache_key;
+      const bool cacheable =
+          prototype_cache_key(*closure->p, mode, &cache_key);
+      std::shared_ptr<const PrototypeSnapshot> snapshot =
+          capture_prototype(*closure->p);
+      const bool tierable = cacheable && snapshot != nullptr;
+      const unijit::jit::OptimizationLevel initial_level =
+          tierable ? unijit::jit::OptimizationLevel::kBaseline
+                   : unijit::jit::OptimizationLevel::kOptimized;
+      const std::uint64_t fingerprint =
+          cache_fingerprint(mode, initial_level);
+      LuaService &service = lua_service();
+      CodeHandle code =
+          cacheable
+              ? service.cache(mode, initial_level).find(cache_key, fingerprint)
+              : CodeHandle{};
+      if (!code.valid()) {
+        CompilationResult result =
+            compile_numeric_mode(*closure->p, mode, initial_level);
+        if (result.ok()) {
+          unijit::jit::CodeCachePublication publication =
+              cacheable
+                  ? service.cache(mode, initial_level)
+                        .publish(cache_key, fingerprint,
+                                 std::move(result.function))
+                  : service.uncached_cache.publish(
+                        "uncached-lua-prototype", fingerprint,
+                        std::move(result.function));
+          if (publication.ok()) {
+            code = std::move(publication.handle);
+          } else {
+            std::snprintf(error, sizeof(error),
+                          "unable to publish Lua native code: %s",
+                          publication.status.message().c_str());
+          }
         } else {
-          std::snprintf(error, sizeof(error),
-                        "unable to publish Lua native code: %s",
-                        publication.status.message().c_str());
+          std::snprintf(error, sizeof(error), "Lua bytecode at pc %zu: %s",
+                        result.status.location(),
+                        result.status.message().c_str());
         }
-      } else {
-        std::snprintf(error, sizeof(error), "Lua bytecode at pc %zu: %s",
-                      result.status.location(),
-                      result.status.message().c_str());
       }
-    }
-    if (code.valid()) {
-      owned->function = new (std::nothrow) CodeHandle(std::move(code));
-      if (owned->function == nullptr) {
-        std::snprintf(error, sizeof(error),
-                      "unable to allocate a Lua native-code lease");
-      } else {
-        owned->parameter_count = closure->p->numparams;
-        owned->mode = mode;
-        compiled = true;
+      if (code.valid()) {
+        LoopHotnessPlan loop_hotness = analyze_loop_hotness(*closure->p);
+        auto compiled_state = std::make_shared<CompiledFunctionState>(
+            service.allocate_identity(), closure->p->numparams, mode,
+            std::move(snapshot), std::move(cache_key), loop_hotness, tierable);
+        const Status baseline_status =
+            compiled_state->code.publish_baseline(std::move(code));
+        if (!baseline_status.ok()) {
+          std::snprintf(error, sizeof(error),
+                        "unable to publish Lua baseline: %s",
+                        baseline_status.message().c_str());
+        } else {
+          owned->state =
+              new (std::nothrow) std::shared_ptr<CompiledFunctionState>(
+                  std::move(compiled_state));
+          if (owned->state == nullptr) {
+            std::snprintf(error, sizeof(error),
+                          "unable to allocate a Lua native-code lease");
+          } else {
+            compiled = true;
+          }
+        }
       }
+    } catch (const std::bad_alloc &) {
+      std::snprintf(error, sizeof(error),
+                    "unable to allocate Lua compilation state");
+    } catch (...) {
+      std::snprintf(error, sizeof(error),
+                    "unexpected Lua compilation failure");
     }
   }
   if (!compiled) {
@@ -1075,6 +1686,9 @@ extern "C" int luaopen_unijit(lua_State *state) {
   static const luaL_Reg functions[] = {
       {"compile", compile_lua_function},
       {"compile_float", compile_float_lua_function},
+      {"stats", compiled_function_stats},
+      {"wait", wait_for_compiled_function},
+      {"cancel", cancel_compiled_function},
       {nullptr, nullptr},
   };
   luaL_newlib(state, functions);
