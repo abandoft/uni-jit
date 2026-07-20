@@ -2,6 +2,7 @@
 #define UNIJIT_FRONTEND_QUICKJS_SOURCE_TRANSLATOR_H
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string_view>
 
@@ -10,10 +11,16 @@
 
 namespace unijit::frontend::quickjs {
 
+enum class ResultKind : std::uint8_t {
+  kFloat64 = 0,
+  kBoolean,
+};
+
 struct TranslationResult final {
   Status status;
   std::size_t parameter_count{0};
   std::unique_ptr<jit::CompiledFunction> function;
+  ResultKind result_kind{ResultKind::kFloat64};
 
   bool ok() const noexcept { return status.ok() && function != nullptr; }
 };

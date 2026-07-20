@@ -22,6 +22,7 @@
 namespace {
 
 using unijit::frontend::quickjs::TranslationResult;
+using unijit::frontend::quickjs::ResultKind;
 using unijit::ir::Word;
 
 constexpr std::size_t kMaximumParameters = 64;
@@ -39,8 +40,10 @@ std::once_flag compiled_function_class_once;
 
 struct CompiledFunctionState final {
   CompiledFunctionState(std::uint64_t id, std::size_t parameters,
-                        std::string retained_source, bool supports_tiering)
+                        ResultKind result, std::string retained_source,
+                        bool supports_tiering)
       : parameter_count(parameters),
+        result_kind(result),
         source(std::move(retained_source)),
         tierable(supports_tiering),
         scheduling_identity("quickjs:" + std::to_string(id)),
@@ -57,6 +60,7 @@ struct CompiledFunctionState final {
   }
 
   std::size_t parameter_count;
+  ResultKind result_kind;
   std::string source;
   bool tierable;
   std::string scheduling_identity;
@@ -155,7 +159,8 @@ unijit::Status compile_optimized(
     if (!translation.ok()) {
       return fail_optimization(state, std::move(translation.status));
     }
-    if (translation.parameter_count != state->parameter_count) {
+    if (translation.parameter_count != state->parameter_count ||
+        translation.result_kind != state->result_kind) {
       return fail_optimization(
           state, {unijit::StatusCode::kCodeGenerationFailed,
                   "QuickJS optimized signature differs from its baseline"});
@@ -173,7 +178,12 @@ unijit::Status compile_optimized(
     optimized = std::move(publication.handle);
   }
 
-  if (optimized.parameter_count() != state->parameter_count) {
+  const unijit::ir::ValueType expected_return_type =
+      state->result_kind == ResultKind::kBoolean
+          ? unijit::ir::ValueType::kWord
+          : unijit::ir::ValueType::kFloat64;
+  if (optimized.parameter_count() != state->parameter_count ||
+      optimized.return_type() != expected_return_type) {
     return fail_optimization(
         state, {unijit::StatusCode::kCodeGenerationFailed,
                 "cached QuickJS optimized signature differs from baseline"});
@@ -269,8 +279,11 @@ JSValue invoke_compiled_function(JSContext* context, JSValueConst, int argc,
         invocation.result.status.message().c_str());
   }
   schedule_if_hot(state);
-  return JS_NewFloat64(
-      context, unijit::ir::unpack_float64(invocation.result.value));
+  if (state->result_kind == ResultKind::kBoolean) {
+    return JS_NewBool(context, invocation.result.value != 0);
+  }
+  return JS_NewFloat64(context,
+                       unijit::ir::unpack_float64(invocation.result.value));
 }
 
 JSValue get_function_to_string(JSContext* context) {
@@ -337,6 +350,11 @@ JSValue compile_with_to_string(JSContext* context, JSValueConst function_value,
     unijit::jit::CodeHandle baseline = service.baseline_cache.find(
         source_view, kQuickJsBaselineFingerprint);
     std::size_t parameter_count = baseline.parameter_count();
+    ResultKind result_kind =
+        baseline.valid() &&
+                baseline.return_type() == unijit::ir::ValueType::kWord
+            ? ResultKind::kBoolean
+            : ResultKind::kFloat64;
     if (!baseline.valid()) {
       TranslationResult translation =
           unijit::frontend::quickjs::translate_numeric_function(
@@ -350,6 +368,7 @@ JSValue compile_with_to_string(JSContext* context, JSValueConst function_value,
             translation.status.message().c_str());
       }
       parameter_count = translation.parameter_count;
+      result_kind = translation.result_kind;
       unijit::jit::CodeCachePublication publication =
           service.baseline_cache.publish(
               source_view, kQuickJsBaselineFingerprint,
@@ -370,7 +389,7 @@ JSValue compile_with_to_string(JSContext* context, JSValueConst function_value,
     }
 
     auto state = std::make_shared<CompiledFunctionState>(
-        service.allocate_identity(), parameter_count,
+        service.allocate_identity(), parameter_count, result_kind,
         std::move(retained_source), tierable);
     const unijit::Status baseline_status =
         state->code.publish_baseline(std::move(baseline));
