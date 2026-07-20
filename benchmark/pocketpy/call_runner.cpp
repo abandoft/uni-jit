@@ -6,14 +6,21 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
+#include <limits>
 #include <string>
 #include <vector>
 
 #include <pocketpy.h>
 
 #include "unijit_pocketpy.h"
+
+#ifndef UNIJIT_POCKETPY_BENCHMARK_SOURCE
+#define UNIJIT_POCKETPY_BENCHMARK_SOURCE "benchmark/pocketpy/numeric_call.py"
+#endif
 
 namespace {
 
@@ -23,36 +30,64 @@ struct Options final {
   std::size_t warmup{10000};
   std::size_t iterations{100000};
   std::size_t samples{7};
+  std::string script{UNIJIT_POCKETPY_BENCHMARK_SOURCE};
 };
 
 struct Measurement final {
-  double nanoseconds_per_call{-1.0};
+  double nanoseconds_per_iteration{-1.0};
   std::uint64_t checksum{0};
 };
+
+bool parse_positive_size(const char *text, std::size_t *value) {
+  try {
+    std::size_t consumed = 0;
+    const auto parsed = std::stoull(text, &consumed);
+    if (consumed != std::strlen(text) || parsed == 0 ||
+        parsed > static_cast<unsigned long long>(
+                     std::numeric_limits<py_i64>::max())) {
+      return false;
+    }
+    *value = static_cast<std::size_t>(parsed);
+    return true;
+  } catch (const std::exception &) {
+    return false;
+  }
+}
 
 bool parse_options(int argc, char **argv, Options *options) {
   for (int index = 1; index < argc; index += 2) {
     if (index + 1 >= argc) {
       return false;
     }
-    std::size_t value = 0;
-    try {
-      value = static_cast<std::size_t>(std::stoull(argv[index + 1]));
-    } catch (const std::exception &) {
-      return false;
-    }
     const std::string name = argv[index];
-    if (name == "--warmup") {
-      options->warmup = value;
+    if (name == "--script") {
+      options->script = argv[index + 1];
+    } else if (name == "--warmup") {
+      if (!parse_positive_size(argv[index + 1], &options->warmup)) {
+        return false;
+      }
     } else if (name == "--iterations") {
-      options->iterations = value;
+      if (!parse_positive_size(argv[index + 1], &options->iterations)) {
+        return false;
+      }
     } else if (name == "--samples") {
-      options->samples = value;
+      if (!parse_positive_size(argv[index + 1], &options->samples)) {
+        return false;
+      }
     } else {
       return false;
     }
   }
-  return options->warmup > 0 && options->iterations > 0 && options->samples > 0;
+  return !options->script.empty();
+}
+
+std::string read_file(const std::string &path) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input) {
+    return {};
+  }
+  return {std::istreambuf_iterator<char>(input),
+          std::istreambuf_iterator<char>()};
 }
 
 std::uint64_t bits(double value) noexcept {
@@ -61,34 +96,21 @@ std::uint64_t bits(double value) noexcept {
   return result;
 }
 
-Measurement measure(py_Ref function, std::size_t iterations) {
-  double lhs = 1.25;
-  double rhs = -7.5;
-  std::uint64_t checksum = 0;
+Measurement measure(py_Ref execute, py_Ref function, std::size_t iterations) {
+  std::array<py_TValue, 2> arguments{};
+  py_assign(&arguments[0], function);
+  py_newint(&arguments[1], static_cast<py_i64>(iterations));
   const auto started = Clock::now();
-  for (std::size_t iteration = 0; iteration < iterations; ++iteration) {
-    std::array<py_TValue, 2> arguments{};
-    py_newfloat(&arguments[0], lhs);
-    py_newfloat(&arguments[1], rhs);
-    if (!py_call(function, static_cast<int>(arguments.size()),
-                 arguments.data()) ||
-        !py_isfloat(py_retval())) {
-      return {};
-    }
-    checksum ^= bits(py_tofloat(py_retval()));
-    lhs += 0.125;
-    rhs -= 0.0625;
-    if (lhs > 4096.0) {
-      lhs = 1.25;
-    }
-    if (rhs < -4096.0) {
-      rhs = -7.5;
-    }
-  }
+  const bool succeeded =
+      py_call(execute, static_cast<int>(arguments.size()), arguments.data());
   const auto elapsed = Clock::now() - started;
+  if (!succeeded || !py_isfloat(py_retval())) {
+    return {};
+  }
   const double nanoseconds =
       std::chrono::duration<double, std::nano>(elapsed).count();
-  return {nanoseconds / static_cast<double>(iterations), checksum};
+  return {nanoseconds / static_cast<double>(iterations),
+          bits(py_tofloat(py_retval()))};
 }
 
 double median(std::vector<double> values) {
@@ -113,8 +135,14 @@ int fail(const char *message) {
 int main(int argc, char **argv) {
   Options options;
   if (!parse_options(argc, argv, &options)) {
-    std::cerr << "usage: unijit_pocketpy_benchmark [--warmup N] "
-                 "[--iterations N] [--samples N]\n";
+    std::cerr << "usage: unijit_pocketpy_benchmark [--script PATH] "
+                 "[--warmup N] [--iterations N] [--samples N]\n";
+    return EXIT_FAILURE;
+  }
+  const std::string source = read_file(options.script);
+  if (source.empty()) {
+    std::cerr << "unable to read the Python benchmark source: "
+              << options.script << '\n';
     return EXIT_FAILURE;
   }
 
@@ -122,23 +150,21 @@ int main(int argc, char **argv) {
   if (unijit_pocketpy_install() != 0) {
     return fail("unable to install the UniJIT PocketPy module");
   }
-  constexpr char kSetup[] =
-      "import unijit\n"
-      "def stock(a, b):\n"
-      "    return (a + b) * (a - 3.25) + b * 0.75\n"
-      "native = unijit.compile(\"def native(a, b): return "
-      "(a + b) * (a - 3.25) + b * 0.75\")\n";
-  if (!py_exec(kSetup, "<unijit-pocketpy-benchmark>", EXEC_MODE, nullptr)) {
+  if (!py_exec(source.c_str(), options.script.c_str(), EXEC_MODE, nullptr) ||
+      !py_exec("import unijit\nnative = unijit.compile(unijit_native_source)",
+               "<unijit-pocketpy-compile>", EXEC_MODE, nullptr)) {
     return fail("unable to compile the PocketPy benchmark functions");
   }
-  const py_Ref stock = py_getglobal(py_name("stock"));
+  const py_Ref stock = py_getglobal(py_name("numeric_kernel"));
   const py_Ref native = py_getglobal(py_name("native"));
-  if (stock == nullptr || native == nullptr) {
+  const py_Ref execute = py_getglobal(py_name("execute_numeric_kernel"));
+  if (stock == nullptr || native == nullptr || execute == nullptr) {
     return fail("unable to resolve the PocketPy benchmark functions");
   }
 
-  if (measure(stock, options.warmup).nanoseconds_per_call < 0.0 ||
-      measure(native, options.warmup).nanoseconds_per_call < 0.0) {
+  if (measure(execute, stock, options.warmup).nanoseconds_per_iteration < 0.0 ||
+      measure(execute, native, options.warmup).nanoseconds_per_iteration <
+          0.0) {
     return fail("PocketPy benchmark warmup failed");
   }
 
@@ -147,37 +173,39 @@ int main(int argc, char **argv) {
   stock_samples.reserve(options.samples);
   native_samples.reserve(options.samples);
   std::uint64_t checksum = 0;
+  bool has_checksum = false;
   for (std::size_t sample = 0; sample < options.samples; ++sample) {
-    const Measurement stock_measurement = measure(stock, options.iterations);
-    const Measurement native_measurement = measure(native, options.iterations);
-    if (stock_measurement.nanoseconds_per_call < 0.0 ||
-        native_measurement.nanoseconds_per_call < 0.0 ||
-        stock_measurement.checksum != native_measurement.checksum) {
-      std::cerr << "PocketPy benchmark engines produced different results: "
-                << std::hex << stock_measurement.checksum
-                << " != " << native_measurement.checksum << '\n';
-      if (py_checkexc()) {
-        py_printexc();
-      }
-      py_finalize();
-      return EXIT_FAILURE;
+    const Measurement stock_measurement =
+        measure(execute, stock, options.iterations);
+    const Measurement native_measurement =
+        measure(execute, native, options.iterations);
+    if (stock_measurement.nanoseconds_per_iteration < 0.0 ||
+        native_measurement.nanoseconds_per_iteration < 0.0 ||
+        stock_measurement.checksum != native_measurement.checksum ||
+        (has_checksum && checksum != native_measurement.checksum)) {
+      return fail("PocketPy benchmark engines or samples produced different "
+                  "results");
     }
-    stock_samples.push_back(stock_measurement.nanoseconds_per_call);
-    native_samples.push_back(native_measurement.nanoseconds_per_call);
-    checksum ^= native_measurement.checksum;
+    checksum = native_measurement.checksum;
+    has_checksum = true;
+    stock_samples.push_back(stock_measurement.nanoseconds_per_iteration);
+    native_samples.push_back(native_measurement.nanoseconds_per_iteration);
   }
 
   const double stock_median = median(std::move(stock_samples));
   const double native_median = median(std::move(native_samples));
   std::cout << std::fixed << std::setprecision(3) << "{\n"
-            << "  \"schema\": \"unijit.pocketpy-call.v1\",\n"
+            << "  \"schema\": \"unijit.pocketpy-numeric-call.v2\",\n"
+            << "  \"pocketpy_version\": \"2.1.8\",\n"
             << "  \"warmup_iterations\": " << options.warmup << ",\n"
-            << "  \"measurement_iterations\": " << options.iterations << ",\n"
+            << "  \"measurement_iterations\": " << options.iterations
+            << ",\n"
             << "  \"samples\": " << options.samples << ",\n"
             << "  \"stock_median_ns\": " << stock_median << ",\n"
             << "  \"unijit_median_ns\": " << native_median << ",\n"
             << "  \"speedup\": " << stock_median / native_median << ",\n"
-            << "  \"checksum\": \"0x" << std::hex << checksum << "\"\n"
+            << "  \"checksum\": \"0x" << std::hex << std::setw(16)
+            << std::setfill('0') << checksum << "\"\n"
             << "}\n";
 
   py_finalize();

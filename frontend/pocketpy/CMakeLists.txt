@@ -121,6 +121,8 @@ if(UNIJIT_BUILD_BENCHMARKS)
   add_executable(unijit_pocketpy_benchmark
     "${PROJECT_SOURCE_DIR}/benchmark/pocketpy/call_runner.cpp")
   target_compile_features(unijit_pocketpy_benchmark PRIVATE cxx_std_17)
+  target_compile_definitions(unijit_pocketpy_benchmark PRIVATE
+    "UNIJIT_POCKETPY_BENCHMARK_SOURCE=\"${PROJECT_SOURCE_DIR}/benchmark/pocketpy/numeric_call.py\"")
   target_link_libraries(unijit_pocketpy_benchmark
     PRIVATE unijit_pocketpy_frontend)
   set_target_properties(unijit_pocketpy_benchmark PROPERTIES
