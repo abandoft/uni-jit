@@ -565,6 +565,9 @@ JSValue compiled_function_stats(JSContext* context, JSValueConst, int argc,
                  stats.hotness.failed_compilations) &&
       set_metric(context, result, "promotions", stats.promotions) &&
       set_metric(context, result, "withdrawals", stats.withdrawals) &&
+      set_metric(context, result, "osr_attempts", stats.osr_attempts) &&
+      set_metric(context, result, "osr_entries", stats.osr_entries) &&
+      set_metric(context, result, "osr_exits", stats.osr_exits) &&
       set_text(context, result, "compilation_state",
                task_state_name(ticket.state())) &&
       set_flag(context, result, "cancellation_requested",

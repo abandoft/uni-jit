@@ -470,6 +470,9 @@ bool compiled_function_stats(int argc, py_Ref argv) {
                     stats.hotness.failed_compilations) &&
          set_metric(py_retval(), "promotions", stats.promotions) &&
          set_metric(py_retval(), "withdrawals", stats.withdrawals) &&
+         set_metric(py_retval(), "osr_attempts", stats.osr_attempts) &&
+         set_metric(py_retval(), "osr_entries", stats.osr_entries) &&
+         set_metric(py_retval(), "osr_exits", stats.osr_exits) &&
          set_text(py_retval(), "compilation_state",
                   task_state_name(ticket.state())) &&
          set_flag(py_retval(), "cancellation_requested",

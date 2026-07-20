@@ -1493,7 +1493,7 @@ int compiled_function_stats(lua_State *state) {
   }
   LuaService &service = lua_service();
 
-  lua_createtable(state, 0, 19);
+  lua_createtable(state, 0, 22);
   set_text(state, "active_tier", tier_name(stats.active_tier));
   set_flag(state, "tierable", compiled->tierable);
   set_flag(state, "loop", compiled->loop_hotness.is_loop);
@@ -1508,6 +1508,9 @@ int compiled_function_stats(lua_State *state) {
              stats.hotness.failed_compilations);
   set_metric(state, "promotions", stats.promotions);
   set_metric(state, "withdrawals", stats.withdrawals);
+  set_metric(state, "osr_attempts", stats.osr_attempts);
+  set_metric(state, "osr_entries", stats.osr_entries);
+  set_metric(state, "osr_exits", stats.osr_exits);
   set_text(state, "compilation_state", task_state_name(task_state));
   set_flag(state, "cancellation_requested", cancellation_requested);
   set_flag(state, "scheduler_available", service.scheduler != nullptr);
