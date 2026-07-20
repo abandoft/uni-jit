@@ -18,6 +18,7 @@
 #include "unijit/ir/optimizer.h"
 #include "unijit/jit/code_cache.h"
 #include "unijit/jit/compiler.h"
+#include "unijit/jit/tiering.h"
 
 namespace {
 
@@ -1556,6 +1557,175 @@ void test_assumption_invalidation() {
          "compilation must reject an already invalidated assumption");
 }
 
+void test_hotness_and_tiered_switching() {
+  unijit::jit::CodeCache cache({16, 1024U * 1024U});
+  FunctionBuilder baseline_builder(1);
+  expect(baseline_builder
+             .set_return(baseline_builder.add(baseline_builder.parameter(0),
+                                              baseline_builder.constant(1)))
+             .ok(),
+         "tiered baseline fixture must record its result");
+  auto baseline_compilation =
+      Compiler::compile(std::move(baseline_builder).build());
+  auto baseline_publication = cache.publish(
+      "tiered-baseline", 1, std::move(baseline_compilation.function));
+  expect(baseline_compilation.status.ok() && baseline_publication.ok(),
+         "tiered baseline fixture must compile and publish");
+
+  auto assumption = std::make_shared<unijit::runtime::Assumption>();
+  unijit::runtime::AssumptionSet assumptions;
+  expect(assumptions.add(assumption, 808, 12).ok(),
+         "tiered optimized fixture must bind an assumption");
+  FunctionBuilder optimized_builder(1);
+  expect(optimized_builder
+             .set_return(optimized_builder.add(optimized_builder.parameter(0),
+                                               optimized_builder.constant(1)))
+             .ok(),
+         "tiered optimized fixture must record its result");
+  auto optimized_compilation = Compiler::compile(
+      std::move(optimized_builder).build(), assumptions);
+  auto optimized_publication = cache.publish(
+      "tiered-optimized", 1, std::move(optimized_compilation.function));
+  expect(optimized_compilation.status.ok() && optimized_publication.ok(),
+         "tiered optimized fixture must compile and publish");
+
+  unijit::jit::TieredCode tiered({3, 5, 2});
+  const std::array<Word, 1> arguments = {41};
+  expect(!tiered.snapshot().valid() &&
+             !tiered.invoke(arguments.data(), arguments.size()).ok(),
+         "tiered invocation must reject a missing baseline");
+  expect(tiered.publish_baseline(baseline_publication.handle).ok(),
+         "tiered code must publish an assumption-free baseline");
+  const auto baseline_snapshot = tiered.snapshot();
+  expect(baseline_snapshot.valid() &&
+             baseline_snapshot.tier == unijit::jit::CodeTier::kBaseline &&
+             baseline_snapshot.generation != 0,
+         "tiered baseline publication must expose a stable generation");
+
+  for (std::size_t invocation = 0; invocation < 2; ++invocation) {
+    const auto result = tiered.invoke(arguments.data(), arguments.size());
+    expect(result.ok() && result.result.value == 42 &&
+               result.attempted_tier ==
+                   unijit::jit::CodeTier::kBaseline,
+           "cold tiered calls must execute the baseline");
+  }
+  expect(!tiered.try_begin_optimization(),
+         "hotness must not trigger before the invocation threshold");
+  expect(tiered.invoke(arguments.data(), arguments.size()).ok() &&
+             tiered.try_begin_optimization() &&
+             !tiered.try_begin_optimization(),
+         "one compiler must claim a hot tiered generation");
+  expect(tiered
+             .publish_optimized(optimized_publication.handle,
+                                baseline_snapshot.generation)
+             .ok(),
+         "the claimed optimized tier must publish over its baseline");
+  const auto optimized_snapshot = tiered.snapshot();
+  expect(optimized_snapshot.tier == unijit::jit::CodeTier::kOptimized &&
+             optimized_snapshot.generation != baseline_snapshot.generation &&
+             tiered.stats().hotness.successful_compilations == 1,
+         "optimized publication must advance the tiered generation");
+  expect(!tiered
+              .publish_optimized(optimized_publication.handle,
+                                 baseline_snapshot.generation)
+              .ok(),
+         "late compilation must not overwrite a newer generation");
+
+  const auto optimized_result =
+      tiered.invoke(arguments.data(), arguments.size());
+  expect(optimized_result.ok() && optimized_result.result.value == 42 &&
+             optimized_result.attempted_tier ==
+                 unijit::jit::CodeTier::kOptimized,
+         "valid assumptions must select the optimized tier");
+  expect(assumption->invalidate(),
+         "tiered optimized assumption must invalidate once");
+  unijit::runtime::ExecutionContext context;
+  const auto fallback = tiered.invoke(
+      arguments.data(), arguments.size(), &context,
+      unijit::jit::DeoptimizationPolicy::kRetryBaseline);
+  expect(fallback.ok() && fallback.result.value == 42 &&
+             fallback.deoptimized && fallback.retried_baseline &&
+             fallback.attempted_tier ==
+                 unijit::jit::CodeTier::kOptimized &&
+             tiered.snapshot().tier ==
+                 unijit::jit::CodeTier::kBaseline,
+         "restartable assumption exits must withdraw and retry the baseline");
+  const auto retained_exit = optimized_snapshot.handle.invoke(
+      arguments.data(), arguments.size(), &context);
+  expect(!retained_exit.ok() &&
+             retained_exit.status.code() ==
+                 unijit::StatusCode::kRuntimeExit,
+         "retained optimized snapshots must stay safe after withdrawal");
+  expect(!optimized_snapshot.handle.assumptions_valid() &&
+             !tiered.publish_optimized(optimized_snapshot.handle).ok(),
+         "tiered publication must reject an already stale optimized handle");
+
+  expect(!tiered.try_begin_optimization(),
+         "withdrawal must apply a hotness retry delay");
+  tiered.record_backedges(1);
+  expect(!tiered.try_begin_optimization(),
+         "one backedge must not exhaust a two-event retry delay");
+  tiered.record_backedges(1);
+  expect(tiered.try_begin_optimization() &&
+             tiered.report_optimization_failure().ok() &&
+             tiered.stats().hotness.failed_compilations == 1,
+         "failed tier compilation must rearm profiling without a claim storm");
+
+  FunctionBuilder stable_optimized_builder(1);
+  expect(stable_optimized_builder
+             .set_return(stable_optimized_builder.add(
+                 stable_optimized_builder.parameter(0),
+                 stable_optimized_builder.constant(1)))
+             .ok(),
+         "stable optimized fixture must record its result");
+  auto stable_compilation =
+      Compiler::compile(std::move(stable_optimized_builder).build());
+  auto stable_publication = cache.publish(
+      "tiered-stable", 1, std::move(stable_compilation.function));
+  expect(stable_compilation.status.ok() && stable_publication.ok(),
+         "stable optimized fixture must compile and publish");
+
+  std::atomic<std::size_t> switching_errors{0};
+  std::atomic<bool> start{false};
+  std::vector<std::thread> readers;
+  for (std::size_t index = 0; index < 4; ++index) {
+    readers.emplace_back([&] {
+      while (!start.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+      for (std::size_t invocation = 0; invocation < 2000; ++invocation) {
+        const auto result = tiered.invoke(arguments.data(), arguments.size());
+        if (!result.ok() || result.result.value != 42) {
+          switching_errors.fetch_add(1, std::memory_order_relaxed);
+        }
+      }
+    });
+  }
+  start.store(true, std::memory_order_release);
+  for (std::size_t iteration = 0; iteration < 200; ++iteration) {
+    const auto current = tiered.snapshot();
+    if (current.tier == unijit::jit::CodeTier::kBaseline) {
+      if (!tiered
+               .publish_optimized(stable_publication.handle,
+                                  current.generation)
+               .ok()) {
+        switching_errors.fetch_add(1, std::memory_order_relaxed);
+      }
+    } else if (!tiered.withdraw_optimized(current.generation)) {
+      switching_errors.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+  for (std::thread& reader : readers) {
+    reader.join();
+  }
+  const auto tiered_stats = tiered.stats();
+  expect(switching_errors.load(std::memory_order_relaxed) == 0 &&
+             tiered_stats.promotions > 0 && tiered_stats.withdrawals > 0 &&
+             tiered_stats.assumption_deoptimizations == 1 &&
+             tiered_stats.baseline_retries == 1,
+         "concurrent tier switching must retain safe immutable snapshots");
+}
+
 void test_control_flow_execution_budget() {
   unijit::ir::ControlFlowBuilder builder(0);
   const unijit::ir::Block loop = builder.create_block(0);
@@ -1616,6 +1786,7 @@ int main() {
   test_control_flow_rejects_non_dominating_value();
   test_control_flow_safepoint();
   test_assumption_invalidation();
+  test_hotness_and_tiered_switching();
   test_control_flow_execution_budget();
   test_control_flow_builder_rejects_edge_arity();
 
