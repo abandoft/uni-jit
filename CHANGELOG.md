@@ -1,3 +1,7 @@
+## 0.1.8
+
+- Added independent Word and Float64 CFG register classes on AArch64, x86-64, and RISC-V 64, keeping loop-carried floating-point values resident through arithmetic and typed parallel edges, preserving exact guard and stack-map capture plus oversubscribed stack fallback, and retaining checksum-matched per-platform code-size and throughput evidence.
+
 ## 0.1.7
 
 - Added a fixed-worker background compilation scheduler with task-count and estimated-byte queue budgets, nonblocking admission, deadline-bounded backpressure, exact identity-and-generation deduplication, and starvation-bounded urgent, normal, and background priorities.
