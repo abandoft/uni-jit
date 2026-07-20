@@ -1,5 +1,8 @@
 ## 0.1.6
 
+- Added public saturating invocation and backedge hotness profiles with configurable thresholds, atomic single-compiler claims, cumulative telemetry, and retry delay after failed compilation to prevent claim storms.
+- Added assumption-free baseline and replaceable optimized tier publication through immutable atomically acquired snapshots, opaque generations, signature validation, late-result rejection, safe concurrent promotion, preallocated allocation-free withdrawal, and retained execution leases.
+- Added automatic optimized-tier withdrawal on assumption deoptimization plus an explicit restartable baseline-retry policy, with concurrent switching, stale snapshot, fallback, telemetry, ThreadSanitizer, and installed-package coverage.
 - Added one-shot concurrent runtime assumptions for straight-line and CFG compilation, with validated dependency sites, typed entry-frame recovery, managed entry and return checks, safepoint wakeups isolated from user interrupts, and blocking quiescence before protected state mutation.
 - Integrated assumption validity with the native-code cache so lookup retires stale generations, same-identity publication replaces rather than reuses them, retained leases deoptimize safely, and dedicated telemetry reports automatic assumption invalidations.
 - Extended the ThreadSanitizer runtime gate with active native-loop assumption invalidation, quiescence, frame reconstruction, stale-generation replacement, and independent sticky-interrupt coverage.
