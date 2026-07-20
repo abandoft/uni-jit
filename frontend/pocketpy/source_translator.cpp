@@ -89,8 +89,8 @@ public:
     }
 
     const std::size_t parameter_count = parameters_.size();
-    jit::CompilationResult compilation =
-        jit::Compiler::compile(std::move(*builder_).build());
+    jit::CompilationResult compilation = jit::Compiler::compile(
+        std::move(*builder_).build(), deoptimization_table_);
     if (!compilation.ok()) {
       return {compilation.status, parameter_count, nullptr};
     }
@@ -229,6 +229,33 @@ private:
       if (operation == '*') {
         value = builder_->float64_multiply(value, rhs);
       } else {
+        runtime::DeoptimizationRecord deoptimization;
+        deoptimization.site = operation_site;
+        deoptimization.resume_offset = operation_site;
+        deoptimization.reason =
+            runtime::DeoptimizationReason::kDivisionByZero;
+        try {
+          deoptimization.recovery.reserve(parameters_.size() + 1);
+          for (std::size_t index = 0; index < parameters_.size(); ++index) {
+            deoptimization.recovery.push_back(
+                runtime::RecoveryOperation::argument(
+                    index, ir::ValueType::kFloat64, index));
+          }
+          deoptimization.recovery.push_back(
+              runtime::RecoveryOperation::exit_value(
+                  parameters_.size(), ir::ValueType::kFloat64));
+        } catch (const std::bad_alloc &) {
+          status_ = {StatusCode::kResourceExhausted,
+                     "unable to allocate PocketPy deoptimization state",
+                     operation_site};
+          return {};
+        }
+        const Status metadata_status =
+            deoptimization_table_.add(deoptimization);
+        if (!metadata_status.ok()) {
+          status_ = metadata_status;
+          return {};
+        }
         if (!builder_->guard_float64_nonzero(rhs, operation_site).valid()) {
           invalid("unable to create a checked Float64 division");
           return {};
@@ -344,6 +371,7 @@ private:
   Status status_;
   std::vector<std::string> parameters_;
   std::unique_ptr<ir::FunctionBuilder> builder_;
+  runtime::DeoptimizationTable deoptimization_table_;
 };
 
 } // namespace

@@ -1,6 +1,7 @@
 #include <array>
 #include <cstdlib>
 #include <iostream>
+#include <string_view>
 
 #include <pocketpy.h>
 
@@ -28,9 +29,10 @@ int main() {
     return EXIT_FAILURE;
   }
 
+  constexpr char kDivisionSource[] =
+      "def quotient(a, b): return (a + 1) / b";
   const auto division =
-      unijit::frontend::pocketpy::translate_numeric_function(
-          "def quotient(a, b): return (a + 1) / b");
+      unijit::frontend::pocketpy::translate_numeric_function(kDivisionSource);
   if (!division.ok() || !division.function->requires_context()) {
     std::cerr << "PocketPy checked division did not compile\n";
     return EXIT_FAILURE;
@@ -45,11 +47,35 @@ int main() {
   }
   const std::array<unijit::ir::Word, 2> zero_division_arguments = {
       unijit::ir::pack_float64(9.0), unijit::ir::pack_float64(-0.0)};
+  unijit::runtime::ExecutionContext division_context;
   const auto zero_division = division.function->invoke(
-      zero_division_arguments.data(), zero_division_arguments.size());
+      zero_division_arguments.data(), zero_division_arguments.size(),
+      &division_context);
   if (zero_division.ok() ||
       zero_division.status.code() != unijit::StatusCode::kRuntimeExit) {
     std::cerr << "PocketPy checked division accepted a zero divisor\n";
+    return EXIT_FAILURE;
+  }
+  const std::size_t division_site =
+      std::string_view(kDivisionSource).find('/');
+  const auto *division_record =
+      division.function->deoptimization_record(division_site);
+  const auto reconstructed_division =
+      division.function->reconstruct_deoptimization(
+          division_site, zero_division_arguments.data(),
+          zero_division_arguments.size(), division_context);
+  const auto *recovered_lhs = reconstructed_division.frame.find(0);
+  const auto *recovered_divisor = reconstructed_division.frame.find(2);
+  if (division_record == nullptr ||
+      division_record->reason !=
+          unijit::runtime::DeoptimizationReason::kDivisionByZero ||
+      !reconstructed_division.ok() ||
+      reconstructed_division.frame.resume_offset != division_site ||
+      recovered_lhs == nullptr ||
+      recovered_lhs->value != zero_division_arguments[0] ||
+      recovered_divisor == nullptr ||
+      recovered_divisor->value != zero_division_arguments[1]) {
+    std::cerr << "PocketPy division exit did not reconstruct its frame\n";
     return EXIT_FAILURE;
   }
 
@@ -57,7 +83,8 @@ int main() {
       unijit::frontend::pocketpy::translate_numeric_function(
           "def half(a): return a / 2");
   if (!constant_division.ok() ||
-      constant_division.function->requires_context()) {
+      constant_division.function->requires_context() ||
+      !constant_division.function->deoptimization_table().empty()) {
     std::cerr << "PocketPy constant division retained a redundant guard\n";
     return EXIT_FAILURE;
   }

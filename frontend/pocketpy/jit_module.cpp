@@ -119,11 +119,30 @@ bool invoke_compiled_function(int argc, py_Ref argv) {
 
   Word result = 0;
   if (owned->function.requires_context()) {
+    unijit::runtime::ExecutionContext context;
     const unijit::ir::EvaluationResult invocation = owned->function.invoke(
-        native_arguments.data(), owned->parameter_count);
+        native_arguments.data(), owned->parameter_count, &context);
     if (!invocation.ok()) {
       if (invocation.status.code() == unijit::StatusCode::kRuntimeExit) {
-        return ZeroDivisionError("float division by zero");
+        const std::size_t site = invocation.status.location();
+        const unijit::runtime::ReconstructionResult reconstruction =
+            owned->function.reconstruct_deoptimization(
+                site, native_arguments.data(), owned->parameter_count,
+                context);
+        if (reconstruction.ok() &&
+            reconstruction.frame.reason ==
+                unijit::runtime::DeoptimizationReason::kDivisionByZero) {
+          const unijit::runtime::RecoveredValue *divisor =
+              reconstruction.frame.find(owned->parameter_count);
+          if (divisor != nullptr &&
+              divisor->type == unijit::ir::ValueType::kFloat64 &&
+              unijit::ir::unpack_float64(divisor->value) == 0.0) {
+            return ZeroDivisionError("float division by zero");
+          }
+        }
+        return RuntimeError(
+            "UniJIT could not reconstruct runtime exit at site %d",
+            static_cast<int>(site));
       }
       return RuntimeError("UniJIT invocation failed at site %d: %s",
                           static_cast<int>(invocation.status.location()),
