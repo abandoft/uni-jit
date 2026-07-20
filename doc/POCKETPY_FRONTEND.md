@@ -31,6 +31,7 @@ native = unijit.compile(
     "def affine(a, b): return (a + 2.5) * (b - -3)"
 )
 result = native(1.5, 4)
+metrics = unijit.stats(native)
 ```
 
 The source-string API avoids pretending that PocketPy 2.1.8 exposes reliable
@@ -38,6 +39,22 @@ source provenance for arbitrary function objects. Each call requires exactly
 the declared number of arguments. PocketPy `int` and `float` arguments are
 converted to Float64, other types raise `TypeError`, and the result is a
 PocketPy `float`.
+
+Straight-line callables initially publish verified SSA through the explicit
+low-latency baseline compiler, without running the optimization pipeline. Each
+callable records saturating invocation hotness; after 64 successful calls, one
+atomic compilation claimant translates the retained exact source through the
+optimizer and publishes the optimized code only if the baseline generation is
+still current. Baseline and optimized mappings use independent exact-source
+caches, so a second callable can reuse either tier without conflating their
+lifetime or profiling state. Failed compilation is not allowed to break an
+already successful invocation and is delayed before retry.
+
+`unijit.stats(native)` returns the active tier, whether the source supports
+tiering, generation, invocation and compilation counters, promotion and
+withdrawal counts, code size, and input/active IR node counts. These metrics
+are snapshots for diagnostics and capacity monitoring; callers must not use
+them to infer language semantics.
 
 The compiled callable owns its executable allocation in PocketPy userdata.
 The VM garbage collector releases it through the type destructor. The internal
@@ -71,6 +88,12 @@ SSA edges, and every backedge polls an execution-context safepoint. Calls,
 nested loops, `break`, `continue`, and loop division are currently rejected;
 division stays out of this tier until CFG exits can reproduce PocketPy's
 checked exception semantics.
+
+Counted loops already enter the CFG native path directly and therefore remain
+a single baseline publication instead of recompiling identical code at the
+invocation threshold. Their `tierable` metric is false. Straight-line checked
+division is tierable, and runtime exits reconstruct through the exact code
+lease attempted by the call, including when an optimized generation is active.
 
 ## Reproducible CPython JIT target benchmark
 

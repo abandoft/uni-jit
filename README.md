@@ -28,7 +28,8 @@ concurrency stress, sanitizers, and commercial performance floors.
 integration contract, and [doc/QUICKJS_FRONTEND.md](doc/QUICKJS_FRONTEND.md)
 defines the current stock QuickJS specialization boundary.
 [doc/POCKETPY_FRONTEND.md](doc/POCKETPY_FRONTEND.md) documents the PocketPy
-2.1.8 embedding API, ownership rules, and strict numeric tier.
+2.1.8 embedding API, ownership rules, strict numeric tier, live baseline-to-
+optimized promotion, and script-visible tier telemetry.
 
 ## Build
 

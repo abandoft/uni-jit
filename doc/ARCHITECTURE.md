@@ -144,6 +144,15 @@ publication mutex. Assumption exits withdraw the affected optimized generation;
 only frontends that explicitly declare a computation restartable may request
 automatic baseline retry. The contract is specified in `doc/TIERING.md`.
 
+Straight-line compilation has explicit baseline and optimized modes. The
+baseline preserves verification and all exit metadata but skips optimizer
+latency; the optimized mode performs the canonical passes and remains the
+default for compatibility. PocketPy uses these modes in production callables,
+retains exact source for recompilation, and publishes an optimized generation
+after a single hotness claimant wins. Runtime exits carry the exact attempted
+code lease so a concurrent switch cannot redirect frame reconstruction to the
+wrong metadata generation.
+
 Code is created writable, populated, instruction-cache synchronized, and only
 then published executable. Published code is never writable. A bounded,
 thread-safe LRU cache publishes immutable functions behind copyable execution

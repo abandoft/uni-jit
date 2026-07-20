@@ -38,6 +38,10 @@ another baseline, optimized tier, or withdrawal has changed the generation in
 the meantime. Active calls and explicit snapshots retain their original code
 lease safely across every switch.
 
+`TieredInvocationResult::attempted_handle` retains that exact execution lease
+for the frontend. Diagnostics and state reconstruction must use this handle,
+not a fresh snapshot that may already identify another generation.
+
 Replacing the baseline drops the active optimized tier and restarts sampling.
 Withdrawing optimized code immediately directs future calls to the baseline,
 while already acquired optimized snapshots remain memory-safe.
@@ -58,9 +62,16 @@ optimized execution can expose external side effects.
 
 ## Current boundary
 
-The core now provides profiling, compilation ownership claims, immutable
-version publication, concurrent switching, stale-result rejection, and safe
-assumption fallback. Frontend-specific work remains to collect bytecode
-backedge counts, retain baseline IR or bytecode, schedule compilation away from
-latency-sensitive threads, and install optimized versions for broader language
-regions.
+The compiler exposes explicit `kBaseline` and `kOptimized` levels for verified
+straight-line SSA. Baseline compilation skips the optimization pipeline while
+preserving verification, guards, deoptimization metadata, allocation, native
+lowering, and W^X publication; optimized compilation remains the default API.
+
+PocketPy is the first live frontend consumer. It retains exact accepted source,
+publishes a baseline immediately, claims optimization after 64 successful
+invocations, reuses an independent optimized cache, and switches with an
+expected-generation check. Its complete counted-loop CFG path remains a single
+native tier because repeating the same compilation would add latency without
+improving code. QuickJS and Lua still need frontend-owned profiling and real
+baseline/optimized installation, and broader language regions still need
+background scheduling away from latency-sensitive runtime threads.
