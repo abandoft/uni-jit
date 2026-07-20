@@ -103,7 +103,8 @@ EvaluationResult Interpreter::evaluate(const Function& function,
           if (unpack_float64(values[node.lhs.id()]) == 0.0) {
             const auto site = static_cast<std::size_t>(node.immediate);
             if (context != nullptr) {
-              context->record_exit(runtime::ExitReason::kRuntime, site);
+              context->record_exit(runtime::ExitReason::kRuntime, site,
+                                   values[node.lhs.id()]);
             }
             return {{StatusCode::kRuntimeExit,
                      "Float64 nonzero guard requested a runtime exit", site},

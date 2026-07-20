@@ -7,7 +7,8 @@ add_library(unijit
   jit/code_cache.cpp
   jit/compiler.cpp
   jit/executable_memory.cpp
-  jit/register_allocator.cpp)
+  jit/register_allocator.cpp
+  runtime/deoptimization.cpp)
 
 set(UNIJIT_PROCESSOR "${CMAKE_SYSTEM_PROCESSOR}")
 if(APPLE AND CMAKE_OSX_ARCHITECTURES)

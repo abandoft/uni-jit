@@ -20,6 +20,73 @@
 namespace unijit::jit {
 namespace {
 
+struct DeoptimizationPreparation final {
+  Status status;
+  runtime::DeoptimizationTable table;
+};
+
+bool has_guard_site(const ir::Function& function, std::size_t site) noexcept {
+  return std::any_of(function.nodes().begin(), function.nodes().end(),
+                     [site](const ir::Node& node) {
+                       return node.opcode == ir::Opcode::kGuardFloatNonzero &&
+                              static_cast<std::size_t>(node.immediate) == site;
+                     });
+}
+
+DeoptimizationPreparation prepare_deoptimization(
+    const ir::Function& input, const ir::Function& optimized,
+    const runtime::DeoptimizationTable& requested) {
+  const Status validation = requested.validate(input.parameter_count());
+  if (!validation.ok()) {
+    return {validation, {}};
+  }
+  for (const runtime::DeoptimizationRecord& record : requested.records()) {
+    if (!has_guard_site(input, record.site)) {
+      return {{StatusCode::kInvalidArgument,
+               "deoptimization metadata does not identify a runtime guard",
+               record.site},
+              {}};
+    }
+  }
+
+  runtime::DeoptimizationTable result;
+  try {
+    for (const ir::Node& node : optimized.nodes()) {
+      if (node.opcode != ir::Opcode::kGuardFloatNonzero) {
+        continue;
+      }
+      const std::size_t site = static_cast<std::size_t>(node.immediate);
+      if (result.find(site) != nullptr) {
+        continue;
+      }
+      const runtime::DeoptimizationRecord* supplied = requested.find(site);
+      if (supplied != nullptr) {
+        const Status addition = result.add(*supplied);
+        if (!addition.ok()) {
+          return {addition, {}};
+        }
+        continue;
+      }
+
+      runtime::DeoptimizationRecord fallback;
+      fallback.site = site;
+      fallback.resume_offset = site;
+      fallback.reason = runtime::DeoptimizationReason::kGuardFailed;
+      fallback.recovery.push_back(runtime::RecoveryOperation::exit_value(
+          input.parameter_count(), ir::ValueType::kFloat64));
+      const Status addition = result.add(fallback);
+      if (!addition.ok()) {
+        return {addition, {}};
+      }
+    }
+    return {Status::ok_status(), std::move(result)};
+  } catch (const std::bad_alloc&) {
+    return {{StatusCode::kResourceExhausted,
+             "unable to prepare deoptimization metadata"},
+            {}};
+  }
+}
+
 ir::EvaluationResult finish_invocation(
     ir::Word value, runtime::ExecutionContext* context) {
   if (context == nullptr ||
@@ -54,11 +121,14 @@ struct CompiledFunction::Impl final {
 CompiledFunction::CompiledFunction(std::unique_ptr<Impl> impl,
                                    std::size_t parameter_count,
                                    CompilationStats stats,
-                                   bool requires_context) noexcept
+                                   bool requires_context,
+                                   runtime::DeoptimizationTable
+                                       deoptimization_table) noexcept
     : impl_(std::move(impl)),
       parameter_count_(parameter_count),
       stats_(stats),
-      requires_context_(requires_context) {}
+      requires_context_(requires_context),
+      deoptimization_table_(std::move(deoptimization_table)) {}
 
 CompiledFunction::~CompiledFunction() = default;
 CompiledFunction::CompiledFunction(CompiledFunction&&) noexcept = default;
@@ -99,6 +169,12 @@ ir::EvaluationResult CompiledFunction::invoke(
 }
 
 CompilationResult Compiler::compile(const ir::Function& function) {
+  return compile(function, {});
+}
+
+CompilationResult Compiler::compile(
+    const ir::Function& function,
+    const runtime::DeoptimizationTable& deoptimization_table) {
   const Status verification = ir::verify(function);
   if (!verification.ok()) {
     return {verification, nullptr};
@@ -109,6 +185,12 @@ CompilationResult Compiler::compile(const ir::Function& function) {
     return {optimization.status, nullptr};
   }
   const ir::Function& optimized = optimization.function;
+
+  DeoptimizationPreparation deoptimization =
+      prepare_deoptimization(function, optimized, deoptimization_table);
+  if (!deoptimization.status.ok()) {
+    return {deoptimization.status, nullptr};
+  }
 
 #if defined(UNIJIT_TARGET_AARCH64)
   detail::aarch64::LoweringResult lowering = detail::aarch64::lower(optimized);
@@ -143,7 +225,7 @@ CompilationResult Compiler::compile(const ir::Function& function) {
         });
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
         std::move(implementation), function.parameter_count(), stats,
-        requires_context));
+        requires_context, std::move(deoptimization.table)));
     return {Status::ok_status(), std::move(compiled)};
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
@@ -197,7 +279,7 @@ CompilationResult Compiler::compile(const ir::ControlFlowFunction& function) {
         });
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
         std::move(implementation), function.parameter_count(), stats,
-        requires_context));
+        requires_context, {}));
     return {Status::ok_status(), std::move(compiled)};
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,

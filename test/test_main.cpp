@@ -491,6 +491,13 @@ void test_float64_nonzero_guard() {
   if (!compilation.ok()) {
     return;
   }
+  const auto* default_deoptimization =
+      compilation.function->deoptimization_record(77);
+  expect(default_deoptimization != nullptr &&
+             default_deoptimization->reason ==
+                 unijit::runtime::DeoptimizationReason::kGuardFailed &&
+             default_deoptimization->recovery.size() == 1,
+         "generic guards must receive default reconstruction metadata");
 
   const std::array<Word, 2> valid = {unijit::ir::pack_float64(9.0),
                                      unijit::ir::pack_float64(3.0)};
@@ -513,7 +520,8 @@ void test_float64_nonzero_guard() {
                    unijit::StatusCode::kRuntimeExit &&
                rejected_by_interpreter.status.location() == 77 &&
                interpreter_context.exit_reason() ==
-                   unijit::runtime::ExitReason::kRuntime,
+                   unijit::runtime::ExitReason::kRuntime &&
+               interpreter_context.exit_value() == invalid[1],
            "interpreter guard must reject both signed Float64 zeroes");
 
     const auto rejected_with_local_context =
@@ -530,9 +538,116 @@ void test_float64_nonzero_guard() {
     expect(!rejected_by_native.ok() &&
                native_context.exit_reason() ==
                    unijit::runtime::ExitReason::kRuntime &&
-               native_context.exit_site() == 77,
-           "native guard must publish its stable exit site");
+               native_context.exit_site() == 77 &&
+               native_context.exit_value() == invalid[1],
+           "native guard must publish its stable exit site and value bits");
   }
+}
+
+void test_deoptimization_reconstruction() {
+  FunctionBuilder builder(
+      std::vector<unijit::ir::ValueType>(2,
+                                         unijit::ir::ValueType::kFloat64));
+  const Value divisor = builder.parameter(1);
+  expect(builder.guard_float64_nonzero(divisor, 113).valid(),
+         "deoptimization fixture must create its guard");
+  const Value quotient =
+      builder.float64_divide(builder.parameter(0), divisor);
+  expect(builder.set_return(quotient).ok(),
+         "deoptimization fixture must record its result");
+  const Function function = std::move(builder).build();
+
+  unijit::runtime::DeoptimizationRecord record;
+  record.site = 113;
+  record.resume_offset = 29;
+  record.reason = unijit::runtime::DeoptimizationReason::kDivisionByZero;
+  record.recovery = {
+      unijit::runtime::RecoveryOperation::argument(
+          0, unijit::ir::ValueType::kFloat64, 0),
+      unijit::runtime::RecoveryOperation::argument(
+          1, unijit::ir::ValueType::kFloat64, 1),
+      unijit::runtime::RecoveryOperation::constant_value(
+          2, unijit::ir::ValueType::kWord, 41),
+      unijit::runtime::RecoveryOperation::exit_value(
+          3, unijit::ir::ValueType::kFloat64)};
+  unijit::runtime::DeoptimizationTable metadata;
+  expect(metadata.add(record).ok(),
+         "valid deoptimization metadata must be accepted");
+  expect(!metadata.add(record).ok(),
+         "duplicate deoptimization sites must be rejected");
+
+  auto compilation = Compiler::compile(function, metadata);
+  expect(compilation.ok(),
+         "a function with explicit deoptimization metadata must compile");
+  if (!compilation.ok()) {
+    return;
+  }
+  const auto* compiled_record =
+      compilation.function->deoptimization_record(113);
+  expect(compilation.function->deoptimization_table().size() == 1 &&
+             compiled_record != nullptr &&
+             compiled_record->reason ==
+                 unijit::runtime::DeoptimizationReason::kDivisionByZero &&
+             compiled_record->resume_offset == 29,
+         "compiled functions must retain immutable deoptimization records");
+
+  const std::array<Word, 2> arguments = {
+      unijit::ir::pack_float64(9.0), unijit::ir::pack_float64(-0.0)};
+  unijit::runtime::ExecutionContext context;
+  const auto exited = compilation.function->invoke(
+      arguments.data(), arguments.size(), &context);
+  expect(!exited.ok() &&
+             exited.status.code() == unijit::StatusCode::kRuntimeExit &&
+             context.exit_value() == arguments[1],
+         "a guarded exit must retain the exact triggering value bits");
+
+  const auto reconstruction =
+      compilation.function->reconstruct_deoptimization(
+          exited.status.location(), arguments.data(), arguments.size(),
+          context);
+  const auto* recovered_argument = reconstruction.frame.find(0);
+  const auto* recovered_constant = reconstruction.frame.find(2);
+  const auto* recovered_exit = reconstruction.frame.find(3);
+  expect(reconstruction.ok() && reconstruction.frame.site == 113 &&
+             reconstruction.frame.resume_offset == 29 &&
+             reconstruction.frame.reason ==
+                 unijit::runtime::DeoptimizationReason::kDivisionByZero &&
+             recovered_argument != nullptr &&
+             recovered_argument->value == arguments[0] &&
+             recovered_constant != nullptr && recovered_constant->value == 41 &&
+             recovered_exit != nullptr &&
+             recovered_exit->value == arguments[1],
+         "deoptimization must reconstruct arguments, constants, and exits");
+
+  unijit::runtime::ExecutionContext mismatched_context;
+  mismatched_context.record_exit(unijit::runtime::ExitReason::kRuntime, 114);
+  expect(!compilation.function
+              ->reconstruct_deoptimization(113, arguments.data(),
+                                           arguments.size(),
+                                           mismatched_context)
+              .ok(),
+         "reconstruction must reject stale or mismatched execution contexts");
+
+  unijit::jit::CodeCache cache;
+  const auto publication = cache.publish(
+      "deoptimization-fixture", 1, std::move(compilation.function));
+  expect(publication.ok() &&
+             publication.handle.deoptimization_record(113) != nullptr,
+         "code-cache leases must retain deoptimization metadata");
+  const auto cached_reconstruction =
+      publication.handle.reconstruct_deoptimization(
+          113, arguments.data(), arguments.size(), context);
+  expect(cached_reconstruction.ok() &&
+             cached_reconstruction.frame.find(3) != nullptr &&
+             cached_reconstruction.frame.find(3)->value == arguments[1],
+         "cached execution leases must reconstruct diagnosed exits");
+
+  unijit::runtime::DeoptimizationRecord unknown_site = record;
+  unknown_site.site = 999;
+  unijit::runtime::DeoptimizationTable invalid_metadata;
+  expect(invalid_metadata.add(unknown_site).ok() &&
+             !Compiler::compile(function, invalid_metadata).ok(),
+         "compilation must reject metadata for a nonexistent guard site");
 }
 
 void test_constant_float64_nonzero_guard_elimination() {
@@ -563,6 +678,8 @@ void test_constant_float64_nonzero_guard_elimination() {
   }
   expect(!compilation.function->requires_context(),
          "eliminated guards must not require a managed execution context");
+  expect(compilation.function->deoptimization_table().empty(),
+         "eliminated guards must not retain stale deoptimization metadata");
   const std::array<Word, 1> arguments = {unijit::ir::pack_float64(9.0)};
   const auto result =
       compilation.function->invoke(arguments.data(), arguments.size());
@@ -1328,6 +1445,7 @@ int main() {
   test_float64_ir_and_interpreter();
   test_float64_division();
   test_float64_nonzero_guard();
+  test_deoptimization_reconstruction();
   test_constant_float64_nonzero_guard_elimination();
   test_verifier_rejects_mixed_arithmetic();
   test_float64_spill_path();

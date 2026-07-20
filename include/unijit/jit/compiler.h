@@ -8,6 +8,7 @@
 #include "unijit/ir/control_flow.h"
 #include "unijit/ir/function.h"
 #include "unijit/ir/interpreter.h"
+#include "unijit/runtime/deoptimization.h"
 #include "unijit/runtime/execution_context.h"
 #include "unijit/status.h"
 
@@ -46,6 +47,19 @@ class CompiledFunction final {
   std::size_t parameter_count() const noexcept { return parameter_count_; }
   bool requires_context() const noexcept { return requires_context_; }
 
+  const runtime::DeoptimizationTable& deoptimization_table() const noexcept {
+    return deoptimization_table_;
+  }
+  const runtime::DeoptimizationRecord* deoptimization_record(
+      std::size_t site) const noexcept {
+    return deoptimization_table_.find(site);
+  }
+  runtime::ReconstructionResult reconstruct_deoptimization(
+      std::size_t site, const ir::Word* args, std::size_t arg_count,
+      const runtime::ExecutionContext& context) const {
+    return deoptimization_table_.reconstruct(site, args, arg_count, context);
+  }
+
   const CompilationStats& stats() const noexcept { return stats_; }
 
  private:
@@ -53,12 +67,14 @@ class CompiledFunction final {
   friend class Compiler;
 
   CompiledFunction(std::unique_ptr<Impl> impl, std::size_t parameter_count,
-                   CompilationStats stats, bool requires_context) noexcept;
+                   CompilationStats stats, bool requires_context,
+                   runtime::DeoptimizationTable deoptimization_table) noexcept;
 
   std::unique_ptr<Impl> impl_;
   std::size_t parameter_count_{0};
   CompilationStats stats_;
   bool requires_context_{false};
+  runtime::DeoptimizationTable deoptimization_table_;
 };
 
 struct CompilationResult final {
@@ -71,6 +87,9 @@ struct CompilationResult final {
 class Compiler final {
  public:
   static CompilationResult compile(const ir::Function& function);
+  static CompilationResult compile(
+      const ir::Function& function,
+      const runtime::DeoptimizationTable& deoptimization_table);
   static CompilationResult compile(const ir::ControlFlowFunction& function);
 };
 

@@ -578,13 +578,13 @@ LoweringResult lower_impl(const ir::Function& function) {
         const int source = load_float_operand(
             &assembler, allocation.locations[node.lhs.id()], kFloatScratch0);
         assembler.move_float_to_word(kScratch0, source);
+        assembler.move_register(kScratch1, kScratch0);
         assembler.add(kScratch0, kScratch0, kScratch0);
         const std::size_t nonzero = assembler.branch_nonzero(kScratch0);
 
         assembler.load(kScratch0, kStackPointer,
                        context_slot * sizeof(ir::Word));
         const std::size_t no_context = assembler.branch_zero(kScratch0);
-        assembler.move_immediate(kScratch1, 0);
         assembler.store(kScratch1, kScratch0,
                         runtime::ExecutionContext::exit_value_offset());
         assembler.move_immediate(kScratch1, node.immediate);

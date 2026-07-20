@@ -43,6 +43,11 @@ class CodeHandle final {
   std::size_t parameter_count() const noexcept;
   bool requires_context() const noexcept;
   const CompilationStats* compilation_stats() const noexcept;
+  const runtime::DeoptimizationRecord* deoptimization_record(
+      std::size_t site) const noexcept;
+  runtime::ReconstructionResult reconstruct_deoptimization(
+      std::size_t site, const ir::Word* args, std::size_t arg_count,
+      const runtime::ExecutionContext& context) const;
   NativeEntry native_entry() const noexcept;
 
   ir::EvaluationResult invoke(

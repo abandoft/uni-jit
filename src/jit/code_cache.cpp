@@ -28,6 +28,22 @@ const CompilationStats* CodeHandle::compilation_stats() const noexcept {
   return function_ == nullptr ? nullptr : &function_->stats();
 }
 
+const runtime::DeoptimizationRecord* CodeHandle::deoptimization_record(
+    std::size_t site) const noexcept {
+  return function_ == nullptr ? nullptr
+                              : function_->deoptimization_record(site);
+}
+
+runtime::ReconstructionResult CodeHandle::reconstruct_deoptimization(
+    std::size_t site, const ir::Word* args, std::size_t arg_count,
+    const runtime::ExecutionContext& context) const {
+  if (function_ == nullptr) {
+    return {{StatusCode::kInvalidArgument, "code handle is not valid"}, {}};
+  }
+  return function_->reconstruct_deoptimization(site, args, arg_count,
+                                               context);
+}
+
 NativeEntry CodeHandle::native_entry() const noexcept {
   return function_ == nullptr ? nullptr : function_->native_entry();
 }
