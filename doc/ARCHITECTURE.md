@@ -85,8 +85,10 @@ edge-argument translation. AArch64, x86-64, and RISC-V 64 lowering flush live
 register values to stable frame offsets before the effect, then records the
 native instruction offset and complete frame size. Compiled functions and
 cache leases expose this metadata without exposing physical register layouts;
-the exact contract and remaining frame-installation boundary are specified in
-`doc/STACK_MAPS.md`.
+diagnosed exits copy up to the enforced per-site bound into an allocation-free
+execution-context area before restoring the frame, and the exact attempted
+generation reconstructs the typed bits after ABI return. The contract and
+remaining frame-installation boundary are specified in `doc/STACK_MAPS.md`.
 
 The optimizing tier adds a separate CFG SSA representation with explicit
 basic-block parameters. Predecessor edges supply every block argument, making

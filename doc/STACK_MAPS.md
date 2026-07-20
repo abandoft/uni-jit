@@ -24,9 +24,10 @@ contains a guard or safepoint. CFG lowering reuses its value-ID-indexed frame
 area. A backward liveness pass excludes dead definitions, preserves operands
 needed after the effect, and translates live successor block parameters back
 to the matching predecessor edge arguments. Loop-carried state is resolved by
-a fixed-point dataflow calculation. Compilation rejects a function whose maps
-would retain more than 262,144 total live-value entries, bounding metadata
-growth from adversarial graphs.
+a fixed-point dataflow calculation. Each site is limited to 64 live values so
+its complete state fits the execution context's fixed capture area, and a
+function is limited to 262,144 total live-value entries. These limits bound
+metadata and exit work for adversarial graphs.
 
 ## Metadata ownership
 
@@ -45,11 +46,27 @@ input graph or source-level slots.
 published table and total retained values for observability and capacity
 planning.
 
+## Diagnosed-exit capture
+
+`ExecutionContext` contains a fixed 64-word capture area. A backend copies the
+canonical live values into that area only after a guard fails or an interrupt
+poll fires, records the exact count, and then restores the generated frame.
+The exit path performs no heap allocation and preserves Float64 values as exact
+bits.
+
+`CompiledFunction::reconstruct_stack_map(context)` validates the exit site,
+guard-versus-safepoint kind, and complete captured count before returning typed
+SSA values. `CodeHandle` exposes the same operation so callers reconstruct
+against the exact attempted generation even if another thread replaces active
+code. A successful later invocation clears the previous capture count together
+with its exit diagnostics. Only the first `captured_value_count()` entries are
+valid; unused capacity is intentionally left uninitialized so constructing a
+context does not zero 512 bytes on every hot invocation.
+
 ## Current boundary
 
-Canonical maps describe arbitrary live Word and Float64 SSA state while the
-native frame is active. Existing managed guards still restore that frame and
-return through the normal ABI boundary before frontend reconstruction. Captured
-live-value transport, materialized objects, interpreter-frame installation,
-unwind registration, and on-stack replacement build on this metadata but are
-not claimed by the current interface.
+Canonical maps and diagnosed-exit capture preserve arbitrary live Word and
+Float64 SSA state, within the per-site bound, across normal ABI return.
+Materialized object recovery, interpreter-frame installation, unwind
+registration, resumable transfer into a stock runtime, and on-stack replacement
+build on this state but are not claimed by the current interface.

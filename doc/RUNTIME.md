@@ -19,10 +19,12 @@ when the caller does not provide one.
 
 One thread owns an `ExecutionContext` while compiled or interpreted code is
 executing with it. Another thread may call `request_interrupt()` or
-`clear_interrupt()`; the request flag is a lock-free 64-bit atomic. Exit
-reason, site, and value fields are written only by the executing thread and
-must be read after that invocation returns. A context must not be shared by
-concurrent invocations.
+`clear_interrupt()`; the request flag is a lock-free 64-bit atomic. Exit reason,
+site, guarded value, and captured stack-map fields are written only by the
+executing thread and must be read after that invocation returns. A context must
+not be shared by concurrent invocations. The fixed 64-value capture area avoids
+allocation on native exits; compilation rejects any one stack map that cannot
+fit it.
 
 Interruption is sticky until `clear_interrupt()` is called. Invocation clears
 stale exit diagnostics but deliberately does not clear the interrupt request,
@@ -61,6 +63,10 @@ and RISC-V 64, including guards executed inside loop bodies.
 Managed invocation reports `StatusCode::kRuntimeExit`; the frontend can then
 use the compiled function's immutable metadata to reconstruct typed logical
 slots and the language-level reason without unwinding through generated code.
+Before a diagnosed exit restores its frame, the backend also copies every live
+canonical stack-map value into the execution context. The matching compiled
+function or retained code lease validates and reconstructs those exact Word or
+Float64 bits after ABI return as defined in [STACK_MAPS.md](STACK_MAPS.md).
 Calling a raw native entry with a null context is only supported when
 `requires_context()` is false. Optimization proves guards over known nonzero
 constants cannot exit and removes both the guard and its reconstruction record,

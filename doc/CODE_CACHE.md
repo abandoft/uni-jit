@@ -56,7 +56,7 @@ the return type. Tier publication compares all of these fields before switching
 an executable generation. This guarantees that one thread may execute and
 inspect or reconstruct an exit from a leased function while another thread
 replaces or invalidates its cache entry. See [STACK_MAPS.md](STACK_MAPS.md) for
-the canonical frame-location contract.
+the canonical frame-location and captured-value reconstruction contract.
 
 `invalidate(key, fingerprint)` performs assumption-specific invalidation;
 `invalidate(key)` removes the currently resident generation for the whole key.

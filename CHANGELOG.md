@@ -19,6 +19,7 @@
 - Enabled one top-level PocketPy `<`, `<=`, `>`, or `>=` numeric comparison with strict chained-comparison rejection and true PocketPy `bool` results that preserve NaN and asynchronous optimized-tier semantics.
 - Added canonical stack maps for every compiled guard and safepoint, with precise straight-line liveness, fixed-point CFG loop liveness, successor-parameter edge translation, stable typed frame slots, bounded metadata growth, and independent AArch64, x86-64, and RISC-V 64 publication.
 - Exposed immutable native offsets, frame sizes, exit kinds, live SSA locations, and map telemetry through compiled functions and cache leases, enforced unique runtime exit sites, pruned maps with eliminated guards, and verified metadata lifetime through the installed package API.
+- Added allocation-free diagnosed-exit capture for up to 64 live values per site, with exact Word and Float64 bits copied before native frame restoration, validated reconstruction through compiled functions and generation-stable cache leases, stale-state clearing, and compile-time rejection beyond the fixed capacity.
 
 ## 0.1.6
 
