@@ -89,6 +89,232 @@ RegisterAllocation allocate_impl(const ir::Function& function,
   return {Status::ok_status(), std::move(locations), spill_slots};
 }
 
+ControlFlowRegisterAllocation allocate_control_flow_impl(
+    const ir::ControlFlowFunction& function, std::size_t register_count) {
+  if (register_count == 0) {
+    return {{StatusCode::kInvalidArgument,
+             "control-flow allocation requires an allocatable register"},
+            {}, {}, {}};
+  }
+
+  const std::size_t value_count = function.nodes().size();
+  const std::size_t no_owner = function.blocks().size();
+  std::vector<std::size_t> owners(value_count, no_owner);
+  std::vector<std::size_t> positions(value_count, ValueLocation::kNone);
+  for (std::size_t block_index = 0; block_index < function.blocks().size();
+       ++block_index) {
+    const ir::BasicBlock& block = function.blocks()[block_index];
+    for (std::size_t index = 0; index < block.instructions.size(); ++index) {
+      const ir::Value value = block.instructions[index];
+      owners[value.id()] = block_index;
+      positions[value.id()] = index;
+    }
+  }
+
+  std::vector<std::size_t> register_indices(value_count,
+                                             ValueLocation::kNone);
+  for (std::size_t block_index = 0; block_index < function.blocks().size();
+       ++block_index) {
+    const ir::BasicBlock& block = function.blocks()[block_index];
+    std::vector<std::size_t> last_use(block.instructions.size(), 0);
+    for (std::size_t index = 0; index < block.instructions.size(); ++index) {
+      last_use[index] = index;
+      const ir::ControlNode& node =
+          function.nodes()[block.instructions[index].id()];
+      const auto note_local_use = [&](ir::Value value) {
+        if (value.valid() && owners[value.id()] == block_index) {
+          const std::size_t definition = positions[value.id()];
+          last_use[definition] = std::max(last_use[definition], index);
+        }
+      };
+      switch (node.opcode) {
+        case ir::ControlOpcode::kAdd:
+        case ir::ControlOpcode::kSubtract:
+        case ir::ControlOpcode::kMultiply:
+        case ir::ControlOpcode::kLessThan:
+        case ir::ControlOpcode::kLessEqual:
+          note_local_use(node.lhs);
+          note_local_use(node.rhs);
+          break;
+        case ir::ControlOpcode::kParameter:
+        case ir::ControlOpcode::kBlockParameter:
+        case ir::ControlOpcode::kConstant:
+          break;
+      }
+    }
+
+    const std::size_t terminator_position = block.instructions.size();
+    const auto note_terminator_use = [&](ir::Value value) {
+      if (value.valid() && owners[value.id()] == block_index) {
+        last_use[positions[value.id()]] = terminator_position;
+      }
+    };
+    const ir::ControlTerminator& terminator = block.terminator;
+    if (terminator.opcode == ir::TerminatorOpcode::kReturn ||
+        terminator.opcode == ir::TerminatorOpcode::kBranch) {
+      note_terminator_use(terminator.value);
+    }
+    const auto note_edge = [&](const ir::ControlEdge& edge) {
+      for (const ir::Value argument : edge.arguments) {
+        note_terminator_use(argument);
+      }
+    };
+    if (terminator.opcode == ir::TerminatorOpcode::kJump) {
+      note_edge(terminator.true_edge);
+    } else if (terminator.opcode == ir::TerminatorOpcode::kBranch) {
+      note_edge(terminator.true_edge);
+      note_edge(terminator.false_edge);
+    }
+
+    std::vector<std::size_t> free_registers;
+    free_registers.reserve(register_count);
+    for (std::size_t index = register_count; index > 0; --index) {
+      free_registers.push_back(index - 1);
+    }
+    std::vector<std::size_t> active;
+    for (std::size_t index = 0; index < block.instructions.size(); ++index) {
+      auto active_iterator = active.begin();
+      while (active_iterator != active.end()) {
+        const std::size_t active_position = *active_iterator;
+        if (last_use[active_position] < index) {
+          const ir::Value active_value =
+              block.instructions[active_position];
+          free_registers.push_back(register_indices[active_value.id()]);
+          active_iterator = active.erase(active_iterator);
+        } else {
+          ++active_iterator;
+        }
+      }
+      if (free_registers.empty()) {
+        continue;
+      }
+      const ir::Value value = block.instructions[index];
+      register_indices[value.id()] = free_registers.back();
+      free_registers.pop_back();
+      active.push_back(index);
+    }
+  }
+
+  std::vector<bool> requires_stack(value_count, false);
+  const auto note_nonlocal_use = [&](std::size_t block_index,
+                                     ir::Value value) {
+    if (value.valid() && owners[value.id()] != block_index) {
+      requires_stack[value.id()] = true;
+    }
+  };
+  for (std::size_t block_index = 0; block_index < function.blocks().size();
+       ++block_index) {
+    const ir::BasicBlock& block = function.blocks()[block_index];
+    for (const ir::Value value : block.instructions) {
+      const ir::ControlNode& node = function.nodes()[value.id()];
+      switch (node.opcode) {
+        case ir::ControlOpcode::kAdd:
+        case ir::ControlOpcode::kSubtract:
+        case ir::ControlOpcode::kMultiply:
+        case ir::ControlOpcode::kLessThan:
+        case ir::ControlOpcode::kLessEqual:
+          note_nonlocal_use(block_index, node.lhs);
+          note_nonlocal_use(block_index, node.rhs);
+          break;
+        case ir::ControlOpcode::kParameter:
+        case ir::ControlOpcode::kBlockParameter:
+        case ir::ControlOpcode::kConstant:
+          break;
+      }
+    }
+    const ir::ControlTerminator& terminator = block.terminator;
+    if (terminator.opcode == ir::TerminatorOpcode::kReturn ||
+        terminator.opcode == ir::TerminatorOpcode::kBranch) {
+      note_nonlocal_use(block_index, terminator.value);
+    }
+    const auto note_edge = [&](const ir::ControlEdge& edge) {
+      for (const ir::Value argument : edge.arguments) {
+        note_nonlocal_use(block_index, argument);
+      }
+    };
+    if (terminator.opcode == ir::TerminatorOpcode::kJump) {
+      note_edge(terminator.true_edge);
+    } else if (terminator.opcode == ir::TerminatorOpcode::kBranch) {
+      note_edge(terminator.true_edge);
+      note_edge(terminator.false_edge);
+    }
+  }
+
+  return {Status::ok_status(), std::move(register_indices),
+          std::move(owners), std::move(requires_stack)};
+}
+
+ControlFlowEdgeMoves plan_control_flow_edge_impl(
+    const ir::ControlFlowFunction& function, const ir::ControlEdge& edge,
+    const ControlFlowRegisterAllocation& allocation,
+    std::size_t current_block) {
+  const ir::BasicBlock& target = function.blocks()[edge.target.id()];
+  std::vector<ControlFlowRegisterMove> pending;
+  pending.reserve(edge.arguments.size());
+  for (std::size_t index = 0; index < edge.arguments.size(); ++index) {
+    const ir::Value parameter = target.parameters[index];
+    const std::size_t destination = allocation.register_indices[parameter.id()];
+    if (destination == ValueLocation::kNone) {
+      return {false, {}};
+    }
+
+    const ir::Value argument = edge.arguments[index];
+    const bool source_in_register =
+        allocation.owner_blocks[argument.id()] == current_block &&
+        allocation.register_indices[argument.id()] != ValueLocation::kNone;
+    const ControlFlowMoveSource source_kind =
+        source_in_register ? ControlFlowMoveSource::kRegister
+                           : ControlFlowMoveSource::kStack;
+    const std::size_t source =
+        source_in_register ? allocation.register_indices[argument.id()]
+                           : argument.id();
+    if (source_kind == ControlFlowMoveSource::kRegister &&
+        source == destination) {
+      continue;
+    }
+    pending.push_back({source_kind, source, destination});
+  }
+
+  ControlFlowEdgeMoves result{true, {}};
+  result.moves.reserve(pending.size() + 1);
+  while (!pending.empty()) {
+    auto ready = pending.end();
+    for (auto candidate = pending.begin(); candidate != pending.end();
+         ++candidate) {
+      bool destination_is_source = false;
+      for (const ControlFlowRegisterMove& move : pending) {
+        if (move.source_kind == ControlFlowMoveSource::kRegister &&
+            move.source_index == candidate->destination_index) {
+          destination_is_source = true;
+          break;
+        }
+      }
+      if (!destination_is_source) {
+        ready = candidate;
+        break;
+      }
+    }
+
+    if (ready != pending.end()) {
+      result.moves.push_back(*ready);
+      pending.erase(ready);
+      continue;
+    }
+
+    const std::size_t saved_register = pending.front().destination_index;
+    result.moves.push_back({ControlFlowMoveSource::kRegister, saved_register,
+                            ValueLocation::kNone});
+    for (ControlFlowRegisterMove& move : pending) {
+      if (move.source_kind == ControlFlowMoveSource::kRegister &&
+          move.source_index == saved_register) {
+        move.source_kind = ControlFlowMoveSource::kTemporary;
+        move.source_index = 0;
+      }
+    }
+  }
+  return result;
+}
+
 }  // namespace
 
 RegisterAllocation allocate_linear_scan(const ir::Function& function,
@@ -101,6 +327,25 @@ RegisterAllocation allocate_linear_scan(const ir::Function& function,
              "unable to allocate linear-scan state"},
             {}, 0};
   }
+}
+
+ControlFlowRegisterAllocation allocate_control_flow_registers(
+    const ir::ControlFlowFunction& function, std::size_t register_count) {
+  try {
+    return allocate_control_flow_impl(function, register_count);
+  } catch (const std::bad_alloc&) {
+    return {{StatusCode::kResourceExhausted,
+             "unable to allocate control-flow register state"},
+            {}, {}, {}};
+  }
+}
+
+ControlFlowEdgeMoves plan_control_flow_edge_moves(
+    const ir::ControlFlowFunction& function, const ir::ControlEdge& edge,
+    const ControlFlowRegisterAllocation& allocation,
+    std::size_t current_block) {
+  return plan_control_flow_edge_impl(function, edge, allocation,
+                                     current_block);
 }
 
 }  // namespace unijit::jit::detail
