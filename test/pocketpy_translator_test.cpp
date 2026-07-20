@@ -88,6 +88,21 @@ int main() {
     std::cerr << "PocketPy constant division retained a redundant guard\n";
     return EXIT_FAILURE;
   }
+
+  const auto baseline_constant_division =
+      unijit::frontend::pocketpy::translate_numeric_function(
+          "def half(a): return a / 2",
+          unijit::jit::OptimizationLevel::kBaseline);
+  if (!baseline_constant_division.ok() ||
+      !baseline_constant_division.function->requires_context() ||
+      baseline_constant_division.function->deoptimization_table().empty() ||
+      baseline_constant_division.function->stats().input_ir_nodes !=
+          baseline_constant_division.function->stats().optimized_ir_nodes ||
+      constant_division.function->stats().optimized_ir_nodes >=
+          baseline_constant_division.function->stats().optimized_ir_nodes) {
+    std::cerr << "PocketPy baseline and optimized tiers were not distinct\n";
+    return EXIT_FAILURE;
+  }
   const std::array<unijit::ir::Word, 1> constant_division_arguments = {
       unijit::ir::pack_float64(9.0)};
   const auto half = constant_division.function->invoke(
@@ -115,9 +130,16 @@ int main() {
       unijit::frontend::pocketpy::translate_numeric_function(
           kCountedLoopSource);
   if (!counted_loop.ok() || counted_loop.parameter_count != 1 ||
-      !counted_loop.function->requires_context()) {
+      !counted_loop.function->requires_context() ||
+      unijit::frontend::pocketpy::supports_tiered_translation(
+          kCountedLoopSource)) {
     std::cerr << "PocketPy counted loop did not compile: "
               << counted_loop.status.message() << '\n';
+    return EXIT_FAILURE;
+  }
+  if (!unijit::frontend::pocketpy::supports_tiered_translation(
+          "def half(a): return a / 2")) {
+    std::cerr << "PocketPy straight-line source was not tierable\n";
     return EXIT_FAILURE;
   }
   constexpr std::size_t kLoopIterations = 10000;

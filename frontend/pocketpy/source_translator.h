@@ -18,7 +18,11 @@ struct TranslationResult final {
   bool ok() const noexcept { return status.ok() && function != nullptr; }
 };
 
-TranslationResult translate_numeric_function(std::string_view source);
+TranslationResult translate_numeric_function(
+    std::string_view source,
+    jit::OptimizationLevel optimization_level =
+        jit::OptimizationLevel::kOptimized);
+bool supports_tiered_translation(std::string_view source) noexcept;
 
 } // namespace unijit::frontend::pocketpy
 
