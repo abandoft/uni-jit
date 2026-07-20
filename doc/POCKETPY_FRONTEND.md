@@ -31,7 +31,9 @@ native = unijit.compile(
     "def affine(a, b): return (a + 2.5) * (b - -3)"
 )
 result = native(1.5, 4)
+completed = unijit.wait(native, 5000)
 metrics = unijit.stats(native)
+cancelled = unijit.cancel(native)
 ```
 
 The source-string API avoids pretending that PocketPy 2.1.8 exposes reliable
@@ -43,23 +45,31 @@ PocketPy `float`.
 Straight-line callables initially publish verified SSA through the explicit
 low-latency baseline compiler, without running the optimization pipeline. Each
 callable records saturating invocation hotness; after 64 successful calls, one
-atomic compilation claimant translates the retained exact source through the
-optimizer and publishes the optimized code only if the baseline generation is
-still current. Baseline and optimized mappings use independent exact-source
-caches, so a second callable can reuse either tier without conflating their
-lifetime or profiling state. Failed compilation is not allowed to break an
-already successful invocation and is delayed before retry.
+atomic compilation claimant submits the retained exact source to a one-worker
+background scheduler bounded to 64 queued tasks and 8 MiB of estimated queued
+input. The worker never accesses the PocketPy VM: it translates immutable
+source, checks cooperative cancellation, reuses the optimized cache, and
+publishes only if the captured baseline generation is still current. Baseline
+and optimized mappings use independent exact-source caches, so a second
+callable can reuse either tier without conflating their lifetime or profiling
+state. Failed compilation is not allowed to break an already successful
+invocation and is delayed before retry.
 
 `unijit.stats(native)` returns the active tier, whether the source supports
 tiering, generation, invocation and compilation counters, promotion and
-withdrawal counts, code size, and input/active IR node counts. These metrics
-are snapshots for diagnostics and capacity monitoring; callers must not use
-them to infer language semantics.
+withdrawal counts, compilation task state, cancellation state, scheduler queue
+and worker use, code size, and input/active IR node counts. `unijit.wait`
+performs a timeout-bounded wait without polling the VM, and `unijit.cancel`
+requests queued or running work cancellation. These APIs report optimization
+lifecycle only; baseline execution remains available after rejection, timeout,
+or failed optimization.
 
-The compiled callable owns its executable allocation in PocketPy userdata.
-The VM garbage collector releases it through the type destructor. The internal
-callable type is final and rejects direct construction, so an object with
-uninitialized native ownership cannot be created from script.
+The compiled callable stores shared compilation state in PocketPy userdata. The
+VM garbage collector requests cancellation through the type destructor, while
+an already running worker retains the immutable source and native publication
+state until terminal completion. The internal callable type is final and
+rejects direct construction, so an object with uninitialized native ownership
+cannot be created from script.
 
 ## Specialization contract
 

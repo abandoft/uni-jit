@@ -9,6 +9,8 @@
 - Added Lua callable and loop telemetry plus bounded waiting, explicit cancellation, and GC cancellation through `unijit.stats`, `unijit.wait`, and `unijit.cancel`, with deterministic tests proving invocation-triggered straight-line promotion, exact parameter-derived backedge accounting, structurally distinct optimized loop IR, and idempotent finalization.
 - Hardened the hosted Lua-over-LuaJIT commercial gate with 300,000 measured complete-loop calls and seven samples, replacing millisecond-scale sampling that could invert the ratio under shared-runner scheduling noise.
 - Made tier-claim admission atomic with code publication and ordered promotion telemetry before executable visibility, preventing a fast background compiler from triggering a redundant optimization attempt or exposing partially updated statistics.
+- Moved PocketPy optimized compilation off the VM thread onto a one-worker scheduler bounded to 64 queued tasks and 8 MiB, with immutable retained-source jobs, exact-cache reuse, cooperative cancellation, expected-generation publication, and GC-safe shared state lifetime.
+- Added PocketPy compilation-task and scheduler telemetry plus timeout-bounded waiting and explicit cancellation through `unijit.stats`, `unijit.wait`, and `unijit.cancel`, with deterministic cold, asynchronous promotion, optimized checked-division, timeout validation, and foreign-object rejection coverage.
 
 ## 0.1.6
 

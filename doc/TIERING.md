@@ -67,11 +67,15 @@ straight-line SSA. Baseline compilation skips the optimization pipeline while
 preserving verification, guards, deoptimization metadata, allocation, native
 lowering, and W^X publication; optimized compilation remains the default API.
 
-PocketPy retains exact accepted source, publishes a baseline immediately,
-claims optimization after 64 successful invocations, reuses an independent
-optimized cache, and switches with an expected-generation check. Its complete
-counted-loop CFG path remains a single native tier because repeating the same
-compilation would add latency without improving code.
+PocketPy retains exact accepted source, publishes a baseline immediately, and
+submits optimization after 64 successful invocations to a one-worker scheduler
+with bounded task and byte queues. The background job never accesses PocketPy
+VM state, reuses an independent optimized cache, checks cancellation, and
+switches with an expected-generation check. PocketPy userdata cancels queued
+work during finalization while shared immutable state remains alive until the
+job terminates. Its complete counted-loop CFG path remains a single native tier
+because repeating the same compilation would add latency without improving
+code.
 
 QuickJS applies the same baseline and optimized split to accepted straight-line
 callables, but submits optimization to a bounded frontend-owned scheduler after

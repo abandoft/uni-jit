@@ -34,7 +34,8 @@ defines the stock QuickJS specialization boundary, asynchronous live tiering,
 callable telemetry, bounded waiting, and cancellation.
 [doc/POCKETPY_FRONTEND.md](doc/POCKETPY_FRONTEND.md) documents the PocketPy
 2.1.8 embedding API, ownership rules, strict numeric tier, live baseline-to-
-optimized promotion, and script-visible tier telemetry.
+optimized background promotion, script-visible tier telemetry, bounded waits,
+and cancellation.
 
 ## Build
 
