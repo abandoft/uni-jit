@@ -1,5 +1,7 @@
 ## 0.1.2
 
+- Added block-local CFG register allocation and cycle-safe parallel register
+  copies on every native backend, removing hot-loop stack traffic.
 - Renamed the project-owned frontend, tool, and documentation directories to
   the singular `frontend/`, `tool/`, and `doc/` layout.
 - Added guarded compilation of one structured Lua 5.5 numeric `for` loop with

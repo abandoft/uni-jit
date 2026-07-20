@@ -56,12 +56,14 @@ use whose definition does not dominate it. Its reference interpreter applies
 edge arguments in parallel and has a configurable block-execution budget so
 fuzzed infinite loops fail deterministically.
 
-The first native CFG lowering assigns every SSA definition a canonical spill
-slot and reserves a separate temporary area for parallel edge copies. This is
-deliberately conservative but makes backedges and block-parameter swaps
-correct on AArch64, x86-64, and RISC-V 64 before regional liveness and
-loop-aware register allocation are enabled. Branch fixups are range-checked by
-each target encoder before executable code is published.
+Native CFG lowering applies block-local lifetime analysis on AArch64, x86-64,
+and RISC-V 64. Values stay in registers within a block; only actual spills and
+definitions consumed directly by another block need canonical stack storage.
+An architecture-independent edge planner resolves parallel block-parameter
+moves, breaks register cycles through a reserved scratch register, and falls
+back to temporary stack slots when an edge exceeds the target register bank.
+Branch fixups are range-checked by each encoder before executable code is
+published.
 
 ## Stable subsystem boundaries
 
