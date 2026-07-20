@@ -1,5 +1,6 @@
 #include "counted_loop_translator.h"
 
+#include <cmath>
 #include <cstdlib>
 #include <new>
 #include <string>
@@ -376,18 +377,29 @@ class CountedLoopParser final {
     }
     const bool adds = source_[position_] == '+';
     position_ += 2;
-    const ir::Value magnitude = parse_expression(0);
-    if (!magnitude.valid()) {
+    skip_space();
+    const std::size_t step_begin = position_;
+    const std::size_t close = source_.find(')', step_begin);
+    if (close == std::string_view::npos) {
+      invalid("unterminated counted-loop induction update");
+      return false;
+    }
+    std::size_t step_end = close;
+    while (step_end > step_begin && is_space(source_[step_end - 1])) {
+      --step_end;
+    }
+    const std::string token(
+        source_.substr(step_begin, step_end - step_begin));
+    char* end = nullptr;
+    const double magnitude = std::strtod(token.c_str(), &end);
+    if (token.empty() || end == nullptr || *end != '\0' ||
+        !std::isfinite(magnitude) || magnitude == 0.0) {
+      invalid("counted-loop step must be a finite nonzero numeric literal");
       return false;
     }
     induction_step_ =
-        adds ? magnitude
-             : builder_->float64_subtract(builder_->float64_constant(0.0),
-                                          magnitude);
-    if (!induction_step_.valid()) {
-      invalid("unable to lower counted-loop induction update");
-      return false;
-    }
+        builder_->float64_constant(adds ? magnitude : -magnitude);
+    position_ = close;
     return true;
   }
 
