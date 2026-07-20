@@ -16,14 +16,20 @@ semantics in both the reference interpreter and native backends.
 
 | Backend | ISA baseline | Host ABI support | Constant strategy |
 |---|---|---|---|
-| AArch64 | little-endian A64 integer | AAPCS64 | `MOVZ`/`MOVK` sequence |
-| x86-64 | x86-64 integer | System V and Windows x64 | 64-bit immediate move |
+| AArch64 | little-endian A64 with FP64 | AAPCS64 | `MOVZ`/`MOVK` sequence |
+| x86-64 | x86-64 with SSE2 | System V and Windows x64 | 64-bit immediate move |
 | RISC-V 64 | little-endian RV64IMD | ELF psABI | PC-relative literal pool |
 
 The RISC-V backend requires the `M` extension for native integer multiply. The
 Float64 tier requires the `D` extension. The assembler, ABI selection, register
 allocator, and executable-memory publisher are owned by UniJIT and do not link
 against SLJIT or another JIT library.
+
+Straight-line and CFG lowering allocate Word and Float64 values from separate
+caller-saved register banks. Typed CFG edge moves preserve floating-point
+residency, use a dedicated scratch register for cycles, and spill exact bits to
+the canonical 64-bit frame only when the target bank is oversubscribed or
+runtime-exit capture requires a stable location.
 
 ## Verified systems
 

@@ -62,6 +62,20 @@ verification, dominance analysis, or executable publication. Frontend tests
 submit source beyond the 1 MiB retention ceiling and require native runtime
 range/value errors without entering translation.
 
+## CFG register-residency benchmark
+
+`unijit_cfg_float64_benchmark` executes one typed CFG with four loop-carried
+Float64 values and native addition, subtraction, multiplication, and division.
+Every measured native result is bit-matched with the reference interpreter,
+and the retained JSON reports native code bytes, compilation latency, checksum,
+and median nanoseconds per completed source-loop iteration. Core platform
+validation runs this benchmark on hosted Linux GCC/Clang x86-64, macOS
+AArch64/x86-64, and Windows MSVC x86-64 hosts and retains one record per host.
+
+Unit tests separately force a Float64 register-cycle backedge and a ten-value
+edge that exceeds every supported floating-point register bank. They verify
+parallel copy semantics and typed stack fallback through native execution.
+
 ## Performance gates
 
 `tool/performance_gate.py` consumes retained benchmark JSON instead of parsing

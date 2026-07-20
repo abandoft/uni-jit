@@ -122,20 +122,21 @@ division retain exact value bits through loop backedges. Ordered Float64
 comparisons return false for NaN inputs and produce Word conditions suitable
 for CFG branches. Effectful CFG Float64 nonzero guards consume one dominated
 Float64 value, retain their source site, and use the same diagnosed runtime-exit
-ABI and immutable frame-reconstruction metadata as straight-line guards. The
-initial portable lowering keeps Float64 bits in the common CFG register/stack
-transport and uses native floating-point registers at arithmetic and comparison
-operations; a split register class allocator will remove the remaining transfer
-traffic.
+ABI and immutable frame-reconstruction metadata as straight-line guards.
+Block-local allocation uses independent Word and Float64 register banks, so
+loop-carried floating-point values remain in native floating-point registers
+across arithmetic, comparisons, and CFG backedges. Bit-level transfers are
+limited to the value-bits ABI, diagnosed guards, canonical stack-map capture,
+and real spills.
 
 Native CFG lowering applies block-local lifetime analysis on AArch64, x86-64,
 and RISC-V 64. Values stay in registers within a block; only actual spills and
 definitions consumed directly by another block need canonical stack storage.
 An architecture-independent edge planner resolves parallel block-parameter
-moves, breaks register cycles through a reserved scratch register, and falls
-back to temporary stack slots when an edge exceeds the target register bank.
-Branch fixups are range-checked by each encoder before executable code is
-published.
+moves independently for each register class, breaks Word and Float64 cycles
+through their respective reserved scratch registers, and falls back to typed
+temporary stack slots when an edge exceeds either target register bank. Branch
+fixups are range-checked by each encoder before executable code is published.
 
 ## Stable subsystem boundaries
 
