@@ -18,6 +18,7 @@ option(UNIJIT_BUILD_BENCHMARKS "Build UniJIT benchmarks" OFF)
 option(UNIJIT_BUILD_LUA_REFERENCE "Build the pinned stock Lua runtime" OFF)
 option(UNIJIT_BUILD_LUAJIT_REFERENCE "Build the pinned LuaJIT runtime" OFF)
 option(UNIJIT_BUILD_QUICKJS_REFERENCE "Build the pinned stock QuickJS runtime" OFF)
+option(UNIJIT_BUILD_POCKETPY_REFERENCE "Build the pinned stock PocketPy runtime" OFF)
 option(UNIJIT_WARNINGS_AS_ERRORS "Treat UniJIT warnings as errors" OFF)
 
 include(GNUInstallDirs)
@@ -53,6 +54,13 @@ if(UNIJIT_BUILD_QUICKJS_REFERENCE)
     message(FATAL_ERROR "QuickJS submodule is missing; run git submodule update --init")
   endif()
   add_subdirectory(frontend/quickjs)
+endif()
+
+if(UNIJIT_BUILD_POCKETPY_REFERENCE)
+  if(NOT EXISTS "${PROJECT_SOURCE_DIR}/third/pocketpy/include/pocketpy/pocketpy.h")
+    message(FATAL_ERROR "PocketPy submodule is missing; run git submodule update --init")
+  endif()
+  add_subdirectory(frontend/pocketpy)
 endif()
 
 install(
