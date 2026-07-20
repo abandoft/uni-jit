@@ -12,16 +12,34 @@ endif()
 add_test(NAME unijit.unit COMMAND unijit_tests)
 
 if(UNIJIT_BUILD_QUALIFICATION_TESTS)
+  add_executable(unijit_code_cache_stress code_cache_stress.cpp)
+  target_link_libraries(
+    unijit_code_cache_stress PRIVATE UniJIT::unijit Threads::Threads)
+  target_compile_features(unijit_code_cache_stress PRIVATE cxx_std_17)
+
   add_executable(unijit_differential_fuzz differential_fuzz.cpp)
   target_link_libraries(unijit_differential_fuzz PRIVATE UniJIT::unijit)
   target_compile_features(unijit_differential_fuzz PRIVATE cxx_std_17)
   if(MSVC)
     target_compile_options(
+      unijit_code_cache_stress PRIVATE /W4 /permissive-)
+    target_compile_options(
       unijit_differential_fuzz PRIVATE /W4 /permissive-)
   else()
     target_compile_options(
+      unijit_code_cache_stress PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(
       unijit_differential_fuzz PRIVATE -Wall -Wextra -Wpedantic)
   endif()
+  add_test(
+    NAME unijit.qualification.code_cache_stress
+    COMMAND unijit_code_cache_stress
+            --seed 0x4341434845535452
+            --readers 8
+            --writers 2
+            --reads 25000
+            --publications 2000
+            --keys 16)
   add_test(
     NAME unijit.qualification.differential_fuzz
     COMMAND unijit_differential_fuzz
@@ -30,6 +48,7 @@ if(UNIJIT_BUILD_QUALIFICATION_TESTS)
             --inputs 64
             --nodes 48)
   set_tests_properties(
+    unijit.qualification.code_cache_stress
     unijit.qualification.differential_fuzz
     PROPERTIES LABELS qualification TIMEOUT 180)
 endif()
