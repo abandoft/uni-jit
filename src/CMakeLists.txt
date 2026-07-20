@@ -4,6 +4,7 @@ add_library(unijit
   ir/interpreter.cpp
   ir/optimizer.cpp
   ir/verifier.cpp
+  jit/compilation_scheduler.cpp
   jit/code_cache.cpp
   jit/compiler.cpp
   jit/executable_memory.cpp
@@ -37,6 +38,9 @@ elseif(UNIJIT_SYSTEM_PROCESSOR MATCHES "^(riscv64|riscv64gc)$")
 endif()
 
 add_library(UniJIT::unijit ALIAS unijit)
+
+find_package(Threads REQUIRED)
+target_link_libraries(unijit PUBLIC Threads::Threads)
 
 target_include_directories(unijit
   PRIVATE
