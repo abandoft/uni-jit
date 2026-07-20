@@ -1,3 +1,7 @@
+## 0.1.9
+
+- Added arbitrary nonzero constant integer steps to Lua 5.5 numeric `for` compilation, with exact direction-aware zero-iteration and saturating hotness accounting, overflow-safe scalar continuation, conditional eight-way unrolling for representable group strides, safe optimized fallback for extreme strides including `math.mininteger`, and baseline/optimized differential qualification against stock Lua across both signed boundaries.
+
 ## 0.1.8
 
 - Added strided counted loops with QuickJS prefix/postfix `++`/`--` and finite nonzero literal `+=`/`-=` induction updates plus PocketPy one-, two-, and three-argument `range`, including forward/reverse strict bounds, interaction with guarded break/continue, explicit zero/dynamic-step rejection, and direct native plus stock-runtime qualification.
