@@ -120,12 +120,28 @@ jobs:
           if-no-files-found: error
 
   pocketpy-reference-baseline:
-    name: PocketPy 2.1.8 frontend and baseline
-    runs-on: ubuntu-24.04
+    name: PocketPy and CPython 3.14.6 JIT baseline
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
+
+      - name: Fetch verified official CPython 3.14.6 JIT runtime
+        env:
+          PYTHON_PACKAGE: build/python-3.14.6/python-3.14.6-macos11.pkg
+          PYTHON_SHA256: d3c9fff52214847e4fab03e9eaf53dd2a8e51e3534aa0b61f201b749f86bef28
+        run: |
+          mkdir -p "$(dirname "$PYTHON_PACKAGE")"
+          curl --fail --location --retry 3 \
+            https://www.python.org/ftp/python/3.14.6/python-3.14.6-macos11.pkg \
+            --output "$PYTHON_PACKAGE"
+          echo "$PYTHON_SHA256  $PYTHON_PACKAGE" | shasum -a 256 --check
+          pkgutil --expand-full "$PYTHON_PACKAGE" \
+            build/python-3.14.6/expanded
+          mkdir -p build/python-3.14.6/Frameworks/Python.framework
+          ln -s ../../expanded/Python_Framework.pkg/Payload/Versions \
+            build/python-3.14.6/Frameworks/Python.framework/Versions
 
       - name: Configure stock PocketPy and UniJIT frontend
         run: >-
@@ -147,8 +163,21 @@ jobs:
           ctest --test-dir build/pocketpy --output-on-failure
           -R unijit.pocketpy_
 
-      - name: Compare stock PocketPy and UniJIT calls
+      - name: Compare PocketPy and UniJIT with CPython and CPython JIT
+        env:
+          DYLD_FRAMEWORK_PATH: ${{ github.workspace }}/build/python-3.14.6/Frameworks
+          PYTHONHOME: ${{ github.workspace }}/build/python-3.14.6/expanded/Python_Framework.pkg/Payload/Versions/3.14
+          PYTHON_EXECUTABLE: ${{ github.workspace }}/build/python-3.14.6/expanded/Python_Framework.pkg/Payload/Versions/3.14/bin/python3.14
         run: >-
-          build/pocketpy/bin/unijit_pocketpy_benchmark
+          "$PYTHON_EXECUTABLE" benchmark/pocketpy/run_cpython.py
+          --unijit build/pocketpy/bin/unijit_pocketpy_benchmark
+          --python "$PYTHON_EXECUTABLE"
           --warmup 10000 --iterations 100000 --samples 3
-          > build/pocketpy/pocketpy-call.json
+          > build/pocketpy/pocketpy-targets.json
+
+      - name: Retain PocketPy target baseline
+        uses: actions/upload-artifact@v7
+        with:
+          name: pocketpy-target-baseline
+          path: build/pocketpy/pocketpy-targets.json
+          if-no-files-found: error
