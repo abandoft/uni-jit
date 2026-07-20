@@ -36,8 +36,25 @@ enum class OptimizationLevel : std::uint8_t {
   kOptimized,
 };
 
+struct CompilationLimits final {
+  std::size_t maximum_parameters{256};
+  std::size_t maximum_ir_nodes{64U * 1024U};
+  std::size_t maximum_cfg_blocks{1024};
+  std::size_t maximum_ir_arguments{256U * 1024U};
+  std::size_t maximum_stack_maps{4096};
+  std::size_t maximum_metadata_values{256U * 1024U};
+  std::size_t maximum_code_bytes{16U * 1024U * 1024U};
+};
+
 struct CompilationOptions final {
+  CompilationOptions() noexcept = default;
+  explicit CompilationOptions(
+      OptimizationLevel level,
+      CompilationLimits configured_limits = {}) noexcept
+      : optimization_level(level), limits(configured_limits) {}
+
   OptimizationLevel optimization_level{OptimizationLevel::kOptimized};
+  CompilationLimits limits;
 };
 
 class CompiledFunction final {
@@ -149,6 +166,8 @@ class Compiler final {
       const runtime::AssumptionSet& assumptions,
       CompilationOptions options);
   static CompilationResult compile(const ir::ControlFlowFunction& function);
+  static CompilationResult compile(const ir::ControlFlowFunction& function,
+                                   CompilationLimits limits);
   static CompilationResult compile(
       const ir::ControlFlowFunction& function,
       const runtime::DeoptimizationTable& deoptimization_table);
@@ -159,6 +178,10 @@ class Compiler final {
       const ir::ControlFlowFunction& function,
       const runtime::DeoptimizationTable& deoptimization_table,
       const runtime::AssumptionSet& assumptions);
+  static CompilationResult compile(
+      const ir::ControlFlowFunction& function,
+      const runtime::DeoptimizationTable& deoptimization_table,
+      const runtime::AssumptionSet& assumptions, CompilationLimits limits);
 };
 
 }  // namespace unijit::jit

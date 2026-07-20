@@ -612,6 +612,200 @@ std::size_t stack_map_value_count(
   return result;
 }
 
+Status validate_compilation_limits(const CompilationLimits& limits) {
+  if (limits.maximum_parameters == 0 || limits.maximum_ir_nodes == 0 ||
+      limits.maximum_cfg_blocks == 0 ||
+      limits.maximum_ir_arguments == 0 ||
+      limits.maximum_stack_maps == 0 ||
+      limits.maximum_metadata_values == 0 ||
+      limits.maximum_code_bytes == 0) {
+    return {StatusCode::kInvalidArgument,
+            "compilation resource limits must all be positive"};
+  }
+  return Status::ok_status();
+}
+
+Status add_bounded(std::size_t value, std::size_t limit,
+                   std::size_t* total, const char* message,
+                   std::size_t location = 0) {
+  if (*total > limit || value > limit - *total) {
+    return {StatusCode::kResourceExhausted, message, location};
+  }
+  *total += value;
+  return Status::ok_status();
+}
+
+Status validate_requested_metadata(
+    const runtime::DeoptimizationTable& deoptimization_table,
+    const runtime::AssumptionSet& assumptions, std::size_t parameter_count,
+    const CompilationLimits& limits) {
+  if (deoptimization_table.size() > limits.maximum_stack_maps) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the exit-record limit"};
+  }
+  std::size_t records = deoptimization_table.size();
+  for (const runtime::AssumptionDependency& dependency :
+       assumptions.dependencies()) {
+    if (deoptimization_table.find(dependency.site) != nullptr) {
+      continue;
+    }
+    if (records == limits.maximum_stack_maps) {
+      return {StatusCode::kResourceExhausted,
+              "compilation exceeds the exit-record limit",
+              dependency.site};
+    }
+    ++records;
+  }
+  std::size_t values = 0;
+  for (const runtime::DeoptimizationRecord& record :
+       deoptimization_table.records()) {
+    const Status addition = add_bounded(
+        record.recovery.size(), limits.maximum_metadata_values, &values,
+        "compilation exceeds the deoptimization value limit", record.site);
+    if (!addition.ok()) {
+      return addition;
+    }
+  }
+  for (const runtime::AssumptionDependency& dependency :
+       assumptions.dependencies()) {
+    if (deoptimization_table.find(dependency.site) != nullptr) {
+      continue;
+    }
+    const Status addition = add_bounded(
+        parameter_count, limits.maximum_metadata_values, &values,
+        "compilation exceeds the deoptimization value limit",
+        dependency.site);
+    if (!addition.ok()) {
+      return addition;
+    }
+  }
+  return Status::ok_status();
+}
+
+Status validate_function_limits(
+    const ir::Function& function,
+    const runtime::DeoptimizationTable& deoptimization_table,
+    const runtime::AssumptionSet& assumptions,
+    const CompilationLimits& limits) {
+  const Status configuration = validate_compilation_limits(limits);
+  if (!configuration.ok()) {
+    return configuration;
+  }
+  if (function.parameter_count() > limits.maximum_parameters) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the parameter limit",
+            function.parameter_count()};
+  }
+  if (function.nodes().size() > limits.maximum_ir_nodes) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the IR node limit",
+            function.nodes().size()};
+  }
+  if (function.call_arguments().size() > limits.maximum_ir_arguments) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the IR argument limit",
+            function.call_arguments().size()};
+  }
+  return validate_requested_metadata(deoptimization_table, assumptions,
+                                     function.parameter_count(), limits);
+}
+
+Status validate_function_limits(
+    const ir::ControlFlowFunction& function,
+    const runtime::DeoptimizationTable& deoptimization_table,
+    const runtime::AssumptionSet& assumptions,
+    const CompilationLimits& limits) {
+  const Status configuration = validate_compilation_limits(limits);
+  if (!configuration.ok()) {
+    return configuration;
+  }
+  if (function.parameter_count() > limits.maximum_parameters) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the parameter limit",
+            function.parameter_count()};
+  }
+  if (function.nodes().size() > limits.maximum_ir_nodes) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the IR node limit",
+            function.nodes().size()};
+  }
+  if (function.blocks().size() > limits.maximum_cfg_blocks) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the CFG block limit",
+            function.blocks().size()};
+  }
+  std::size_t arguments = 0;
+  for (std::size_t index = 0; index < function.blocks().size(); ++index) {
+    const ir::ControlTerminator& terminator =
+        function.blocks()[index].terminator;
+    if (terminator.opcode == ir::TerminatorOpcode::kJump ||
+        terminator.opcode == ir::TerminatorOpcode::kBranch) {
+      const Status true_edge = add_bounded(
+          terminator.true_edge.arguments.size(), limits.maximum_ir_arguments,
+          &arguments, "compilation exceeds the CFG argument limit", index);
+      if (!true_edge.ok()) {
+        return true_edge;
+      }
+    }
+    if (terminator.opcode == ir::TerminatorOpcode::kBranch) {
+      const Status false_edge = add_bounded(
+          terminator.false_edge.arguments.size(),
+          limits.maximum_ir_arguments, &arguments,
+          "compilation exceeds the CFG argument limit", index);
+      if (!false_edge.ok()) {
+        return false_edge;
+      }
+    }
+  }
+  return validate_requested_metadata(deoptimization_table, assumptions,
+                                     function.parameter_count(), limits);
+}
+
+Status validate_stack_map_limits(
+    const detail::StackMapRequirements& requirements,
+    const CompilationLimits& limits) {
+  if (requirements.size() > limits.maximum_stack_maps) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the stack-map limit",
+            requirements.size()};
+  }
+  std::size_t values = 0;
+  for (const detail::StackMapRequirement& requirement : requirements) {
+    const Status addition = add_bounded(
+        requirement.values.size(), limits.maximum_metadata_values, &values,
+        "compilation exceeds the stack-map value limit", requirement.site);
+    if (!addition.ok()) {
+      return addition;
+    }
+  }
+  return Status::ok_status();
+}
+
+template <typename LoweringResult>
+Status validate_lowering_limits(const LoweringResult& lowering,
+                                const CompilationLimits& limits) {
+  if (lowering.code.size() > limits.maximum_code_bytes) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the native code byte limit",
+            lowering.code.size()};
+  }
+  if (lowering.stack_maps.size() > limits.maximum_stack_maps) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the emitted stack-map limit",
+            lowering.stack_maps.size()};
+  }
+  std::size_t values = 0;
+  for (const StackMapRecord& record : lowering.stack_maps) {
+    const Status addition = add_bounded(
+        record.live_values.size(), limits.maximum_metadata_values, &values,
+        "compilation exceeds the emitted stack-map value limit", record.site);
+    if (!addition.ok()) {
+      return addition;
+    }
+  }
+  return Status::ok_status();
+}
+
 }  // namespace
 
 struct CompiledFunction::Impl final {
@@ -844,6 +1038,11 @@ CompilationResult Compiler::compile(
     const runtime::DeoptimizationTable& deoptimization_table,
     const runtime::AssumptionSet& assumptions,
     CompilationOptions options) {
+  const Status limit_status = validate_function_limits(
+      function, deoptimization_table, assumptions, options.limits);
+  if (!limit_status.ok()) {
+    return {limit_status, nullptr};
+  }
   const Status verification = ir::verify(function);
   if (!verification.ok()) {
     return {verification, nullptr};
@@ -887,6 +1086,11 @@ CompilationResult Compiler::compile(
   if (!stack_map_requirements.status.ok()) {
     return {stack_map_requirements.status, nullptr};
   }
+  const Status stack_map_limit = validate_stack_map_limits(
+      stack_map_requirements.requirements, options.limits);
+  if (!stack_map_limit.ok()) {
+    return {stack_map_limit, nullptr};
+  }
 
 #if defined(UNIJIT_TARGET_AARCH64)
   detail::aarch64::LoweringResult lowering = detail::aarch64::lower(
@@ -903,6 +1107,11 @@ CompilationResult Compiler::compile(
     defined(UNIJIT_TARGET_RISCV64)
   if (!lowering.status.ok()) {
     return {lowering.status, nullptr};
+  }
+  const Status lowering_limit =
+      validate_lowering_limits(lowering, options.limits);
+  if (!lowering_limit.ok()) {
+    return {lowering_limit, nullptr};
   }
   const Status capture_resolution = resolve_deoptimization_captures(
       &deoptimization.table, stack_map_requirements.bindings,
@@ -950,25 +1159,46 @@ CompilationResult Compiler::compile(
 
 CompilationResult Compiler::compile(const ir::ControlFlowFunction& function) {
   return compile(function, runtime::DeoptimizationTable{},
-                 runtime::AssumptionSet{});
+                 runtime::AssumptionSet{}, CompilationLimits{});
+}
+
+CompilationResult Compiler::compile(const ir::ControlFlowFunction& function,
+                                    CompilationLimits limits) {
+  return compile(function, runtime::DeoptimizationTable{},
+                 runtime::AssumptionSet{}, limits);
 }
 
 CompilationResult Compiler::compile(
     const ir::ControlFlowFunction& function,
     const runtime::DeoptimizationTable& deoptimization_table) {
-  return compile(function, deoptimization_table, runtime::AssumptionSet{});
+  return compile(function, deoptimization_table, runtime::AssumptionSet{},
+                 CompilationLimits{});
 }
 
 CompilationResult Compiler::compile(
     const ir::ControlFlowFunction& function,
     const runtime::AssumptionSet& assumptions) {
-  return compile(function, runtime::DeoptimizationTable{}, assumptions);
+  return compile(function, runtime::DeoptimizationTable{}, assumptions,
+                 CompilationLimits{});
 }
 
 CompilationResult Compiler::compile(
     const ir::ControlFlowFunction& function,
     const runtime::DeoptimizationTable& deoptimization_table,
     const runtime::AssumptionSet& assumptions) {
+  return compile(function, deoptimization_table, assumptions,
+                 CompilationLimits{});
+}
+
+CompilationResult Compiler::compile(
+    const ir::ControlFlowFunction& function,
+    const runtime::DeoptimizationTable& deoptimization_table,
+    const runtime::AssumptionSet& assumptions, CompilationLimits limits) {
+  const Status limit_status = validate_function_limits(
+      function, deoptimization_table, assumptions, limits);
+  if (!limit_status.ok()) {
+    return {limit_status, nullptr};
+  }
   const Status verification = ir::verify(function);
   if (!verification.ok()) {
     return {verification, nullptr};
@@ -983,6 +1213,11 @@ CompilationResult Compiler::compile(
       prepare_stack_map_requirements(function, deoptimization.table);
   if (!stack_map_requirements.status.ok()) {
     return {stack_map_requirements.status, nullptr};
+  }
+  const Status stack_map_limit = validate_stack_map_limits(
+      stack_map_requirements.requirements, limits);
+  if (!stack_map_limit.ok()) {
+    return {stack_map_limit, nullptr};
   }
 
 #if defined(UNIJIT_TARGET_AARCH64)
@@ -1000,6 +1235,10 @@ CompilationResult Compiler::compile(
     defined(UNIJIT_TARGET_RISCV64)
   if (!lowering.status.ok()) {
     return {lowering.status, nullptr};
+  }
+  const Status lowering_limit = validate_lowering_limits(lowering, limits);
+  if (!lowering_limit.ok()) {
+    return {lowering_limit, nullptr};
   }
   const Status capture_resolution = resolve_deoptimization_captures(
       &deoptimization.table, stack_map_requirements.bindings,
