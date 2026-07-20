@@ -1,10 +1,12 @@
 ## 0.1.6
 
+- Added overflow-safe eight-way Lua numeric-loop unrolling with a bounded scalar tail and cooperative polling at most every eight source iterations, exceeding LuaJIT on the validated complete-loop x86-64 workload while preserving `math.maxinteger` boundaries.
+- Promoted the complete Lua numeric-loop comparison to a hard commercial CI gate requiring at least 1.25x stock Lua performance and 1.10x LuaJIT performance.
 - Added deterministic seed-replay differential fuzzing that generates straight-line Word and Float64 SSA plus typed loop-and-diamond CFG programs, then compares production native execution bit-for-bit with the reference interpreters.
 - Added configurable concurrent code-cache stress over lookup, publication, replacement, precise and key-wide invalidation, LRU eviction, retained execution leases, clearing, and synchronized lifecycle telemetry.
 - Added a responsibility-specific stress and differential-fuzz workflow with extended committed seed corpora, retained machine-readable records, and ThreadSanitizer coverage for concurrent cache lifecycle operations.
-- Added machine-readable commercial performance gates that require complete-loop UniJIT execution to exceed stock QuickJS, V8 Jitless, stock PocketPy, CPython 3.14.6 interpreter mode, and CPython 3.14.6 JIT mode by explicit CI floors.
-- Added a direct UniJIT-over-LuaJIT ratio and measurement-boundary metadata to Lua comparison records, and retained all four hosted Lua baseline artifacts while the LuaJIT target remains open.
+- Added machine-readable commercial performance gates that require complete-loop UniJIT execution to exceed stock Lua, LuaJIT, stock QuickJS, V8 Jitless, stock PocketPy, CPython 3.14.6 interpreter mode, and CPython 3.14.6 JIT mode by explicit CI floors.
+- Added a direct UniJIT-over-LuaJIT ratio and measurement-boundary metadata to Lua comparison records, and retained all four hosted Lua baseline artifacts.
 - Fixed QuickJS adapter diagnostics to use format widths accepted consistently by Unix, MSVC, and MinGW x64 toolchains under warnings-as-errors builds.
 - Added a public thread-safe bounded LRU native-code cache with fingerprinted identities, generation tokens, executable-mapping byte budgets, lifecycle telemetry, precise invalidation, and copyable execution leases that remain safe across replacement, eviction, clearing, and cache destruction.
 - Integrated exact-source native-code reuse into the stock QuickJS and PocketPy adapters while retaining compiled mappings through runtime-owned callable leases.
