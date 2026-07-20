@@ -80,7 +80,11 @@ machine-readable gate decision are retained as workflow artifacts.
 Lua records include the direct `unijit_speedup_over_luajit` ratio and all four
 hosted Lua baselines are retained. Its release gate uses the complete
 1,000-iteration numeric-loop boundary rather than the narrower native-call
-microbenchmark.
+microbenchmark. The commercial loop gate runs three independent seven-sample
+trials and rotates stock Lua, UniJIT, and LuaJIT through every process-order
+position, then compares the median trial result for each engine. Raw trial
+medians, execution orders, and a structured pass or failure decision are
+retained even when a floor is missed.
 
 ## Local execution
 
