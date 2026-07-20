@@ -37,6 +37,169 @@ using unijit::jit::Compiler;
 int failures = 0;
 std::size_t runtime_call_count = 0;
 
+struct TestMaterializedField final {
+  bool is_object{false};
+  unijit::ir::ValueType type{unijit::ir::ValueType::kWord};
+  Word primitive{0};
+  unijit::runtime::ObjectHandle object{0};
+};
+
+struct TestMaterializedObject final {
+  std::size_t id{0};
+  std::uint64_t kind{0};
+  std::vector<TestMaterializedField> fields;
+};
+
+struct TestMaterializer final {
+  bool active{false};
+  bool fail_begin{false};
+  bool fail_commit{false};
+  std::size_t begin_count{0};
+  std::size_t allocate_count{0};
+  std::size_t commit_count{0};
+  std::size_t rollback_count{0};
+  std::size_t store_count{0};
+  std::size_t fail_allocate{std::numeric_limits<std::size_t>::max()};
+  std::size_t fail_store{std::numeric_limits<std::size_t>::max()};
+  std::vector<TestMaterializedObject> staged;
+  std::vector<TestMaterializedObject> committed;
+};
+
+unijit::Status begin_materialization(void* opaque,
+                                     std::size_t object_count) noexcept {
+  auto* state = static_cast<TestMaterializer*>(opaque);
+  ++state->begin_count;
+  state->active = true;
+  state->allocate_count = 0;
+  state->store_count = 0;
+  state->staged.clear();
+  if (state->fail_begin) {
+    return {unijit::StatusCode::kResourceExhausted,
+            "injected object transaction failure"};
+  }
+  try {
+    state->staged.reserve(object_count);
+    return unijit::Status::ok_status();
+  } catch (const std::bad_alloc&) {
+    return {unijit::StatusCode::kResourceExhausted,
+            "test materializer could not reserve objects"};
+  }
+}
+
+unijit::Status allocate_materialized_object(
+    void* opaque, std::size_t id, std::uint64_t kind,
+    std::size_t field_count,
+    unijit::runtime::ObjectHandle* handle) noexcept {
+  auto* state = static_cast<TestMaterializer*>(opaque);
+  if (!state->active || handle == nullptr) {
+    return {unijit::StatusCode::kInvalidArgument,
+            "test materialization allocation is outside a transaction"};
+  }
+  if (state->allocate_count++ == state->fail_allocate) {
+    return {unijit::StatusCode::kResourceExhausted,
+            "injected object allocation failure"};
+  }
+  try {
+    state->staged.push_back({id, kind,
+                             std::vector<TestMaterializedField>(field_count)});
+    *handle = static_cast<unijit::runtime::ObjectHandle>(
+        1000 + state->staged.size());
+    return unijit::Status::ok_status();
+  } catch (const std::bad_alloc&) {
+    return {unijit::StatusCode::kResourceExhausted,
+            "test materializer could not allocate an object"};
+  }
+}
+
+TestMaterializedField* materialized_field(
+    TestMaterializer* state, unijit::runtime::ObjectHandle object,
+    std::size_t field_index) noexcept {
+  if (!state->active || object <= 1000) {
+    return nullptr;
+  }
+  const std::size_t object_index = static_cast<std::size_t>(object - 1001);
+  if (object_index >= state->staged.size() ||
+      field_index >= state->staged[object_index].fields.size()) {
+    return nullptr;
+  }
+  return &state->staged[object_index].fields[field_index];
+}
+
+unijit::Status store_materialized_primitive(
+    void* opaque, unijit::runtime::ObjectHandle object,
+    std::size_t field_index, unijit::ir::ValueType type,
+    Word value) noexcept {
+  auto* state = static_cast<TestMaterializer*>(opaque);
+  TestMaterializedField* field =
+      materialized_field(state, object, field_index);
+  if (field == nullptr) {
+    return {unijit::StatusCode::kInvalidArgument,
+            "test primitive field is unavailable"};
+  }
+  if (state->store_count++ == state->fail_store) {
+    return {unijit::StatusCode::kResourceExhausted,
+            "injected object field failure"};
+  }
+  field->type = type;
+  field->primitive = value;
+  return unijit::Status::ok_status();
+}
+
+unijit::Status store_materialized_object(
+    void* opaque, unijit::runtime::ObjectHandle object,
+    std::size_t field_index,
+    unijit::runtime::ObjectHandle value) noexcept {
+  auto* state = static_cast<TestMaterializer*>(opaque);
+  TestMaterializedField* field =
+      materialized_field(state, object, field_index);
+  if (field == nullptr) {
+    return {unijit::StatusCode::kInvalidArgument,
+            "test object field is unavailable"};
+  }
+  if (state->store_count++ == state->fail_store) {
+    return {unijit::StatusCode::kResourceExhausted,
+            "injected object field failure"};
+  }
+  field->is_object = true;
+  field->object = value;
+  return unijit::Status::ok_status();
+}
+
+unijit::Status commit_materialization(void* opaque) noexcept {
+  auto* state = static_cast<TestMaterializer*>(opaque);
+  if (!state->active) {
+    return {unijit::StatusCode::kInvalidArgument,
+            "test materialization commit has no transaction"};
+  }
+  if (state->fail_commit) {
+    return {unijit::StatusCode::kResourceExhausted,
+            "injected object commit failure"};
+  }
+  state->committed.clear();
+  state->committed.swap(state->staged);
+  state->active = false;
+  ++state->commit_count;
+  return unijit::Status::ok_status();
+}
+
+void rollback_materialization(void* opaque) noexcept {
+  auto* state = static_cast<TestMaterializer*>(opaque);
+  state->staged.clear();
+  state->active = false;
+  ++state->rollback_count;
+}
+
+unijit::runtime::MaterializationCallbacks materialization_callbacks(
+    TestMaterializer* state) noexcept {
+  return {state,
+          begin_materialization,
+          allocate_materialized_object,
+          store_materialized_primitive,
+          store_materialized_object,
+          commit_materialization,
+          rollback_materialization};
+}
+
 Word sum_runtime_helper(const Word* arguments, std::size_t count) {
   ++runtime_call_count;
   Word result = 0;
@@ -828,6 +991,142 @@ void test_deoptimization_reconstruction() {
              !Compiler::compile(function, metadata, colliding_assumptions)
                   .ok(),
          "runtime guards and assumptions must not share an exit site");
+}
+
+void test_transactional_object_materialization() {
+  unijit::runtime::ReconstructedFrame frame;
+  frame.reason = unijit::runtime::DeoptimizationReason::kTypeMismatch;
+  frame.site = 401;
+  frame.resume_offset = 73;
+  frame.values = {
+      {0, unijit::ir::ValueType::kWord, 42},
+      {1, unijit::ir::ValueType::kFloat64,
+       unijit::ir::pack_float64(-0.0)}};
+
+  unijit::runtime::MaterializationPlan plan(401, 73);
+  expect(plan
+             .add({7,
+                   10,
+                   101,
+                   {unijit::runtime::MaterializationInput::recovered(
+                        0, unijit::ir::ValueType::kWord),
+                    unijit::runtime::MaterializationInput::object(9)}})
+             .ok() &&
+             plan
+                 .add({9,
+                       11,
+                       202,
+                       {unijit::runtime::MaterializationInput::constant_value(
+                            unijit::ir::ValueType::kFloat64,
+                            unijit::ir::pack_float64(3.5)),
+                        unijit::runtime::MaterializationInput::object(7),
+                        unijit::runtime::MaterializationInput::recovered(
+                            1, unijit::ir::ValueType::kFloat64)}})
+                 .ok() &&
+             plan.validate().ok(),
+         "cyclic object materialization recipes must validate after all objects are declared");
+
+  TestMaterializer state;
+  const auto materialized = unijit::runtime::materialize_frame(
+      frame, plan, materialization_callbacks(&state));
+  const auto* first_slot = materialized.frame.find(10);
+  const auto* second_slot = materialized.frame.find(11);
+  expect(materialized.ok() && materialized.frame.site == 401 &&
+             materialized.frame.resume_offset == 73 &&
+             materialized.frame.values.size() == 4 && first_slot != nullptr &&
+             first_slot->kind ==
+                 unijit::runtime::MaterializedValueKind::kObject &&
+             first_slot->object == 1001 && second_slot != nullptr &&
+             second_slot->object == 1002 && state.begin_count == 1 &&
+             state.commit_count == 1 && state.rollback_count == 0 &&
+             state.committed.size() == 2 &&
+             state.committed[0].fields[0].primitive == 42 &&
+             state.committed[0].fields[1].is_object &&
+             state.committed[0].fields[1].object == 1002 &&
+             state.committed[1].fields[0].primitive ==
+                 unijit::ir::pack_float64(3.5) &&
+             state.committed[1].fields[1].is_object &&
+             state.committed[1].fields[1].object == 1001 &&
+             state.committed[1].fields[2].primitive ==
+                 unijit::ir::pack_float64(-0.0),
+         "two-phase materialization must preserve primitive bits, object identity, and cycles");
+
+  TestMaterializer failing_state;
+  failing_state.fail_store = 1;
+  const auto failed = unijit::runtime::materialize_frame(
+      frame, plan, materialization_callbacks(&failing_state));
+  expect(!failed.ok() && failing_state.begin_count == 1 &&
+             failing_state.commit_count == 0 &&
+             failing_state.rollback_count == 1 &&
+             failing_state.staged.empty() &&
+             failing_state.committed.empty(),
+         "field failures must roll back partially materialized object graphs exactly once");
+
+  TestMaterializer begin_failure;
+  begin_failure.fail_begin = true;
+  const auto failed_begin = unijit::runtime::materialize_frame(
+      frame, plan, materialization_callbacks(&begin_failure));
+  expect(!failed_begin.ok() && begin_failure.begin_count == 1 &&
+             begin_failure.rollback_count == 1 &&
+             begin_failure.commit_count == 0,
+         "failed transaction setup must invoke the rollback contract exactly once");
+
+  TestMaterializer allocation_failure;
+  allocation_failure.fail_allocate = 1;
+  const auto failed_allocation = unijit::runtime::materialize_frame(
+      frame, plan, materialization_callbacks(&allocation_failure));
+  expect(!failed_allocation.ok() && allocation_failure.begin_count == 1 &&
+             allocation_failure.allocate_count == 2 &&
+             allocation_failure.rollback_count == 1 &&
+             allocation_failure.commit_count == 0 &&
+             allocation_failure.staged.empty(),
+         "object allocation failure must discard every staged shell");
+
+  TestMaterializer commit_failure;
+  commit_failure.fail_commit = true;
+  const auto failed_commit = unijit::runtime::materialize_frame(
+      frame, plan, materialization_callbacks(&commit_failure));
+  expect(!failed_commit.ok() && commit_failure.begin_count == 1 &&
+             commit_failure.commit_count == 0 &&
+             commit_failure.rollback_count == 1 &&
+             commit_failure.staged.empty() &&
+             commit_failure.committed.empty(),
+         "commit failure must roll back a fully populated object graph");
+
+  unijit::runtime::MaterializationPlan unknown_reference(401, 73);
+  expect(unknown_reference
+             .add({1,
+                   12,
+                   0,
+                   {unijit::runtime::MaterializationInput::object(999)}})
+             .ok(),
+         "forward object references must be accepted during plan assembly");
+  TestMaterializer untouched_state;
+  expect(!unijit::runtime::materialize_frame(
+              frame, unknown_reference,
+              materialization_callbacks(&untouched_state))
+              .ok() &&
+             untouched_state.begin_count == 0,
+         "unknown object references must fail before opening a runtime transaction");
+
+  unijit::runtime::MaterializationPlan duplicate_destination(401, 73);
+  expect(duplicate_destination.add({1, 20, 0, {}}).ok() &&
+             !duplicate_destination.add({2, 20, 0, {}}).ok(),
+         "object recipes must not overwrite the same logical frame slot");
+  unijit::runtime::MaterializationPlan primitive_collision(401, 73);
+  expect(primitive_collision.add({1, 0, 0, {}}).ok() &&
+             !unijit::runtime::materialize_frame(
+                  frame, primitive_collision,
+                  materialization_callbacks(&untouched_state))
+                  .ok() &&
+             untouched_state.begin_count == 0,
+         "object recipes must not overwrite recovered primitive frame slots");
+  unijit::runtime::MaterializationPlan wrong_site(402, 73);
+  expect(!unijit::runtime::materialize_frame(
+              frame, wrong_site, materialization_callbacks(&untouched_state))
+              .ok() &&
+             untouched_state.begin_count == 0,
+         "object plans must be bound to the exact deoptimization site and resume offset");
 }
 
 void test_constant_float64_nonzero_guard_elimination() {
@@ -2545,6 +2844,7 @@ int main() {
   test_float64_comparisons();
   test_float64_nonzero_guard();
   test_deoptimization_reconstruction();
+  test_transactional_object_materialization();
   test_constant_float64_nonzero_guard_elimination();
   test_runtime_exit_site_identity();
   test_verifier_rejects_mixed_arithmetic();

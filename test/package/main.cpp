@@ -9,6 +9,62 @@
 #include "unijit/jit/compiler.h"
 #include "unijit/jit/tiering.h"
 #include "unijit/runtime/deoptimization.h"
+#include "unijit/runtime/materialization.h"
+
+namespace {
+
+struct PackageMaterializer final {
+  unijit::ir::Word primitive{0};
+  std::size_t commits{0};
+  std::size_t rollbacks{0};
+};
+
+unijit::Status begin_objects(void*, std::size_t count) noexcept {
+  return count == 1
+             ? unijit::Status::ok_status()
+             : unijit::Status{unijit::StatusCode::kInvalidArgument,
+                              "unexpected package object count"};
+}
+
+unijit::Status allocate_object(
+    void*, std::size_t id, std::uint64_t kind, std::size_t fields,
+    unijit::runtime::ObjectHandle* handle) noexcept {
+  if (id != 5 || kind != 6 || fields != 1 || handle == nullptr) {
+    return {unijit::StatusCode::kInvalidArgument,
+            "unexpected package object recipe"};
+  }
+  *handle = 77;
+  return unijit::Status::ok_status();
+}
+
+unijit::Status store_primitive(
+    void* opaque, unijit::runtime::ObjectHandle object, std::size_t field,
+    unijit::ir::ValueType type, unijit::ir::Word value) noexcept {
+  if (object != 77 || field != 0 ||
+      type != unijit::ir::ValueType::kFloat64) {
+    return {unijit::StatusCode::kInvalidArgument,
+            "unexpected package primitive field"};
+  }
+  static_cast<PackageMaterializer*>(opaque)->primitive = value;
+  return unijit::Status::ok_status();
+}
+
+unijit::Status store_object(void*, unijit::runtime::ObjectHandle,
+                            std::size_t,
+                            unijit::runtime::ObjectHandle) noexcept {
+  return unijit::Status::ok_status();
+}
+
+unijit::Status commit_objects(void* opaque) noexcept {
+  ++static_cast<PackageMaterializer*>(opaque)->commits;
+  return unijit::Status::ok_status();
+}
+
+void rollback_objects(void* opaque) noexcept {
+  ++static_cast<PackageMaterializer*>(opaque)->rollbacks;
+}
+
+}  // namespace
 
 int main() {
   unijit::ir::FunctionBuilder builder(2);
@@ -104,6 +160,31 @@ int main() {
       recovered_snapshot->value != unijit::ir::pack_float64(2.5) ||
       !captured.ok() || captured.capture.values.size() != 2) {
     return 12;
+  }
+  unijit::runtime::MaterializationPlan object_plan(17, 9);
+  if (!object_plan
+           .add({5,
+                 10,
+                 6,
+                 {unijit::runtime::MaterializationInput::recovered(
+                     1, unijit::ir::ValueType::kFloat64)}})
+           .ok()) {
+    return 27;
+  }
+  PackageMaterializer object_state;
+  const auto materialized =
+      guarded_publication.handle.materialize_deoptimization(
+          17, zero.data(), zero.size(), context, object_plan,
+          {&object_state, begin_objects, allocate_object, store_primitive,
+           store_object, commit_objects, rollback_objects});
+  const auto *materialized_object = materialized.frame.find(10);
+  if (!materialized.ok() || materialized_object == nullptr ||
+      materialized_object->kind !=
+          unijit::runtime::MaterializedValueKind::kObject ||
+      materialized_object->object != 77 ||
+      object_state.primitive != unijit::ir::pack_float64(2.5) ||
+      object_state.commits != 1 || object_state.rollbacks != 0) {
+    return 28;
   }
 
   unijit::ir::FunctionBuilder assumed_builder(1);
