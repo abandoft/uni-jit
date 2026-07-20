@@ -10,6 +10,7 @@
 
 #include "unijit/ir/function.h"
 #include "unijit/ir/interpreter.h"
+#include "unijit/ir/optimizer.h"
 #include "unijit/jit/compiler.h"
 
 namespace {
@@ -149,6 +150,50 @@ void test_argument_validation() {
          "interpreter must reject null argument storage");
 }
 
+void test_optimization_pipeline() {
+  FunctionBuilder builder(1);
+  const Value zero = builder.constant(0);
+  const Value dead_sum =
+      builder.add(builder.parameter(0), builder.constant(99));
+  const Value annihilated = builder.multiply(dead_sum, zero);
+  const Value answer = builder.add(annihilated, builder.constant(42));
+  expect(builder.set_return(answer).ok(), "optimized return must be accepted");
+  const Function function = std::move(builder).build();
+
+  auto optimization = unijit::ir::Optimizer::run(function);
+  expect(optimization.ok(), "optimization pipeline must accept verified SSA");
+  if (!optimization.ok()) {
+    return;
+  }
+  expect(optimization.stats.input_nodes == 7,
+         "optimizer must report the input SSA size");
+  expect(optimization.stats.output_nodes == 2,
+         "optimizer must fold the graph to one parameter and one constant");
+  expect(optimization.stats.constants_folded > 0,
+         "optimizer must exercise constant folding");
+  expect(optimization.stats.algebraic_simplifications > 0,
+         "optimizer must exercise algebraic simplification");
+
+  const std::array<Word, 1> args = {std::numeric_limits<Word>::max()};
+  const auto interpreted = Interpreter::evaluate(optimization.function, args.data(),
+                                                 args.size());
+  expect(interpreted.ok() && interpreted.value == 42,
+         "optimized SSA must preserve observable semantics");
+
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "compiler must consume optimized SSA");
+  if (!compilation.ok()) {
+    return;
+  }
+  expect(compilation.function->stats().input_ir_nodes == 7,
+         "compiler must report input IR nodes");
+  expect(compilation.function->stats().optimized_ir_nodes == 2,
+         "compiler must report optimized IR nodes");
+  const auto native = compilation.function->invoke(args.data(), args.size());
+  expect(native.ok() && native.value == 42,
+         "optimized native code must preserve observable semantics");
+}
+
 }  // namespace
 
 int main() {
@@ -157,6 +202,7 @@ int main() {
   test_differential_arithmetic();
   test_spill_path();
   test_argument_validation();
+  test_optimization_pipeline();
 
   if (failures != 0) {
     std::cerr << failures << " test assertion(s) failed\n";
