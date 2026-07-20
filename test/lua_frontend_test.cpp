@@ -332,6 +332,176 @@ assert(not native_zero_ok and
 assert(unijit.stats(native_parameter_step_sum).invocations ==
        invocations_before_zero_step)
 
+local guarded_body_sum = function(start, limit, step, threshold)
+  local sum = 7
+  for index = start, limit, step do
+    if index < threshold then
+      sum = sum + index * 2
+    end
+    sum = sum + 1
+  end
+  return sum
+end
+local native_guarded_body_sum = unijit.compile(guarded_body_sum)
+local guarded_body_cases = {
+  {1, 20, 1, 9},
+  {20, 1, -1, 9},
+  {-20, 20, 3, 0},
+  {20, -20, -3, 0},
+  {7, -7, 3, 100},
+  {7, -7, -3, -100},
+  {math.maxinteger - 6, math.maxinteger, 2, math.maxinteger},
+  {math.mininteger + 6, math.mininteger, -2, math.mininteger + 3},
+}
+for _, values in ipairs(guarded_body_cases) do
+  assert(native_guarded_body_sum(table.unpack(values)) ==
+         guarded_body_sum(table.unpack(values)))
+end
+assert(native_guarded_body_sum(1, 12000, 1, 6000) ==
+       guarded_body_sum(1, 12000, 1, 6000))
+assert(unijit.wait(native_guarded_body_sum, 5000))
+local guarded_body_stats = unijit.stats(native_guarded_body_sum)
+assert(guarded_body_stats.active_tier == "optimized")
+assert(guarded_body_stats.loop)
+assert(guarded_body_stats.successful_compilations == 1)
+for _, values in ipairs(guarded_body_cases) do
+  assert(native_guarded_body_sum(table.unpack(values)) ==
+         guarded_body_sum(table.unpack(values)))
+end
+
+local guarded_break_sum = function(start, limit, step, stop)
+  local sum = 0
+  for index = start, limit, step do
+    sum = sum + 3
+    if index >= stop then
+      break
+    end
+    sum = sum + index
+  end
+  return sum
+end
+local native_guarded_break_sum = unijit.compile(guarded_break_sum)
+local precise_guarded_break_sum = unijit.compile(guarded_break_sum)
+assert(precise_guarded_break_sum(1, 20000, 1, 9) ==
+       guarded_break_sum(1, 20000, 1, 9))
+local precise_break_stats = unijit.stats(precise_guarded_break_sum)
+assert(precise_break_stats.invocations == 1)
+assert(precise_break_stats.backedges == 9)
+assert(precise_break_stats.active_tier == "baseline")
+local guarded_break_cases = {
+  {1, 20, 1, 9},
+  {1, 20, 3, 10},
+  {20, 1, -1, 9},
+  {20, 1, -3, 10},
+  {-20, 20, 3, 0},
+  {7, -7, 3, 0},
+  {math.maxinteger - 6, math.maxinteger, 2, math.maxinteger - 1},
+}
+for _, values in ipairs(guarded_break_cases) do
+  assert(native_guarded_break_sum(table.unpack(values)) ==
+         guarded_break_sum(table.unpack(values)))
+end
+
+local guarded_return_sum = function(start, limit, step, stop)
+  local sum = 11
+  for index = start, limit, step do
+    if index == stop then
+      return sum
+    end
+    sum = sum + index
+  end
+  return sum
+end
+local native_guarded_return_sum = unijit.compile(guarded_return_sum)
+local precise_guarded_return_sum = unijit.compile(guarded_return_sum)
+assert(precise_guarded_return_sum(1, 20000, 1, 9) ==
+       guarded_return_sum(1, 20000, 1, 9))
+local precise_return_stats = unijit.stats(precise_guarded_return_sum)
+assert(precise_return_stats.invocations == 1)
+assert(precise_return_stats.backedges == 9)
+assert(precise_return_stats.active_tier == "baseline")
+local guarded_return_cases = {
+  {1, 20, 1, 9},
+  {1, 20, 3, 10},
+  {20, 1, -1, 9},
+  {20, 1, -3, 10},
+  {-20, 20, 3, 1},
+  {7, -7, 3, 0},
+  {math.mininteger + 6, math.mininteger, -2, math.mininteger + 2},
+}
+for _, values in ipairs(guarded_return_cases) do
+  local actual = native_guarded_return_sum(table.unpack(values))
+  local expected = guarded_return_sum(table.unpack(values))
+  assert(actual == expected,
+         table.concat(values, ",") .. ": " .. tostring(actual) ..
+         " != " .. tostring(expected))
+end
+
+local immediate_guard_sum = function(count)
+  local sum = 0
+  for index = 1, count do
+    if index <= 4 then
+      sum = sum + index
+    end
+  end
+  return sum
+end
+local native_immediate_guard_sum = unijit.compile(immediate_guard_sum)
+for count = -3, 20 do
+  assert(native_immediate_guard_sum(count) == immediate_guard_sum(count))
+end
+
+local not_equal_guard_sum = function(count, skipped)
+  local sum = 0
+  for index = 1, count do
+    if index ~= skipped then
+      sum = sum + index
+    end
+  end
+  return sum
+end
+local native_not_equal_guard_sum = unijit.compile(not_equal_guard_sum)
+for _, values in ipairs({{0, 4}, {1, 1}, {10, 4}, {10, 1000}}) do
+  assert(native_not_equal_guard_sum(table.unpack(values)) ==
+         not_equal_guard_sum(table.unpack(values)))
+end
+
+local greater_immediate_sum = function(count)
+  local sum = 0
+  for index = 1, count do
+    if index > 4 then
+      sum = sum + index
+    end
+  end
+  return sum
+end
+local native_greater_immediate_sum = unijit.compile(greater_immediate_sum)
+for count = -3, 20 do
+  assert(native_greater_immediate_sum(count) == greater_immediate_sum(count))
+end
+
+local less_than_break = function(start, limit, step, stop)
+  local visits = 0
+  for index = start, limit, step do
+    if index < stop then
+      break
+    end
+    visits = visits + 1
+  end
+  return visits
+end
+local native_less_than_break = unijit.compile(less_than_break)
+for _, values in ipairs({{10, 1, -1, 4}, {1, 10, 1, 4},
+                          {10, 1, -3, -100}, {1, 10, 3, 100}}) do
+  assert(native_less_than_break(table.unpack(values)) ==
+         less_than_break(table.unpack(values)))
+end
+
+local guarded_zero_ok, guarded_zero_message =
+    pcall(native_guarded_body_sum, 1, 10, 0, 5)
+assert(not guarded_zero_ok and
+       tostring(guarded_zero_message):find("'for' step is zero"))
+
 local near_max_stride = function(limit)
   local visits = 0
   for index = 9223372036854775790, limit, 3 do
@@ -437,6 +607,33 @@ ok, message = pcall(unijit.compile, function(count)
 end)
 assert(not ok and tostring(message):find("only one numeric for loop"))
 
+ok, message = pcall(unijit.compile, function(count, first, second)
+  local sum = 0
+  for index = 1, count do
+    if index < first then
+      sum = sum + index
+    end
+    if index > second then
+      break
+    end
+  end
+  return sum
+end)
+assert(not ok and tostring(message):find("only one guarded condition"))
+
+ok, message = pcall(unijit.compile, function(count, threshold)
+  local sum = 0
+  for index = 1, count do
+    if index < threshold then
+      sum = sum + index
+    else
+      sum = sum - index
+    end
+  end
+  return sum
+end)
+assert(not ok and tostring(message):find("unsupported Lua 5.5 opcode"))
+
 ok = pcall(unijit.compile, math.abs)
 assert(not ok)
 
@@ -467,6 +664,15 @@ native_negative_stride_sum = nil
 native_parameter_start_sum = nil
 native_reverse_parameter_start_sum = nil
 native_parameter_step_sum = nil
+native_guarded_body_sum = nil
+native_guarded_break_sum = nil
+precise_guarded_break_sum = nil
+native_guarded_return_sum = nil
+precise_guarded_return_sum = nil
+native_immediate_guard_sum = nil
+native_not_equal_guard_sum = nil
+native_greater_immediate_sum = nil
+native_less_than_break = nil
 native_near_max_stride = nil
 native_near_min_stride = nil
 native_huge_positive_stride = nil
