@@ -126,8 +126,12 @@ The planned runtime is tiered:
    stale assumptions.
 
 Code is created writable, populated, instruction-cache synchronized, and only
-then published executable. Published code is never writable. Future concurrent
-reclamation will use epochs so executing threads cannot observe freed code.
+then published executable. Published code is never writable. A bounded,
+thread-safe LRU cache publishes immutable functions behind copyable execution
+leases. Replacement, invalidation, eviction, and cache destruction remove
+lookup visibility while active leases keep mappings alive. The current shared
+ownership implementation can later move to epoch-based reclamation without
+changing the public contract in `doc/CODE_CACHE.md`.
 
 ## Performance policy
 

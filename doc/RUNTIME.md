@@ -64,3 +64,11 @@ fast path without weakening dynamic-divisor checks.
 Runtime helpers and generated code must not unwind a C++ exception across a
 native entry. Later tiers will extend diagnosed runtime exits with full
 deoptimization reconstruction metadata.
+
+## Compiled-code ownership
+
+Compiled functions are immutable after W^X publication. The public code cache
+returns copyable execution leases, so invalidation and eviction remove future
+lookup visibility without reclaiming code that another thread can still call.
+Cache identity, capacity, statistics, and lifecycle guarantees are specified in
+`doc/CODE_CACHE.md`.

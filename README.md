@@ -14,6 +14,8 @@ RISC-V 64.
 See [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) for the design and delivery
 gates, [doc/PORTABILITY.md](doc/PORTABILITY.md) for verified platforms, and
 [doc/RUNTIME.md](doc/RUNTIME.md) for execution contexts, exits, and safepoints.
+[doc/CODE_CACHE.md](doc/CODE_CACHE.md) defines native-code publication,
+capacity, invalidation, telemetry, and concurrent lifetime guarantees.
 [doc/LUA_FRONTEND.md](doc/LUA_FRONTEND.md) describes the first stock Lua 5.5
 integration contract, and [doc/QUICKJS_FRONTEND.md](doc/QUICKJS_FRONTEND.md)
 defines the current stock QuickJS specialization boundary.
