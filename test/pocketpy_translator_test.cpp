@@ -202,14 +202,17 @@ int main() {
     py_finalize();
     return EXIT_FAILURE;
   }
-  if (!py_exec(
-          "cold_tier = unijit.stats(native)\n"
-          "assert cold_tier['active_tier'] == 'baseline'\n"
-          "assert cold_tier['tierable']\n"
-          "assert cold_tier['invocations'] == 0\n"
-          "assert cold_tier['input_ir_nodes'] == "
-          "cold_tier['active_ir_nodes']\n",
-          "<unijit-pocketpy-cold-tier>", EXEC_MODE, nullptr)) {
+  if (!py_exec("cold_tier = unijit.stats(native)\n"
+               "assert cold_tier['active_tier'] == 'baseline'\n"
+               "assert cold_tier['tierable']\n"
+               "assert cold_tier['invocations'] == 0\n"
+               "assert cold_tier['compilation_state'] == 'idle'\n"
+               "assert cold_tier['scheduler_available']\n"
+               "assert unijit.wait(native, 0)\n"
+               "assert not unijit.cancel(native)\n"
+               "assert cold_tier['input_ir_nodes'] == "
+               "cold_tier['active_ir_nodes']\n",
+               "<unijit-pocketpy-cold-tier>", EXEC_MODE, nullptr)) {
     py_printexc();
     py_finalize();
     return EXIT_FAILURE;
@@ -243,12 +246,11 @@ int main() {
     py_finalize();
     return EXIT_FAILURE;
   }
-  if (!py_exec(
-          "loop_tier = unijit.stats(native_loop)\n"
-          "assert loop_tier['active_tier'] == 'baseline'\n"
-          "assert not loop_tier['tierable']\n"
-          "assert loop_tier['compilation_attempts'] == 0\n",
-          "<unijit-pocketpy-loop-tier>", EXEC_MODE, nullptr)) {
+  if (!py_exec("loop_tier = unijit.stats(native_loop)\n"
+               "assert loop_tier['active_tier'] == 'baseline'\n"
+               "assert not loop_tier['tierable']\n"
+               "assert loop_tier['compilation_attempts'] == 0\n",
+               "<unijit-pocketpy-loop-tier>", EXEC_MODE, nullptr)) {
     py_printexc();
     py_finalize();
     return EXIT_FAILURE;
@@ -266,19 +268,23 @@ int main() {
     py_finalize();
     return EXIT_FAILURE;
   }
-  if (!py_exec(
-          "for tier_iteration in range(63):\n"
-          "    result = native(1.5, 4)\n"
-          "hot_tier = unijit.stats(native)\n"
-          "assert hot_tier['active_tier'] == 'optimized'\n"
-          "assert hot_tier['invocations'] == 64\n"
-          "assert hot_tier['compilation_attempts'] == 1\n"
-          "assert hot_tier['successful_compilations'] == 1\n"
-          "assert hot_tier['failed_compilations'] == 0\n"
-          "assert hot_tier['promotions'] == 1\n"
-          "assert hot_tier['active_ir_nodes'] < "
-          "hot_tier['input_ir_nodes']\n",
-          "<unijit-pocketpy-hot-tier>", EXEC_MODE, nullptr)) {
+  if (!py_exec("for tier_iteration in range(63):\n"
+               "    result = native(1.5, 4)\n"
+               "assert unijit.wait(native, 5000)\n"
+               "hot_tier = unijit.stats(native)\n"
+               "assert hot_tier['active_tier'] == 'optimized'\n"
+               "assert hot_tier['invocations'] == 64\n"
+               "assert hot_tier['compilation_attempts'] == 1\n"
+               "assert hot_tier['successful_compilations'] == 1\n"
+               "assert hot_tier['failed_compilations'] == 0\n"
+               "assert hot_tier['promotions'] == 1\n"
+               "assert hot_tier['compilation_state'] == 'succeeded'\n"
+               "assert not hot_tier['cancellation_requested']\n"
+               "assert hot_tier['scheduler_available']\n"
+               "assert not unijit.cancel(native)\n"
+               "assert hot_tier['active_ir_nodes'] < "
+               "hot_tier['input_ir_nodes']\n",
+               "<unijit-pocketpy-hot-tier>", EXEC_MODE, nullptr)) {
     py_printexc();
     py_finalize();
     return EXIT_FAILURE;
@@ -311,13 +317,14 @@ int main() {
     py_finalize();
     return EXIT_FAILURE;
   }
-  if (!py_exec(
-          "for division_tier_iteration in range(63):\n"
-          "    quotient = divide(9, 3)\n"
-          "division_tier = unijit.stats(divide)\n"
-          "assert division_tier['active_tier'] == 'optimized'\n"
-          "assert division_tier['promotions'] == 1\n",
-          "<unijit-pocketpy-division-tier>", EXEC_MODE, nullptr)) {
+  if (!py_exec("for division_tier_iteration in range(63):\n"
+               "    quotient = divide(9, 3)\n"
+               "assert unijit.wait(divide, 5000)\n"
+               "division_tier = unijit.stats(divide)\n"
+               "assert division_tier['active_tier'] == 'optimized'\n"
+               "assert division_tier['compilation_state'] == 'succeeded'\n"
+               "assert division_tier['promotions'] == 1\n",
+               "<unijit-pocketpy-division-tier>", EXEC_MODE, nullptr)) {
     py_printexc();
     py_finalize();
     return EXIT_FAILURE;
@@ -349,6 +356,24 @@ int main() {
               nullptr) ||
       !py_matchexc(tp_TypeError)) {
     std::cerr << "PocketPy tier stats accepted a foreign object\n";
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  py_clearexc(nullptr);
+
+  if (py_exec("unijit.wait(native, -1)", "<unijit-pocketpy-wait-range>",
+              EVAL_MODE, nullptr) ||
+      !py_matchexc(tp_ValueError)) {
+    std::cerr << "PocketPy tier wait accepted a negative timeout\n";
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  py_clearexc(nullptr);
+
+  if (py_exec("unijit.cancel(1)", "<unijit-pocketpy-cancel-type>", EVAL_MODE,
+              nullptr) ||
+      !py_matchexc(tp_TypeError)) {
+    std::cerr << "PocketPy tier cancellation accepted a foreign object\n";
     py_finalize();
     return EXIT_FAILURE;
   }
