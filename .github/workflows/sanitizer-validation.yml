@@ -51,7 +51,7 @@ jobs:
           -DUNIJIT_BUILD_LUA_REFERENCE=ON
           -DUNIJIT_WARNINGS_AS_ERRORS=ON
           -DCMAKE_C_FLAGS=/fsanitize=address
-          -DCMAKE_CXX_FLAGS=/fsanitize=address
+          "-DCMAKE_CXX_FLAGS=/EHsc /fsanitize=address"
 
       - name: Build Lua frontend qualification
         run: >-
