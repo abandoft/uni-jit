@@ -1188,6 +1188,49 @@ void test_optimization_pipeline() {
          "compiler must reject an unknown optimization level");
 }
 
+void test_optimization_exit_state_mapping() {
+  FunctionBuilder builder(2);
+  const Value dead = builder.add(builder.parameter(0), builder.constant(91));
+  const Value snapshot = builder.multiply(
+      builder.add(builder.parameter(0), builder.constant(0)),
+      builder.constant(2));
+  const Value guard = builder.guard_float64_nonzero(
+      builder.float64_constant(1.0), 501);
+  expect(dead.valid() && snapshot.valid() && guard.valid() &&
+             builder.set_return(builder.parameter(1)).ok(),
+         "optimizer exit-state fixture must be constructible");
+  const Function function = std::move(builder).build();
+
+  const auto retained = unijit::ir::Optimizer::run(
+      function, {{guard, {snapshot}}});
+  expect(retained.ok() && !retained.map(snapshot).valid(),
+         "optimizer must drop frame-only values with an eliminated guard");
+
+  FunctionBuilder live_guard_builder(
+      std::vector<unijit::ir::ValueType>{
+          unijit::ir::ValueType::kWord,
+          unijit::ir::ValueType::kFloat64});
+  const Value live_snapshot = live_guard_builder.multiply(
+      live_guard_builder.add(live_guard_builder.parameter(0),
+                             live_guard_builder.constant(0)),
+      live_guard_builder.constant(2));
+  const Value live_guard = live_guard_builder.guard_float64_nonzero(
+      live_guard_builder.parameter(1), 502);
+  expect(live_snapshot.valid() && live_guard.valid() &&
+             live_guard_builder.set_return(live_guard_builder.parameter(0))
+                 .ok(),
+         "live optimizer exit-state fixture must be constructible");
+  const Function live_function = std::move(live_guard_builder).build();
+  const auto mapped = unijit::ir::Optimizer::run(
+      live_function, {{live_guard, {live_snapshot}}});
+  const auto unpreserved = unijit::ir::Optimizer::run(live_function);
+  expect(mapped.ok() && mapped.map(live_snapshot).valid() &&
+             mapped.function.value_type(mapped.map(live_snapshot)) ==
+                 unijit::ir::ValueType::kWord &&
+             unpreserved.ok() && !unpreserved.map(live_snapshot).valid(),
+         "live exit states must preserve metadata-only SSA values through canonicalization");
+}
+
 void test_float64_constant_folding() {
   FunctionBuilder builder(0);
   const Value numerator = builder.float64_add(
@@ -2456,6 +2499,7 @@ int main() {
   test_spill_path();
   test_argument_validation();
   test_optimization_pipeline();
+  test_optimization_exit_state_mapping();
   test_float64_constant_folding();
   test_control_flow_counted_loop();
   test_control_flow_float64_loop();

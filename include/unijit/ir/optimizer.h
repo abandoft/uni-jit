@@ -2,6 +2,7 @@
 #define UNIJIT_IR_OPTIMIZER_H
 
 #include <cstddef>
+#include <vector>
 
 #include "unijit/ir/function.h"
 #include "unijit/status.h"
@@ -15,17 +16,30 @@ struct OptimizationStats final {
   std::size_t algebraic_simplifications{0};
 };
 
+struct OptimizationExitState final {
+  Value exit;
+  std::vector<Value> live_values;
+};
+
 struct OptimizationResult final {
   Status status;
   Function function;
   OptimizationStats stats;
+  std::vector<Value> value_mapping;
 
   bool ok() const noexcept { return status.ok(); }
+  Value map(Value input) const noexcept {
+    return input.valid() && input.id() < value_mapping.size()
+               ? value_mapping[input.id()]
+               : Value{};
+  }
 };
 
 class Optimizer final {
  public:
-  static OptimizationResult run(const Function& function);
+  static OptimizationResult run(
+      const Function& function,
+      const std::vector<OptimizationExitState>& exit_states = {});
 };
 
 }  // namespace unijit::ir

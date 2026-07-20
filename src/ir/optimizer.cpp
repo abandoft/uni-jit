@@ -1,5 +1,6 @@
 #include "unijit/ir/optimizer.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -12,6 +13,8 @@ namespace {
 
 struct PassResult final {
   Function function;
+  std::vector<Value> mapping;
+  std::vector<OptimizationExitState> exit_states;
   std::size_t constants_folded{0};
   std::size_t algebraic_simplifications{0};
   bool changed{false};
@@ -84,7 +87,9 @@ bool is_float_comparison(Opcode opcode) noexcept {
          opcode == Opcode::kFloatLessEqual;
 }
 
-PassResult transform_once(const Function& input) {
+PassResult transform_once(
+    const Function& input,
+    const std::vector<OptimizationExitState>& exit_states) {
   const std::size_t node_count = input.nodes().size();
   std::vector<bool> live(node_count, false);
   live[input.return_value().id()] = true;
@@ -93,6 +98,11 @@ PassResult transform_once(const Function& input) {
         input.nodes()[index].opcode == Opcode::kGuardFloatNonzero ||
         input.nodes()[index].opcode == Opcode::kSafepoint) {
       live[index] = true;
+    }
+  }
+  for (const OptimizationExitState& exit_state : exit_states) {
+    for (const Value value : exit_state.live_values) {
+      live[value.id()] = true;
     }
   }
   for (std::size_t reverse = node_count; reverse > 0; --reverse) {
@@ -275,20 +285,66 @@ PassResult transform_once(const Function& input) {
   if (!return_status.ok()) {
     return {};
   }
-  return {std::move(builder).build(), folded, simplified, changed};
+  Function output = std::move(builder).build();
+  std::vector<OptimizationExitState> mapped_exit_states;
+  mapped_exit_states.reserve(exit_states.size());
+  for (const OptimizationExitState& exit_state : exit_states) {
+    const Value mapped_exit = mapped[exit_state.exit.id()];
+    if (!mapped_exit.valid() ||
+        output.nodes()[mapped_exit.id()].opcode !=
+            Opcode::kGuardFloatNonzero) {
+      continue;
+    }
+    OptimizationExitState mapped_state;
+    mapped_state.exit = mapped_exit;
+    mapped_state.live_values.reserve(exit_state.live_values.size());
+    for (const Value value : exit_state.live_values) {
+      const Value mapped_value = mapped[value.id()];
+      if (mapped_value.valid() &&
+          std::find(mapped_state.live_values.begin(),
+                    mapped_state.live_values.end(), mapped_value) ==
+              mapped_state.live_values.end()) {
+        mapped_state.live_values.push_back(mapped_value);
+      }
+    }
+    mapped_exit_states.push_back(std::move(mapped_state));
+  }
+  return {std::move(output), std::move(mapped),
+          std::move(mapped_exit_states), folded, simplified, changed};
 }
 
 }  // namespace
 
-OptimizationResult Optimizer::run(const Function& function) {
+OptimizationResult Optimizer::run(
+    const Function& function,
+    const std::vector<OptimizationExitState>& exit_states) {
   const Status verification = verify(function);
   if (!verification.ok()) {
-    return {verification, {}, {}};
+    return {verification, {}, {}, {}};
+  }
+  for (const OptimizationExitState& exit_state : exit_states) {
+    if (!exit_state.exit.valid() ||
+        exit_state.exit.id() >= function.nodes().size() ||
+        function.nodes()[exit_state.exit.id()].opcode !=
+            Opcode::kGuardFloatNonzero) {
+      return {{StatusCode::kInvalidArgument,
+               "optimizer exit state does not identify a guard"},
+              {}, {}, {}};
+    }
+    for (const Value value : exit_state.live_values) {
+      if (!value.valid() || value.id() >= exit_state.exit.id()) {
+        return {{StatusCode::kInvalidArgument,
+                 "optimizer exit state value is unavailable at its guard",
+                 exit_state.exit.id()},
+                {}, {}, {}};
+      }
+    }
   }
 
   try {
     const std::size_t input_nodes = function.nodes().size();
-    PassResult pass = transform_once(function);
+    PassResult pass = transform_once(function, exit_states);
+    std::vector<Value> value_mapping = pass.mapping;
     std::size_t folded = pass.constants_folded;
     std::size_t simplified = pass.algebraic_simplifications;
 
@@ -296,7 +352,12 @@ OptimizationResult Optimizer::run(const Function& function) {
     for (std::size_t iteration = 1;
          pass.changed && iteration < kMaximumCanonicalizationPasses;
          ++iteration) {
-      PassResult next = transform_once(pass.function);
+      PassResult next = transform_once(pass.function, pass.exit_states);
+      for (Value& value : value_mapping) {
+        value = value.valid() && value.id() < next.mapping.size()
+                    ? next.mapping[value.id()]
+                    : Value{};
+      }
       folded += next.constants_folded;
       simplified += next.algebraic_simplifications;
       pass = std::move(next);
@@ -306,15 +367,16 @@ OptimizationResult Optimizer::run(const Function& function) {
     if (!output_verification.ok()) {
       return {{StatusCode::kCodeGenerationFailed,
                "optimizer produced invalid SSA", output_verification.location()},
-              {}, {}};
+              {}, {}, {}};
     }
     const std::size_t output_nodes = pass.function.nodes().size();
     return {Status::ok_status(), std::move(pass.function),
-            {input_nodes, output_nodes, folded, simplified}};
+            {input_nodes, output_nodes, folded, simplified},
+            std::move(value_mapping)};
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate SSA optimization state"},
-            {}, {}};
+            {}, {}, {}};
   }
 }
 
