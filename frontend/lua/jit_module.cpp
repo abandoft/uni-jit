@@ -4,10 +4,13 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <new>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -20,6 +23,7 @@ extern "C" {
 
 #include "unijit/ir/control_flow.h"
 #include "unijit/ir/function.h"
+#include "unijit/jit/code_cache.h"
 #include "unijit/jit/compiler.h"
 #include "unijit/status.h"
 
@@ -32,6 +36,8 @@ using unijit::ir::ControlFlowBuilder;
 using unijit::ir::Value;
 using unijit::ir::Word;
 using unijit::jit::CompilationResult;
+using unijit::jit::CodeCache;
+using unijit::jit::CodeHandle;
 using unijit::jit::CompiledFunction;
 using unijit::jit::Compiler;
 
@@ -49,10 +55,79 @@ enum class NumericMode : unsigned char {
 };
 
 struct OwnedFunction final {
-  CompiledFunction *function{nullptr};
+  CodeHandle *function{nullptr};
   std::size_t parameter_count{0};
   NumericMode mode{NumericMode::kInteger};
 };
+
+constexpr std::uint64_t kIntegerCacheFingerprint = 0x554A4C5541494E54ULL;
+constexpr std::uint64_t kFloatCacheFingerprint = 0x554A4C5541464C54ULL;
+
+CodeCache &compiled_function_cache(NumericMode mode) {
+  static CodeCache integer_cache;
+  static CodeCache float_cache;
+  return mode == NumericMode::kInteger ? integer_cache : float_cache;
+}
+
+CodeCache &uncached_publication_cache() {
+  static CodeCache cache(unijit::jit::CodeCacheLimits{0, 0});
+  return cache;
+}
+
+template <typename T>
+void append_binary(std::string *output, const T &value) {
+  output->append(reinterpret_cast<const char *>(&value), sizeof(value));
+}
+
+bool prototype_cache_key(const Proto &prototype, NumericMode mode,
+                         std::string *output) {
+  if (output == nullptr || prototype.sizecode < 0 || prototype.sizek < 0 ||
+      prototype.sizeupvalues < 0 || prototype.sizep != 0 ||
+      (prototype.sizecode != 0 && prototype.code == nullptr) ||
+      (prototype.sizek != 0 && prototype.k == nullptr)) {
+    return false;
+  }
+  try {
+    output->clear();
+    output->reserve(sizeof(Instruction) *
+                        static_cast<std::size_t>(prototype.sizecode) +
+                    sizeof(TValue) *
+                        static_cast<std::size_t>(prototype.sizek) +
+                    32U);
+    const auto numeric_mode = static_cast<unsigned char>(mode);
+    append_binary(output, numeric_mode);
+    append_binary(output, prototype.numparams);
+    append_binary(output, prototype.flag);
+    append_binary(output, prototype.maxstacksize);
+    append_binary(output, prototype.sizeupvalues);
+    append_binary(output, prototype.sizek);
+    append_binary(output, prototype.sizecode);
+    if (prototype.sizecode != 0) {
+      output->append(
+          reinterpret_cast<const char *>(prototype.code),
+          sizeof(Instruction) * static_cast<std::size_t>(prototype.sizecode));
+    }
+    for (int index = 0; index < prototype.sizek; ++index) {
+      const TValue *constant = &prototype.k[index];
+      const int tag = rawtt(constant);
+      append_binary(output, tag);
+      if (ttisinteger(constant)) {
+        const lua_Integer value = ivalue(constant);
+        append_binary(output, value);
+      } else if (ttisfloat(constant)) {
+        const lua_Number value = fltvalue(constant);
+        append_binary(output, value);
+      } else {
+        output->clear();
+        return false;
+      }
+    }
+    return true;
+  } catch (const std::bad_alloc &) {
+    output->clear();
+    return false;
+  }
+}
 
 CompilationResult translation_error(std::size_t pc, const char *message) {
   return {{StatusCode::kInvalidArgument, message, pc}, nullptr};
@@ -610,6 +685,10 @@ CompilationResult compile_numeric_for_prototype(const Proto &prototype) {
     if (!status.ok()) {
       return {status, nullptr};
     }
+    if (!builder.safepoint(static_cast<std::size_t>(preparation_pc)).valid()) {
+      return translation_error(static_cast<std::size_t>(preparation_pc),
+                               "unable to insert a numeric-loop safepoint");
+    }
     std::vector<Value> loop_registers(prototype.maxstacksize);
     std::vector<std::optional<Word>> loop_known(prototype.maxstacksize);
     for (std::size_t index = 0; index < carried_registers.size(); ++index) {
@@ -707,7 +786,8 @@ int invoke_compiled_function(lua_State *state) {
   const CClosure *closure = clCvalue(s2v(call->func.p));
   auto *owned = reinterpret_cast<OwnedFunction *>(
       getudatamem(uvalue(&closure->upvalue[0])));
-  if (owned == nullptr || owned->function == nullptr) {
+  if (owned == nullptr || owned->function == nullptr ||
+      !owned->function->valid()) {
     return luaL_error(state, "invalid UniJIT compiled function");
   }
 
@@ -736,8 +816,30 @@ int invoke_compiled_function(lua_State *state) {
             : unijit::ir::pack_float64(static_cast<double>(fltvalue(argument)));
   }
 
-  const Word value =
-      owned->function->native_entry()(arguments.data(), nullptr);
+  Word value = 0;
+  bool invoked = false;
+  char invocation_error[256] = {};
+  {
+    if (owned->function->requires_context()) {
+      const unijit::ir::EvaluationResult result =
+          owned->function->invoke(arguments.data(), owned->parameter_count);
+      if (result.ok()) {
+        value = result.value;
+        invoked = true;
+      } else {
+        std::snprintf(invocation_error, sizeof(invocation_error),
+                      "UniJIT invocation failed at site %zu: %s",
+                      result.status.location(),
+                      result.status.message().c_str());
+      }
+    } else {
+      value = owned->function->native_entry()(arguments.data(), nullptr);
+      invoked = true;
+    }
+  }
+  if (!invoked) {
+    return luaL_error(state, "%s", invocation_error);
+  }
   if (owned->mode == NumericMode::kInteger) {
     setivalue(s2v(state->top.p), static_cast<lua_Integer>(value));
   } else {
@@ -766,19 +868,52 @@ int compile_lua_function_mode(lua_State *state, NumericMode mode,
   char error[512] = {};
   bool compiled = false;
   {
-    CompilationResult result =
-        mode == NumericMode::kInteger
-            ? compile_prototype(*closure->p)
-            : unijit::frontend::lua55::detail::compile_float64_prototype(
-                  *closure->p);
-    if (result.ok()) {
-      owned->parameter_count = closure->p->numparams;
-      owned->function = result.function.release();
-      owned->mode = mode;
-      compiled = true;
-    } else {
-      std::snprintf(error, sizeof(error), "Lua bytecode at pc %zu: %s",
-                    result.status.location(), result.status.message().c_str());
+    std::string cache_key;
+    const bool cacheable = prototype_cache_key(*closure->p, mode, &cache_key);
+    const std::uint64_t fingerprint =
+        mode == NumericMode::kInteger ? kIntegerCacheFingerprint
+                                      : kFloatCacheFingerprint;
+    CodeHandle code = cacheable
+                          ? compiled_function_cache(mode).find(cache_key,
+                                                               fingerprint)
+                          : CodeHandle{};
+    if (!code.valid()) {
+      CompilationResult result =
+          mode == NumericMode::kInteger
+              ? compile_prototype(*closure->p)
+              : unijit::frontend::lua55::detail::compile_float64_prototype(
+                    *closure->p);
+      if (result.ok()) {
+        unijit::jit::CodeCachePublication publication =
+            cacheable
+                ? compiled_function_cache(mode).publish(
+                      cache_key, fingerprint, std::move(result.function))
+                : uncached_publication_cache().publish(
+                      "uncached-lua-prototype", fingerprint,
+                      std::move(result.function));
+        if (publication.ok()) {
+          code = std::move(publication.handle);
+        } else {
+          std::snprintf(error, sizeof(error),
+                        "unable to publish Lua native code: %s",
+                        publication.status.message().c_str());
+        }
+      } else {
+        std::snprintf(error, sizeof(error), "Lua bytecode at pc %zu: %s",
+                      result.status.location(),
+                      result.status.message().c_str());
+      }
+    }
+    if (code.valid()) {
+      owned->function = new (std::nothrow) CodeHandle(std::move(code));
+      if (owned->function == nullptr) {
+        std::snprintf(error, sizeof(error),
+                      "unable to allocate a Lua native-code lease");
+      } else {
+        owned->parameter_count = closure->p->numparams;
+        owned->mode = mode;
+        compiled = true;
+      }
     }
   }
   if (!compiled) {

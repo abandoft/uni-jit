@@ -34,6 +34,8 @@ end
 cases[#cases + 1] = {math.maxinteger, -1, 1}
 cases[#cases + 1] = {math.mininteger, 1, -1}
 local native_recurrence = compare(recurrence, cases)
+local cached_recurrence = unijit.compile(recurrence)
+assert(cached_recurrence(9, 3, 5) == 48)
 
 local function compare_float(original, arguments)
   local native = unijit.compile_float(original)
@@ -58,6 +60,8 @@ local float_cases = {
   {0.0, -0.0, 7.5},
 }
 local native_float_recurrence = compare_float(float_recurrence, float_cases)
+local cached_float_recurrence = unijit.compile_float(float_recurrence)
+assert(cached_float_recurrence(9.0, 3.0, 5.0) == 48.0)
 
 compare_float(function(value)
   return (value + 7) * 0.5 - 3.0
@@ -189,7 +193,9 @@ assert(not ok and tostring(message):find("invalid UniJIT compiled function"))
 
 immediate = nil
 native_recurrence = nil
+cached_recurrence = nil
 native_float_recurrence = nil
+cached_float_recurrence = nil
 native_counted_sum = nil
 native_offset_sum = nil
 disposable = nil
