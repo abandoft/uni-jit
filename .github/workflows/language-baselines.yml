@@ -81,6 +81,10 @@ jobs:
         with:
           submodules: recursive
 
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26.5.0
+
       - name: Configure stock QuickJS and UniJIT frontend
         run: >-
           cmake -S . -B build/quickjs -G Ninja
@@ -98,13 +102,22 @@ jobs:
       - name: Test QuickJS frontend
         run: >-
           ctest --test-dir build/quickjs --output-on-failure
-          -R unijit.quickjs_frontend
+          -R unijit.quickjs_
 
-      - name: Compare stock QuickJS and UniJIT calls
+      - name: Compare QuickJS and UniJIT with V8 Jitless and V8
         run: >-
-          build/quickjs/bin/unijit_quickjs_benchmark
+          python3 benchmark/quickjs/run_v8.py
+          --unijit build/quickjs/bin/unijit_quickjs_benchmark
+          --node "$(command -v node)"
           --warmup 10000 --iterations 100000 --samples 3
-          > build/quickjs/quickjs-call.json
+          > build/quickjs/quickjs-targets.json
+
+      - name: Retain QuickJS target baseline
+        uses: actions/upload-artifact@v7
+        with:
+          name: quickjs-target-baseline
+          path: build/quickjs/quickjs-targets.json
+          if-no-files-found: error
 
   pocketpy-reference-baseline:
     name: PocketPy 2.1.8 frontend and baseline
