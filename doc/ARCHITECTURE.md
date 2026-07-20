@@ -81,6 +81,14 @@ use whose definition does not dominate it. Its reference interpreter applies
 edge arguments in parallel and has a configurable block-execution budget so
 fuzzed infinite loops fail deterministically.
 
+CFG signatures, constants, instructions, and block parameters carry the same
+Word/Float64 types as straight-line SSA. Edges must preserve each destination
+parameter's type, and Float64 addition, subtraction, multiplication, and
+division retain exact value bits through loop backedges. The initial portable
+lowering keeps those bits in the common CFG register/stack transport and uses
+native floating-point registers at arithmetic operations; a split register
+class allocator will remove the remaining transfer traffic.
+
 Native CFG lowering applies block-local lifetime analysis on AArch64, x86-64,
 and RISC-V 64. Values stay in registers within a block; only actual spills and
 definitions consumed directly by another block need canonical stack storage.
