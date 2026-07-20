@@ -236,6 +236,15 @@ Status verify_impl(const ControlFlowFunction &function) {
           return invalid_control_flow(
               value.id(), "control-flow Float64 guard is malformed");
         }
+        for (std::size_t previous = 0; previous < value.id(); ++previous) {
+          if ((nodes[previous].opcode ==
+                   ControlOpcode::kGuardFloatNonzero ||
+               nodes[previous].opcode == ControlOpcode::kSafepoint) &&
+              nodes[previous].immediate == node.immediate) {
+            return invalid_control_flow(
+                value.id(), "control-flow runtime exit site is duplicated");
+          }
+        }
         continue;
       }
       if (node.opcode == ControlOpcode::kSafepoint) {
@@ -243,6 +252,15 @@ Status verify_impl(const ControlFlowFunction &function) {
             node.type != ValueType::kWord) {
           return invalid_control_flow(value.id(),
                                       "control-flow safepoint is malformed");
+        }
+        for (std::size_t previous = 0; previous < value.id(); ++previous) {
+          if ((nodes[previous].opcode ==
+                   ControlOpcode::kGuardFloatNonzero ||
+               nodes[previous].opcode == ControlOpcode::kSafepoint) &&
+              nodes[previous].immediate == node.immediate) {
+            return invalid_control_flow(
+                value.id(), "control-flow runtime exit site is duplicated");
+          }
         }
         continue;
       }

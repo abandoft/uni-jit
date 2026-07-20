@@ -53,6 +53,11 @@ struct ControlFlowEdgeMoves final {
   std::vector<ControlFlowRegisterMove> moves;
 };
 
+struct StackMapLiveness final {
+  Status status;
+  std::vector<std::vector<ir::Value>> live_values_by_node;
+};
+
 RegisterAllocation allocate_linear_scan(const ir::Function& function,
                                         std::size_t register_count,
                                         std::size_t maximum_spill_slots);
@@ -64,6 +69,13 @@ ControlFlowEdgeMoves plan_control_flow_edge_moves(
     const ir::ControlFlowFunction& function, const ir::ControlEdge& edge,
     const ControlFlowRegisterAllocation& allocation,
     std::size_t current_block);
+
+StackMapLiveness plan_stack_map_liveness(
+    const ir::Function& function,
+    const RegisterAllocation& allocation);
+
+StackMapLiveness plan_stack_map_liveness(
+    const ir::ControlFlowFunction& function);
 
 }  // namespace unijit::jit::detail
 

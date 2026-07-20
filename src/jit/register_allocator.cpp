@@ -9,6 +9,36 @@
 namespace unijit::jit::detail {
 namespace {
 
+constexpr std::size_t kMaximumStackMapValues = 256U * 1024U;
+
+template <typename Visitor>
+void visit_control_operands(const ir::ControlNode& node, Visitor&& visitor) {
+  switch (node.opcode) {
+    case ir::ControlOpcode::kAdd:
+    case ir::ControlOpcode::kSubtract:
+    case ir::ControlOpcode::kMultiply:
+    case ir::ControlOpcode::kFloatAdd:
+    case ir::ControlOpcode::kFloatSubtract:
+    case ir::ControlOpcode::kFloatMultiply:
+    case ir::ControlOpcode::kFloatDivide:
+    case ir::ControlOpcode::kFloatLessThan:
+    case ir::ControlOpcode::kFloatLessEqual:
+    case ir::ControlOpcode::kLessThan:
+    case ir::ControlOpcode::kLessEqual:
+      visitor(node.lhs);
+      visitor(node.rhs);
+      break;
+    case ir::ControlOpcode::kGuardFloatNonzero:
+      visitor(node.lhs);
+      break;
+    case ir::ControlOpcode::kParameter:
+    case ir::ControlOpcode::kBlockParameter:
+    case ir::ControlOpcode::kConstant:
+    case ir::ControlOpcode::kSafepoint:
+      break;
+  }
+}
+
 void note_use(std::vector<std::size_t>* last_use, ir::Value value,
               std::size_t use_index) {
   auto& entry = (*last_use)[value.id()];
@@ -372,6 +402,174 @@ ControlFlowEdgeMoves plan_control_flow_edge_impl(
   return result;
 }
 
+StackMapLiveness plan_straight_stack_map_liveness_impl(
+    const ir::Function& function, const RegisterAllocation& allocation) {
+  std::vector<std::vector<ir::Value>> live_values(function.nodes().size());
+  std::size_t total_live_values = 0;
+  for (std::size_t node_index = 0; node_index < function.nodes().size();
+       ++node_index) {
+    const ir::Opcode opcode = function.nodes()[node_index].opcode;
+    if (opcode != ir::Opcode::kSafepoint &&
+        opcode != ir::Opcode::kGuardFloatNonzero) {
+      continue;
+    }
+    std::vector<ir::Value>& site_values = live_values[node_index];
+    for (std::size_t value_index = 0; value_index < node_index;
+         ++value_index) {
+      if (allocation.last_uses[value_index] >= node_index) {
+        if (total_live_values == kMaximumStackMapValues) {
+          return {{StatusCode::kResourceExhausted,
+                   "straight-line stack maps exceed the metadata limit"},
+                  {}};
+        }
+        site_values.emplace_back(static_cast<std::uint32_t>(value_index));
+        ++total_live_values;
+      }
+    }
+  }
+  return {Status::ok_status(), std::move(live_values)};
+}
+
+StackMapLiveness plan_control_stack_map_liveness_impl(
+    const ir::ControlFlowFunction& function) {
+  const std::size_t block_count = function.blocks().size();
+  const std::size_t value_count = function.nodes().size();
+  using ValueSet = std::vector<bool>;
+  std::vector<ValueSet> uses(block_count, ValueSet(value_count, false));
+  std::vector<ValueSet> definitions(block_count,
+                                    ValueSet(value_count, false));
+  std::vector<ValueSet> live_in(block_count, ValueSet(value_count, false));
+  std::vector<ValueSet> live_out(block_count, ValueSet(value_count, false));
+
+  const auto note_use = [](ValueSet* used, const ValueSet& defined,
+                           ir::Value value) {
+    if (value.valid() && !defined[value.id()]) {
+      (*used)[value.id()] = true;
+    }
+  };
+  for (std::size_t block_index = 0; block_index < block_count;
+       ++block_index) {
+    const ir::BasicBlock& block = function.blocks()[block_index];
+    ValueSet defined(value_count, false);
+    for (const ir::Value value : block.instructions) {
+      const ir::ControlNode& node = function.nodes()[value.id()];
+      visit_control_operands(node,
+                             [&](ir::Value operand) {
+                               note_use(&uses[block_index], defined, operand);
+                             });
+      if (node.opcode != ir::ControlOpcode::kBlockParameter) {
+        defined[value.id()] = true;
+        definitions[block_index][value.id()] = true;
+      }
+    }
+    if (block.terminator.opcode == ir::TerminatorOpcode::kReturn ||
+        block.terminator.opcode == ir::TerminatorOpcode::kBranch) {
+      note_use(&uses[block_index], defined, block.terminator.value);
+    }
+  }
+
+  const auto add_edge_live = [&](ValueSet* output,
+                                 const ir::ControlEdge& edge) {
+    const ir::BasicBlock& target = function.blocks()[edge.target.id()];
+    const ValueSet& successor_live = live_in[edge.target.id()];
+    for (std::size_t value_index = 0; value_index < value_count;
+         ++value_index) {
+      if (!successor_live[value_index]) {
+        continue;
+      }
+      bool substituted = false;
+      for (std::size_t parameter_index = 0;
+           parameter_index < target.parameters.size(); ++parameter_index) {
+        if (target.parameters[parameter_index].id() == value_index) {
+          (*output)[edge.arguments[parameter_index].id()] = true;
+          substituted = true;
+          break;
+        }
+      }
+      if (!substituted) {
+        (*output)[value_index] = true;
+      }
+    }
+  };
+
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (std::size_t reverse = block_count; reverse > 0; --reverse) {
+      const std::size_t block_index = reverse - 1;
+      const ir::ControlTerminator& terminator =
+          function.blocks()[block_index].terminator;
+      ValueSet next_out(value_count, false);
+      if (terminator.opcode == ir::TerminatorOpcode::kJump) {
+        add_edge_live(&next_out, terminator.true_edge);
+      } else if (terminator.opcode == ir::TerminatorOpcode::kBranch) {
+        add_edge_live(&next_out, terminator.true_edge);
+        add_edge_live(&next_out, terminator.false_edge);
+      }
+
+      ValueSet next_in = uses[block_index];
+      for (std::size_t value_index = 0; value_index < value_count;
+           ++value_index) {
+        if (next_out[value_index] &&
+            !definitions[block_index][value_index]) {
+          next_in[value_index] = true;
+        }
+      }
+      if (next_out != live_out[block_index] ||
+          next_in != live_in[block_index]) {
+        live_out[block_index] = std::move(next_out);
+        live_in[block_index] = std::move(next_in);
+        changed = true;
+      }
+    }
+  }
+
+  std::vector<std::vector<ir::Value>> live_values(value_count);
+  std::size_t total_live_values = 0;
+  for (std::size_t block_index = 0; block_index < block_count;
+       ++block_index) {
+    const ir::BasicBlock& block = function.blocks()[block_index];
+    ValueSet live(value_count, false);
+    const ir::ControlTerminator& terminator = block.terminator;
+    if (terminator.opcode == ir::TerminatorOpcode::kJump) {
+      add_edge_live(&live, terminator.true_edge);
+    } else if (terminator.opcode == ir::TerminatorOpcode::kBranch) {
+      add_edge_live(&live, terminator.true_edge);
+      add_edge_live(&live, terminator.false_edge);
+      live[terminator.value.id()] = true;
+    } else if (terminator.opcode == ir::TerminatorOpcode::kReturn) {
+      live[terminator.value.id()] = true;
+    }
+
+    for (std::size_t reverse = block.instructions.size(); reverse > 0;
+         --reverse) {
+      const ir::Value value = block.instructions[reverse - 1];
+      const ir::ControlNode& node = function.nodes()[value.id()];
+      live[value.id()] = false;
+      visit_control_operands(node,
+                             [&](ir::Value operand) { live[operand.id()] = true; });
+      if (node.opcode != ir::ControlOpcode::kSafepoint &&
+          node.opcode != ir::ControlOpcode::kGuardFloatNonzero) {
+        continue;
+      }
+      std::vector<ir::Value>& site_values = live_values[value.id()];
+      for (std::size_t value_index = 0; value_index < value_count;
+           ++value_index) {
+        if (live[value_index]) {
+          if (total_live_values == kMaximumStackMapValues) {
+            return {{StatusCode::kResourceExhausted,
+                     "CFG stack maps exceed the metadata limit"},
+                    {}};
+          }
+          site_values.emplace_back(static_cast<std::uint32_t>(value_index));
+          ++total_live_values;
+        }
+      }
+    }
+  }
+  return {Status::ok_status(), std::move(live_values)};
+}
+
 }  // namespace
 
 RegisterAllocation allocate_linear_scan(const ir::Function& function,
@@ -403,6 +601,28 @@ ControlFlowEdgeMoves plan_control_flow_edge_moves(
     std::size_t current_block) {
   return plan_control_flow_edge_impl(function, edge, allocation,
                                      current_block);
+}
+
+StackMapLiveness plan_stack_map_liveness(
+    const ir::Function& function, const RegisterAllocation& allocation) {
+  try {
+    return plan_straight_stack_map_liveness_impl(function, allocation);
+  } catch (const std::bad_alloc&) {
+    return {{StatusCode::kResourceExhausted,
+             "unable to allocate straight-line stack-map liveness"},
+            {}};
+  }
+}
+
+StackMapLiveness plan_stack_map_liveness(
+    const ir::ControlFlowFunction& function) {
+  try {
+    return plan_control_stack_map_liveness_impl(function);
+  } catch (const std::bad_alloc&) {
+    return {{StatusCode::kResourceExhausted,
+             "unable to allocate CFG stack-map liveness"},
+            {}};
+  }
 }
 
 }  // namespace unijit::jit::detail

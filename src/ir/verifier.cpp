@@ -91,6 +91,13 @@ Status verify(const Function& function) {
           nodes[node.lhs.id()].type != ValueType::kFloat64) {
         return invalid_node(index, "Float64 nonzero guard is malformed");
       }
+      for (std::size_t previous = 0; previous < index; ++previous) {
+        if ((nodes[previous].opcode == Opcode::kGuardFloatNonzero ||
+             nodes[previous].opcode == Opcode::kSafepoint) &&
+            nodes[previous].immediate == node.immediate) {
+          return invalid_node(index, "runtime exit site is duplicated");
+        }
+      }
       continue;
     }
     if (node.opcode == Opcode::kSafepoint) {
@@ -98,6 +105,13 @@ Status verify(const Function& function) {
           node.lhs.valid() || node.rhs.valid() || node.argument_begin != 0 ||
           node.argument_count != 0) {
         return invalid_node(index, "safepoint node is malformed");
+      }
+      for (std::size_t previous = 0; previous < index; ++previous) {
+        if ((nodes[previous].opcode == Opcode::kGuardFloatNonzero ||
+             nodes[previous].opcode == Opcode::kSafepoint) &&
+            nodes[previous].immediate == node.immediate) {
+          return invalid_node(index, "runtime exit site is duplicated");
+        }
       }
       continue;
     }

@@ -48,6 +48,8 @@ class CodeHandle final {
   std::size_t assumption_count() const noexcept;
   bool assumptions_valid() const noexcept;
   const CompilationStats* compilation_stats() const noexcept;
+  const StackMapTable* stack_maps() const noexcept;
+  const StackMapRecord* stack_map(std::size_t site) const noexcept;
   const runtime::DeoptimizationRecord* deoptimization_record(
       std::size_t site) const noexcept;
   runtime::ReconstructionResult reconstruct_deoptimization(

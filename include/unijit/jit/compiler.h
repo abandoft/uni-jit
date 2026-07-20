@@ -9,6 +9,7 @@
 #include "unijit/ir/control_flow.h"
 #include "unijit/ir/function.h"
 #include "unijit/ir/interpreter.h"
+#include "unijit/jit/stack_map.h"
 #include "unijit/runtime/assumption.h"
 #include "unijit/runtime/deoptimization.h"
 #include "unijit/runtime/execution_context.h"
@@ -24,6 +25,8 @@ struct CompilationStats final {
   std::size_t spill_slots{0};
   std::size_t input_ir_nodes{0};
   std::size_t optimized_ir_nodes{0};
+  std::size_t stack_map_count{0};
+  std::size_t stack_map_value_count{0};
 };
 
 enum class OptimizationLevel : std::uint8_t {
@@ -65,6 +68,10 @@ class CompiledFunction final {
   const runtime::AssumptionSet& assumptions() const noexcept {
     return assumptions_;
   }
+  const StackMapTable& stack_maps() const noexcept { return stack_maps_; }
+  const StackMapRecord* stack_map(std::size_t site) const noexcept {
+    return stack_maps_.find(site);
+  }
 
   const runtime::DeoptimizationTable& deoptimization_table() const noexcept {
     return deoptimization_table_;
@@ -90,7 +97,8 @@ class CompiledFunction final {
                    ir::ValueType return_type, CompilationStats stats,
                    bool requires_context,
                    runtime::DeoptimizationTable deoptimization_table,
-                   runtime::AssumptionSet assumptions) noexcept;
+                   runtime::AssumptionSet assumptions,
+                   StackMapTable stack_maps) noexcept;
 
   std::unique_ptr<Impl> impl_;
   std::size_t parameter_count_{0};
@@ -100,6 +108,7 @@ class CompiledFunction final {
   bool requires_context_{false};
   runtime::DeoptimizationTable deoptimization_table_;
   runtime::AssumptionSet assumptions_;
+  StackMapTable stack_maps_;
 };
 
 struct CompilationResult final {

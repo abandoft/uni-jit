@@ -47,6 +47,14 @@ const CompilationStats* CodeHandle::compilation_stats() const noexcept {
   return function_ == nullptr ? nullptr : &function_->stats();
 }
 
+const StackMapTable* CodeHandle::stack_maps() const noexcept {
+  return function_ == nullptr ? nullptr : &function_->stack_maps();
+}
+
+const StackMapRecord* CodeHandle::stack_map(std::size_t site) const noexcept {
+  return function_ == nullptr ? nullptr : function_->stack_map(site);
+}
+
 const runtime::DeoptimizationRecord* CodeHandle::deoptimization_record(
     std::size_t site) const noexcept {
   return function_ == nullptr ? nullptr

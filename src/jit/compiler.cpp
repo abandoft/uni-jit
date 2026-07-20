@@ -44,6 +44,29 @@ bool has_guard_site(const ir::ControlFlowFunction& function,
                      });
 }
 
+bool has_runtime_exit_site(const ir::Function& function,
+                           std::size_t site) noexcept {
+  return std::any_of(function.nodes().begin(), function.nodes().end(),
+                     [site](const ir::Node& node) {
+                       return (node.opcode ==
+                                   ir::Opcode::kGuardFloatNonzero ||
+                               node.opcode == ir::Opcode::kSafepoint) &&
+                              static_cast<std::size_t>(node.immediate) == site;
+                     });
+}
+
+bool has_runtime_exit_site(const ir::ControlFlowFunction& function,
+                           std::size_t site) noexcept {
+  return std::any_of(function.nodes().begin(), function.nodes().end(),
+                     [site](const ir::ControlNode& node) {
+                       return (node.opcode ==
+                                   ir::ControlOpcode::kGuardFloatNonzero ||
+                               node.opcode ==
+                                   ir::ControlOpcode::kSafepoint) &&
+                              static_cast<std::size_t>(node.immediate) == site;
+                     });
+}
+
 template <typename FunctionType>
 Status append_assumption_deoptimization(
     const FunctionType& function,
@@ -110,9 +133,9 @@ DeoptimizationPreparation prepare_deoptimization(
   }
   for (const runtime::AssumptionDependency& dependency :
        assumptions.dependencies()) {
-    if (has_guard_site(input, dependency.site)) {
+    if (has_runtime_exit_site(input, dependency.site)) {
       return {{StatusCode::kInvalidArgument,
-               "assumption and runtime guard sites must be distinct",
+               "assumption and runtime exit sites must be distinct",
                dependency.site},
               {}};
     }
@@ -180,9 +203,9 @@ DeoptimizationPreparation prepare_deoptimization(
   }
   for (const runtime::AssumptionDependency& dependency :
        assumptions.dependencies()) {
-    if (has_guard_site(function, dependency.site)) {
+    if (has_runtime_exit_site(function, dependency.site)) {
       return {{StatusCode::kInvalidArgument,
-               "assumption and CFG runtime guard sites must be distinct",
+               "assumption and CFG runtime exit sites must be distinct",
                dependency.site},
               {}};
     }
@@ -258,6 +281,15 @@ std::vector<ir::ValueType> copy_parameter_types(
   return result;
 }
 
+std::size_t stack_map_value_count(
+    const std::vector<StackMapRecord>& records) noexcept {
+  std::size_t result = 0;
+  for (const StackMapRecord& record : records) {
+    result += record.live_values.size();
+  }
+  return result;
+}
+
 }  // namespace
 
 struct CompiledFunction::Impl final {
@@ -280,7 +312,8 @@ CompiledFunction::CompiledFunction(std::unique_ptr<Impl> impl,
                                    bool requires_context,
                                    runtime::DeoptimizationTable
                                        deoptimization_table,
-                                   runtime::AssumptionSet assumptions) noexcept
+                                   runtime::AssumptionSet assumptions,
+                                   StackMapTable stack_maps) noexcept
     : impl_(std::move(impl)),
       parameter_count_(parameter_types.size()),
       parameter_types_(std::move(parameter_types)),
@@ -288,7 +321,8 @@ CompiledFunction::CompiledFunction(std::unique_ptr<Impl> impl,
       stats_(stats),
       requires_context_(requires_context),
       deoptimization_table_(std::move(deoptimization_table)),
-      assumptions_(std::move(assumptions)) {}
+      assumptions_(std::move(assumptions)),
+      stack_maps_(std::move(stack_maps)) {}
 
 CompiledFunction::~CompiledFunction() = default;
 CompiledFunction::CompiledFunction(CompiledFunction&&) noexcept = default;
@@ -447,7 +481,8 @@ CompilationResult Compiler::compile(
     CompilationStats stats{lowering.code.size(),
                            implementation->memory.mapping_size(),
                            lowering.spill_slots, function.nodes().size(),
-                           lowered->nodes().size()};
+                           lowered->nodes().size(), lowering.stack_maps.size(),
+                           stack_map_value_count(lowering.stack_maps)};
     const bool requires_context = !assumptions.empty() || std::any_of(
         lowered->nodes().begin(), lowered->nodes().end(),
         [](const ir::Node& node) {
@@ -456,7 +491,8 @@ CompilationResult Compiler::compile(
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
         std::move(implementation), copy_parameter_types(function),
         function.return_type(), stats, requires_context,
-        std::move(deoptimization.table), assumptions));
+        std::move(deoptimization.table), assumptions,
+        StackMapTable(std::move(lowering.stack_maps))));
     return {Status::ok_status(), std::move(compiled)};
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
@@ -528,7 +564,8 @@ CompilationResult Compiler::compile(
     CompilationStats stats{lowering.code.size(),
                            implementation->memory.mapping_size(),
                            lowering.spill_slots, function.nodes().size(),
-                           function.nodes().size()};
+                           function.nodes().size(), lowering.stack_maps.size(),
+                           stack_map_value_count(lowering.stack_maps)};
     const bool requires_context = !assumptions.empty() || std::any_of(
         function.nodes().begin(), function.nodes().end(),
         [](const ir::ControlNode& node) {
@@ -538,7 +575,8 @@ CompilationResult Compiler::compile(
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
         std::move(implementation), copy_parameter_types(function),
         function.return_type(), stats, requires_context,
-        std::move(deoptimization.table), assumptions));
+        std::move(deoptimization.table), assumptions,
+        StackMapTable(std::move(lowering.stack_maps))));
     return {Status::ok_status(), std::move(compiled)};
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,

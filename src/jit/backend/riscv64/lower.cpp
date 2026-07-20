@@ -366,6 +366,46 @@ void restore_live_across_call(Assembler* assembler,
   }
 }
 
+void spill_straight_stack_map_values(
+    Assembler* assembler, const ir::Function& function,
+    const RegisterAllocation& allocation,
+    const std::vector<ir::Value>& live_values,
+    std::size_t stack_map_base) {
+  for (const ir::Value value : live_values) {
+    const ValueLocation& location = allocation.locations[value.id()];
+    const std::size_t offset =
+        (stack_map_base + value.id()) * sizeof(ir::Word);
+    if (function.value_type(value) == ir::ValueType::kFloat64) {
+      const int source =
+          load_float_operand(assembler, location, kFloatScratch0);
+      assembler->store_float(source, kStackPointer, offset);
+    } else {
+      const int source = load_operand(assembler, location, kScratch0);
+      assembler->store(source, kStackPointer, offset);
+    }
+  }
+}
+
+StackMapRecord make_stack_map_record(
+    const ir::Function& function, const ir::Node& node,
+    const std::vector<ir::Value>& live_values, std::size_t native_offset,
+    std::size_t frame_size, std::size_t stack_map_base) {
+  StackMapRecord record;
+  record.site = static_cast<std::size_t>(node.immediate);
+  record.native_offset = native_offset;
+  record.frame_size = frame_size;
+  record.kind = node.opcode == ir::Opcode::kSafepoint
+                    ? StackMapKind::kSafepoint
+                    : StackMapKind::kGuard;
+  record.live_values.reserve(live_values.size());
+  for (const ir::Value value : live_values) {
+    record.live_values.push_back(
+        {value, function.value_type(value),
+         (stack_map_base + value.id()) * sizeof(ir::Word)});
+  }
+  return record;
+}
+
 LoweringResult lower_impl(const ir::Function& function) {
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
   return {{StatusCode::kUnsupportedArchitecture,
@@ -384,7 +424,12 @@ LoweringResult lower_impl(const ir::Function& function) {
       allocate_linear_scan(function, kAllocationRegisters.size(),
                            kMaximumStackSize / sizeof(ir::Word));
   if (!allocation.status.ok()) {
-    return {allocation.status, {}, 0};
+    return {allocation.status, {}, 0, {}};
+  }
+  StackMapLiveness stack_map_liveness =
+      plan_stack_map_liveness(function, allocation);
+  if (!stack_map_liveness.status.ok()) {
+    return {stack_map_liveness.status, {}, 0, {}};
   }
 
   std::size_t maximum_call_arguments = 0;
@@ -406,8 +451,11 @@ LoweringResult lower_impl(const ir::Function& function) {
       call_argument_base + maximum_call_arguments;
   const std::size_t context_slot =
       return_address_slot + static_cast<std::size_t>(has_calls);
-  const std::size_t total_slots =
+  const std::size_t stack_map_base =
       context_slot + static_cast<std::size_t>(has_context_operations);
+  const std::size_t total_slots =
+      stack_map_base +
+      (has_context_operations ? function.nodes().size() : 0);
   if (total_slots > kMaximumStackSize / sizeof(ir::Word)) {
     return {{StatusCode::kResourceExhausted,
              "RISC-V runtime-call frame exceeds the backend limit"},
@@ -431,9 +479,21 @@ LoweringResult lower_impl(const ir::Function& function) {
                     context_slot * sizeof(ir::Word));
   }
 
+  std::vector<StackMapRecord> stack_maps;
+
   for (std::size_t index = 0; index < function.nodes().size(); ++index) {
     const ir::Node& node = function.nodes()[index];
     const ValueLocation& destination = allocation.locations[index];
+    if (node.opcode == ir::Opcode::kSafepoint ||
+        node.opcode == ir::Opcode::kGuardFloatNonzero) {
+      const std::vector<ir::Value>& live_values =
+          stack_map_liveness.live_values_by_node[index];
+      spill_straight_stack_map_values(&assembler, function, allocation,
+                                      live_values, stack_map_base);
+      stack_maps.push_back(make_stack_map_record(
+          function, node, live_values, assembler.size(), stack_size,
+          stack_map_base));
+    }
     switch (node.opcode) {
       case ir::Opcode::kParameter: {
         if (node.type == ir::ValueType::kFloat64) {
@@ -725,7 +785,8 @@ LoweringResult lower_impl(const ir::Function& function) {
   if (!literals.ok()) {
     return {literals, {}, 0};
   }
-  return {Status::ok_status(), assembler.take_code(), total_slots};
+  return {Status::ok_status(), assembler.take_code(), total_slots,
+          std::move(stack_maps)};
 }
 
 struct BranchFixup final {
@@ -758,6 +819,38 @@ int load_control_value(Assembler* assembler,
   }
   assembler->load(scratch, kStackPointer, control_spill_offset(value.id()));
   return scratch;
+}
+
+void spill_control_stack_map_values(
+    Assembler* assembler, const ControlFlowRegisterAllocation& allocation,
+    const std::vector<ir::Value>& live_values, std::size_t current_block) {
+  for (const ir::Value value : live_values) {
+    const int source =
+        control_value_register(allocation, value, current_block);
+    if (source >= 0) {
+      assembler->store(source, kStackPointer,
+                       control_spill_offset(value.id()));
+    }
+  }
+}
+
+StackMapRecord make_stack_map_record(
+    const ir::ControlFlowFunction& function, const ir::ControlNode& node,
+    const std::vector<ir::Value>& live_values, std::size_t native_offset,
+    std::size_t frame_size) {
+  StackMapRecord record;
+  record.site = static_cast<std::size_t>(node.immediate);
+  record.native_offset = native_offset;
+  record.frame_size = frame_size;
+  record.kind = node.opcode == ir::ControlOpcode::kSafepoint
+                    ? StackMapKind::kSafepoint
+                    : StackMapKind::kGuard;
+  record.live_values.reserve(live_values.size());
+  for (const ir::Value value : live_values) {
+    record.live_values.push_back(
+        {value, function.value_type(value), control_spill_offset(value.id())});
+  }
+  return record;
 }
 
 void copy_edge_arguments(Assembler* assembler,
@@ -858,7 +951,11 @@ LoweringResult lower_control_flow_impl(
   ControlFlowRegisterAllocation allocation = allocate_control_flow_registers(
       function, kAllocationRegisters.size());
   if (!allocation.status.ok()) {
-    return {allocation.status, {}, 0};
+    return {allocation.status, {}, 0, {}};
+  }
+  StackMapLiveness stack_map_liveness = plan_stack_map_liveness(function);
+  if (!stack_map_liveness.status.ok()) {
+    return {stack_map_liveness.status, {}, 0, {}};
   }
 
   Assembler assembler;
@@ -874,6 +971,7 @@ LoweringResult lower_control_flow_impl(
   const std::size_t no_label = std::numeric_limits<std::size_t>::max();
   std::vector<std::size_t> labels(function.blocks().size(), no_label);
   std::vector<BranchFixup> fixups;
+  std::vector<StackMapRecord> stack_maps;
   const std::size_t temporary_base = function.nodes().size();
 
   for (std::size_t block_index = 0; block_index < function.blocks().size();
@@ -886,6 +984,15 @@ LoweringResult lower_control_flow_impl(
       const int allocated =
           control_value_register(allocation, value, block_index);
       const int destination = allocated >= 0 ? allocated : kScratch0;
+      if (node.opcode == ir::ControlOpcode::kSafepoint ||
+          node.opcode == ir::ControlOpcode::kGuardFloatNonzero) {
+        const std::vector<ir::Value>& live_values =
+            stack_map_liveness.live_values_by_node[value.id()];
+        spill_control_stack_map_values(&assembler, allocation, live_values,
+                                       block_index);
+        stack_maps.push_back(make_stack_map_record(
+            function, node, live_values, assembler.size(), stack_size));
+      }
       switch (node.opcode) {
         case ir::ControlOpcode::kParameter:
           assembler.load(
@@ -1122,7 +1229,8 @@ LoweringResult lower_control_flow_impl(
   if (!literals.ok()) {
     return {literals, {}, 0};
   }
-  return {Status::ok_status(), assembler.take_code(), total_slots};
+  return {Status::ok_status(), assembler.take_code(), total_slots,
+          std::move(stack_maps)};
 }
 
 }  // namespace
