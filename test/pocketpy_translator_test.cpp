@@ -254,6 +254,60 @@ int main() {
     return EXIT_FAILURE;
   }
 
+  constexpr std::array<const char*, 3> kStridedLoopSources = {
+      "def two_argument_range():\n"
+      "    sum = 0.0\n"
+      "    for iteration in range(2.0, 8.0):\n"
+      "        sum += iteration\n"
+      "    return sum\n",
+      "def stepped_range():\n"
+      "    sum = 0.0\n"
+      "    for iteration in range(1.0, 10.0, 2.0):\n"
+      "        if iteration > 5.0:\n"
+      "            break\n"
+      "        sum += iteration\n"
+      "    return sum\n",
+      "def descending_range():\n"
+      "    sum = 0.0\n"
+      "    for iteration in range(10.0, -1.0, -2.0):\n"
+      "        if iteration < 4.0:\n"
+      "            continue\n"
+      "        sum += iteration\n"
+      "    return sum\n"};
+  constexpr std::array<double, 3> kStridedLoopResults = {27.0, 9.0, 28.0};
+  for (std::size_t index = 0; index < kStridedLoopSources.size(); ++index) {
+    const auto strided =
+        unijit::frontend::pocketpy::translate_numeric_function(
+            kStridedLoopSources[index]);
+    const auto strided_result =
+        strided.ok() ? strided.function->invoke(nullptr, 0)
+                     : unijit::ir::EvaluationResult{};
+    if (!strided.ok() || !strided_result.ok() ||
+        strided_result.value !=
+            unijit::ir::pack_float64(kStridedLoopResults[index])) {
+      std::cerr << "PocketPy strided range semantics were not preserved: "
+                << strided.status.message() << '\n';
+      return EXIT_FAILURE;
+    }
+  }
+  constexpr std::array<const char*, 2> kRejectedRangeSteps = {
+      "def zero_step():\n"
+      "    sum = 0.0\n"
+      "    for iteration in range(0.0, 10.0, 0.0):\n"
+      "        sum += iteration\n"
+      "    return sum\n",
+      "def dynamic_step(step):\n"
+      "    sum = 0.0\n"
+      "    for iteration in range(0.0, 10.0, step):\n"
+      "        sum += iteration\n"
+      "    return sum\n"};
+  for (const char *source : kRejectedRangeSteps) {
+    if (unijit::frontend::pocketpy::translate_numeric_function(source).ok()) {
+      std::cerr << "PocketPy accepted an unsupported range step\n";
+      return EXIT_FAILURE;
+    }
+  }
+
   constexpr char kLoopDivisionSource[] =
       "def divide_loop(count, divisor):\n"
       "    quotient = 12.0\n"
