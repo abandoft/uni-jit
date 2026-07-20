@@ -12,7 +12,8 @@ add_library(unijit
   jit/tiering.cpp
   runtime/assumption.cpp
   runtime/deoptimization.cpp
-  runtime/materialization.cpp)
+  runtime/materialization.cpp
+  runtime/on_stack_replacement.cpp)
 
 set(UNIJIT_PROCESSOR "${CMAKE_SYSTEM_PROCESSOR}")
 if(APPLE AND CMAKE_OSX_ARCHITECTURES)
