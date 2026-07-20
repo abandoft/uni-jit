@@ -20,6 +20,16 @@ std::size_t CodeHandle::parameter_count() const noexcept {
   return function_ == nullptr ? 0 : function_->parameter_count();
 }
 
+ir::ValueType CodeHandle::parameter_type(std::size_t index) const noexcept {
+  return function_ == nullptr ? ir::ValueType::kWord
+                              : function_->parameter_type(index);
+}
+
+ir::ValueType CodeHandle::return_type() const noexcept {
+  return function_ == nullptr ? ir::ValueType::kWord
+                              : function_->return_type();
+}
+
 bool CodeHandle::requires_context() const noexcept {
   return function_ != nullptr && function_->requires_context();
 }

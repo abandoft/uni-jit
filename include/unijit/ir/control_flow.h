@@ -101,6 +101,14 @@ public:
                ? nodes_[value.id()].type
                : ValueType::kWord;
   }
+  ValueType return_type() const noexcept {
+    for (const BasicBlock &block : blocks_) {
+      if (block.terminator.opcode == TerminatorOpcode::kReturn) {
+        return value_type(block.terminator.value);
+      }
+    }
+    return ValueType::kWord;
+  }
   Block entry_block() const noexcept { return entry_block_; }
   const std::vector<ControlNode> &nodes() const noexcept { return nodes_; }
   const std::vector<BasicBlock> &blocks() const noexcept { return blocks_; }

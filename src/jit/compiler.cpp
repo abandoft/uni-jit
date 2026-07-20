@@ -247,6 +247,17 @@ ir::EvaluationResult finish_invocation(
           value};
 }
 
+template <typename FunctionType>
+std::vector<ir::ValueType> copy_parameter_types(
+    const FunctionType& function) {
+  std::vector<ir::ValueType> result;
+  result.reserve(function.parameter_count());
+  for (std::size_t index = 0; index < function.parameter_count(); ++index) {
+    result.push_back(function.parameter_type(index));
+  }
+  return result;
+}
+
 }  // namespace
 
 struct CompiledFunction::Impl final {
@@ -263,14 +274,17 @@ struct CompiledFunction::Impl final {
 };
 
 CompiledFunction::CompiledFunction(std::unique_ptr<Impl> impl,
-                                   std::size_t parameter_count,
+                                   std::vector<ir::ValueType> parameter_types,
+                                   ir::ValueType return_type,
                                    CompilationStats stats,
                                    bool requires_context,
                                    runtime::DeoptimizationTable
                                        deoptimization_table,
                                    runtime::AssumptionSet assumptions) noexcept
     : impl_(std::move(impl)),
-      parameter_count_(parameter_count),
+      parameter_count_(parameter_types.size()),
+      parameter_types_(std::move(parameter_types)),
+      return_type_(return_type),
       stats_(stats),
       requires_context_(requires_context),
       deoptimization_table_(std::move(deoptimization_table)),
@@ -440,8 +454,9 @@ CompilationResult Compiler::compile(
           return node.opcode == ir::Opcode::kGuardFloatNonzero;
         });
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
-        std::move(implementation), function.parameter_count(), stats,
-        requires_context, std::move(deoptimization.table), assumptions));
+        std::move(implementation), copy_parameter_types(function),
+        function.return_type(), stats, requires_context,
+        std::move(deoptimization.table), assumptions));
     return {Status::ok_status(), std::move(compiled)};
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
@@ -521,8 +536,9 @@ CompilationResult Compiler::compile(
                  node.opcode == ir::ControlOpcode::kGuardFloatNonzero;
         });
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
-        std::move(implementation), function.parameter_count(), stats,
-        requires_context, std::move(deoptimization.table), assumptions));
+        std::move(implementation), copy_parameter_types(function),
+        function.return_type(), stats, requires_context,
+        std::move(deoptimization.table), assumptions));
     return {Status::ok_status(), std::move(compiled)};
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,

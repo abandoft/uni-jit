@@ -42,6 +42,8 @@ class CodeHandle final {
 
   std::uint64_t generation() const noexcept { return generation_; }
   std::size_t parameter_count() const noexcept;
+  ir::ValueType parameter_type(std::size_t index) const noexcept;
+  ir::ValueType return_type() const noexcept;
   bool requires_context() const noexcept;
   std::size_t assumption_count() const noexcept;
   bool assumptions_valid() const noexcept;

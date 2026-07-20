@@ -284,7 +284,15 @@ Status TieredCode::publish_optimized(CodeHandle optimized,
       return {StatusCode::kInvalidArgument,
               "tiered generation changed during optimized compilation"};
     }
-    if (optimized.parameter_count() != previous->baseline.parameter_count()) {
+    bool signature_matches =
+        optimized.parameter_count() == previous->baseline.parameter_count() &&
+        optimized.return_type() == previous->baseline.return_type();
+    for (std::size_t index = 0;
+         signature_matches && index < optimized.parameter_count(); ++index) {
+      signature_matches = optimized.parameter_type(index) ==
+                          previous->baseline.parameter_type(index);
+    }
+    if (!signature_matches) {
       return {StatusCode::kInvalidArgument,
               "optimized and baseline signatures do not match"};
     }

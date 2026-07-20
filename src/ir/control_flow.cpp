@@ -65,6 +65,8 @@ Status verify_impl(const ControlFlowFunction &function) {
   std::vector<std::size_t> position(nodes.size(), 0);
   std::vector<std::vector<std::size_t>> predecessors(blocks.size());
 
+  bool has_return = false;
+  ValueType return_type = ValueType::kWord;
   for (std::size_t block_index = 0; block_index < blocks.size();
        ++block_index) {
     const BasicBlock &block = blocks[block_index];
@@ -288,6 +290,16 @@ Status verify_impl(const ControlFlowFunction &function) {
         return invalid_control_flow(
             block_index, "terminator value is unavailable in its block");
       }
+    }
+    if (terminator.opcode == TerminatorOpcode::kReturn) {
+      const ValueType current_return_type =
+          function.value_type(terminator.value);
+      if (has_return && current_return_type != return_type) {
+        return invalid_control_flow(
+            block_index, "CFG return values have inconsistent types");
+      }
+      has_return = true;
+      return_type = current_return_type;
     }
     if (terminator.opcode == TerminatorOpcode::kBranch &&
         function.value_type(terminator.value) != ValueType::kWord) {

@@ -83,6 +83,8 @@ void test_code_cache_lifecycle() {
   expect(first.ok() && first.cached && !first.reused,
          "code cache must publish a new compiled function");
   expect(first.handle.parameter_count() == 0 &&
+             first.handle.return_type() ==
+                 unijit::ir::ValueType::kWord &&
              first.handle.compilation_stats() != nullptr &&
              first.handle.compilation_stats()->executable_mapping_size >=
                  first.handle.compilation_stats()->code_size,
@@ -1208,6 +1210,10 @@ void test_control_flow_float64_loop() {
   auto compilation = Compiler::compile(function);
   expect(compilation.ok(), "typed Float64 CFG must compile to native code");
   if (compilation.ok()) {
+    expect(compilation.function->return_type() == ValueType::kFloat64 &&
+               compilation.function->parameter_type(0) == ValueType::kWord &&
+               compilation.function->parameter_type(1) == ValueType::kFloat64,
+           "compiled CFG must retain its complete typed signature");
     const auto native =
         compilation.function->invoke(arguments.data(), arguments.size());
     expect(native.ok() && native.value == interpreted.value,
@@ -1323,6 +1329,23 @@ void test_control_flow_rejects_mixed_edge_types() {
       builder.create_block(std::vector<ValueType>{ValueType::kFloat64});
   expect(!builder.jump(target, {builder.constant(1)}).ok(),
          "CFG builder must reject a Word edge argument for Float64 parameter");
+}
+
+void test_control_flow_rejects_mixed_return_types() {
+  unijit::ir::ControlFlowBuilder builder(0);
+  const unijit::ir::Block word_return = builder.create_block(0);
+  const unijit::ir::Block float_return = builder.create_block(0);
+  expect(builder.branch(builder.constant(1), word_return, {}, float_return, {})
+             .ok(),
+         "mixed-return fixture must branch to both return blocks");
+  expect(builder.set_insertion_block(word_return).ok() &&
+             builder.set_return(builder.constant(1)).ok(),
+         "mixed-return fixture must create its Word return");
+  expect(builder.set_insertion_block(float_return).ok() &&
+             builder.set_return(builder.float64_constant(1.0)).ok(),
+         "mixed-return fixture must create its Float64 return");
+  expect(!unijit::ir::verify(std::move(builder).build()).ok(),
+         "CFG verifier must reject inconsistent return types");
 }
 
 void test_control_flow_float64_comparisons() {
@@ -1793,6 +1816,40 @@ void test_hotness_and_tiered_switching() {
              baseline_snapshot.generation != 0,
          "tiered baseline publication must expose a stable generation");
 
+  FunctionBuilder return_mismatch_builder(1);
+  expect(return_mismatch_builder
+             .set_return(return_mismatch_builder.float64_constant(1.0))
+             .ok(),
+         "return-mismatch fixture must record its Float64 result");
+  auto return_mismatch_compilation =
+      Compiler::compile(std::move(return_mismatch_builder).build());
+  auto return_mismatch_publication = cache.publish(
+      "tiered-return-mismatch", 1,
+      std::move(return_mismatch_compilation.function));
+  expect(return_mismatch_publication.ok() &&
+             !tiered.publish_optimized(return_mismatch_publication.handle,
+                                       baseline_snapshot.generation)
+                  .ok(),
+         "tiered publication must reject a mismatched return type");
+
+  FunctionBuilder parameter_mismatch_builder(
+      std::vector<unijit::ir::ValueType>{
+          unijit::ir::ValueType::kFloat64});
+  expect(parameter_mismatch_builder
+             .set_return(parameter_mismatch_builder.constant(1))
+             .ok(),
+         "parameter-mismatch fixture must record its Word result");
+  auto parameter_mismatch_compilation =
+      Compiler::compile(std::move(parameter_mismatch_builder).build());
+  auto parameter_mismatch_publication = cache.publish(
+      "tiered-parameter-mismatch", 1,
+      std::move(parameter_mismatch_compilation.function));
+  expect(parameter_mismatch_publication.ok() &&
+             !tiered.publish_optimized(parameter_mismatch_publication.handle,
+                                       baseline_snapshot.generation)
+                  .ok(),
+         "tiered publication must reject mismatched parameter types");
+
   for (std::size_t invocation = 0; invocation < 2; ++invocation) {
     const auto result = tiered.invoke(arguments.data(), arguments.size());
     expect(result.ok() && result.result.value == 42 &&
@@ -2220,6 +2277,7 @@ int main() {
   test_control_flow_float64_loop();
   test_control_flow_float64_guard_deoptimization();
   test_control_flow_rejects_mixed_edge_types();
+  test_control_flow_rejects_mixed_return_types();
   test_control_flow_float64_comparisons();
   test_control_flow_merge();
   test_control_flow_parallel_edge_copy();

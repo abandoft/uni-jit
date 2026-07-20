@@ -56,6 +56,11 @@ class CompiledFunction final {
 
   NativeEntry native_entry() const noexcept;
   std::size_t parameter_count() const noexcept { return parameter_count_; }
+  ir::ValueType parameter_type(std::size_t index) const noexcept {
+    return index < parameter_types_.size() ? parameter_types_[index]
+                                           : ir::ValueType::kWord;
+  }
+  ir::ValueType return_type() const noexcept { return return_type_; }
   bool requires_context() const noexcept { return requires_context_; }
   const runtime::AssumptionSet& assumptions() const noexcept {
     return assumptions_;
@@ -80,13 +85,17 @@ class CompiledFunction final {
   struct Impl;
   friend class Compiler;
 
-  CompiledFunction(std::unique_ptr<Impl> impl, std::size_t parameter_count,
-                   CompilationStats stats, bool requires_context,
+  CompiledFunction(std::unique_ptr<Impl> impl,
+                   std::vector<ir::ValueType> parameter_types,
+                   ir::ValueType return_type, CompilationStats stats,
+                   bool requires_context,
                    runtime::DeoptimizationTable deoptimization_table,
                    runtime::AssumptionSet assumptions) noexcept;
 
   std::unique_ptr<Impl> impl_;
   std::size_t parameter_count_{0};
+  std::vector<ir::ValueType> parameter_types_;
+  ir::ValueType return_type_{ir::ValueType::kWord};
   CompilationStats stats_;
   bool requires_context_{false};
   runtime::DeoptimizationTable deoptimization_table_;
