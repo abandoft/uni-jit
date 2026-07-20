@@ -1,5 +1,6 @@
 #include "counted_loop_translator.h"
 
+#include <cmath>
 #include <cstdlib>
 #include <new>
 #include <string>
@@ -127,7 +128,9 @@ public:
                              "counted-loop induction state is unavailable"));
     }
     const ir::Value condition =
-        builder_->float64_less_than(induction->value, count_value_);
+        ascending_range_
+            ? builder_->float64_less_than(induction->value, range_limit_)
+            : builder_->float64_less_than(range_limit_, induction->value);
     if (!condition.valid() ||
         !builder_->branch(condition, body, {}, exit, header_values).ok() ||
         !builder_->set_insertion_block(body).ok() ||
@@ -149,7 +152,7 @@ public:
     }
     induction = symbol(induction_name_);
     induction->value = builder_->float64_add(
-        induction->value, builder_->float64_constant(1.0));
+        induction->value, range_step_);
     if (!induction->value.valid() ||
         !builder_->jump(header, loop_values()).ok()) {
       return fail(invalid_at(safepoint_site,
@@ -377,17 +380,87 @@ private:
     range.remove_prefix(kRangePrefix.size());
     range.remove_suffix(1);
     range = trim(range);
-    set_expression(range, line.offset + line.text.find(range));
-    count_value_ = parse_expression(0);
-    if (!count_value_.valid() || !expression_finished()) {
+    const std::size_t range_offset =
+        line.offset + static_cast<std::size_t>(range.data() - line.text.data());
+    std::vector<std::string_view> arguments;
+    std::size_t argument_begin = 0;
+    std::size_t parenthesis_depth = 0;
+    for (std::size_t index = 0; index <= range.size(); ++index) {
+      const char character = index < range.size() ? range[index] : ',';
+      if (character == '(') {
+        ++parenthesis_depth;
+      } else if (character == ')') {
+        if (parenthesis_depth == 0) {
+          invalid_at(range_offset + index,
+                     "unmatched parenthesis in range arguments");
+          return false;
+        }
+        --parenthesis_depth;
+      }
+      if (character == ',' && parenthesis_depth == 0) {
+        const std::string_view argument =
+            trim(range.substr(argument_begin, index - argument_begin));
+        if (argument.empty() || arguments.size() == 3) {
+          invalid_at(range_offset + argument_begin,
+                     "range requires one to three nonempty arguments");
+          return false;
+        }
+        arguments.push_back(argument);
+        argument_begin = index + 1;
+      }
+    }
+    if (parenthesis_depth != 0 || arguments.empty()) {
+      invalid_at(range_offset, "invalid range argument list");
+      return false;
+    }
+
+    const auto parse_range_expression =
+        [this, range, range_offset](std::string_view argument) {
+          set_expression(
+              argument,
+              range_offset +
+                  static_cast<std::size_t>(argument.data() - range.data()));
+          const ir::Value value = parse_expression(0);
+          if (!value.valid() || !expression_finished()) {
+            if (status_.ok()) {
+              invalid_expression("unexpected token in range argument");
+            }
+            return ir::Value{};
+          }
+          return value;
+        };
+
+    if (arguments.size() == 1) {
+      range_initial_ = builder_->float64_constant(0.0);
+      range_limit_ = parse_range_expression(arguments[0]);
+    } else {
+      range_initial_ = parse_range_expression(arguments[0]);
+      range_limit_ = parse_range_expression(arguments[1]);
+    }
+    double step = 1.0;
+    if (arguments.size() == 3) {
+      const std::string token(arguments[2]);
+      char *end = nullptr;
+      step = std::strtod(token.c_str(), &end);
+      if (end == nullptr || *end != '\0' || !std::isfinite(step) ||
+          step == 0.0) {
+        invalid_at(range_offset + static_cast<std::size_t>(
+                                      arguments[2].data() - range.data()),
+                   "range step must be a finite nonzero numeric literal");
+        return false;
+      }
+    }
+    range_step_ = builder_->float64_constant(step);
+    ascending_range_ = step > 0.0;
+    if (!range_initial_.valid() || !range_limit_.valid() ||
+        !range_step_.valid()) {
       if (status_.ok()) {
-        invalid_expression("unexpected token in range bound");
+        invalid_at(range_offset, "unable to lower range arguments");
       }
       return false;
     }
     induction_name_.assign(induction);
-    return add_loop_local(induction_name_, builder_->float64_constant(0.0),
-                          line.offset);
+    return add_loop_local(induction_name_, range_initial_, line.offset);
   }
 
   std::vector<ir::Value> loop_values() const {
@@ -846,7 +919,10 @@ private:
   std::vector<Symbol> symbols_;
   std::vector<std::size_t> loop_symbol_indices_;
   std::string induction_name_;
-  ir::Value count_value_;
+  ir::Value range_initial_;
+  ir::Value range_limit_;
+  ir::Value range_step_;
+  bool ascending_range_{true};
   ir::Block continue_target_;
   ir::Block break_target_;
   std::unique_ptr<ir::ControlFlowBuilder> builder_;
