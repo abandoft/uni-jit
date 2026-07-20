@@ -53,9 +53,15 @@ int main() {
   constexpr char kNativeSource[] =
       "import unijit\n"
       "native = unijit.compile(\"def affine(a, b): return (a + 2.5) * "
-      "(b - -3)\")\n"
-      "result = native(1.5, 4)\n";
+      "(b - -3)\")\n";
   if (!py_exec(kNativeSource, "<unijit-pocketpy-native>", EXEC_MODE, nullptr)) {
+    py_printexc();
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  (void)py_gc_collect();
+  if (!py_exec("result = native(1.5, 4)", "<unijit-pocketpy-call>",
+               EXEC_MODE, nullptr)) {
     py_printexc();
     py_finalize();
     return EXIT_FAILURE;
