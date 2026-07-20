@@ -33,7 +33,8 @@ bool is_identifier_continue(char value) noexcept {
 
 class Parser final {
  public:
-  explicit Parser(std::string_view source) : source_(source) {}
+  Parser(std::string_view source, jit::OptimizationLevel optimization_level)
+      : source_(source), optimization_level_(optimization_level) {}
 
   TranslationResult translate() {
     if (source_.size() > kMaximumSourceBytes) {
@@ -83,8 +84,9 @@ class Parser final {
     }
 
     const std::size_t parameter_count = parameters_.size();
-    jit::CompilationResult compilation =
-        jit::Compiler::compile(std::move(*builder_).build());
+    jit::CompilationResult compilation = jit::Compiler::compile(
+        std::move(*builder_).build(),
+        jit::CompilationOptions{optimization_level_});
     if (!compilation.ok()) {
       return {compilation.status, parameter_count, nullptr};
     }
@@ -316,6 +318,7 @@ class Parser final {
   }
 
   std::string_view source_;
+  jit::OptimizationLevel optimization_level_;
   std::size_t position_{0};
   Status status_;
   std::vector<std::string> parameters_;
@@ -324,17 +327,22 @@ class Parser final {
 
 }  // namespace
 
-TranslationResult translate_numeric_function(std::string_view source) {
+TranslationResult translate_numeric_function(
+    std::string_view source, jit::OptimizationLevel optimization_level) {
   try {
     if (looks_like_counted_loop(source)) {
       return translate_counted_loop(source);
     }
-    return Parser(source).translate();
+    return Parser(source, optimization_level).translate();
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate QuickJS translation state"},
             0, nullptr};
   }
+}
+
+bool supports_tiered_translation(std::string_view source) noexcept {
+  return !looks_like_counted_loop(source);
 }
 
 }  // namespace unijit::frontend::quickjs
