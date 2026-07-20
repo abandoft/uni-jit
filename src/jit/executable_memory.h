@@ -24,6 +24,7 @@ class ExecutableMemory final {
 
   void* address() const noexcept { return address_; }
   std::size_t size() const noexcept { return code_size_; }
+  std::size_t mapping_size() const noexcept { return mapping_size_; }
 
  private:
   void release() noexcept;

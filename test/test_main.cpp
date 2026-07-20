@@ -1,11 +1,13 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
 #include <random>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -13,6 +15,7 @@
 #include "unijit/ir/function.h"
 #include "unijit/ir/interpreter.h"
 #include "unijit/ir/optimizer.h"
+#include "unijit/jit/code_cache.h"
 #include "unijit/jit/compiler.h"
 
 namespace {
@@ -51,6 +54,161 @@ void expect(bool condition, const std::string& message) {
     std::cerr << "FAIL: " << message << '\n';
     ++failures;
   }
+}
+
+std::unique_ptr<unijit::jit::CompiledFunction> compile_constant(Word value) {
+  FunctionBuilder builder(0);
+  const Value result = builder.constant(value);
+  if (!builder.set_return(result).ok()) {
+    return nullptr;
+  }
+  auto compilation = Compiler::compile(std::move(builder).build());
+  return compilation.ok() ? std::move(compilation.function) : nullptr;
+}
+
+void test_code_cache_lifecycle() {
+  using unijit::jit::CodeCache;
+  using unijit::jit::CodeCacheLimits;
+  using unijit::jit::CodeHandle;
+
+  CodeCache cache(CodeCacheLimits{2, 1024U * 1024U});
+  auto first = cache.publish("alpha", 1, compile_constant(11));
+  expect(first.ok() && first.cached && !first.reused,
+         "code cache must publish a new compiled function");
+  expect(first.handle.parameter_count() == 0 &&
+             first.handle.compilation_stats() != nullptr &&
+             first.handle.compilation_stats()->executable_mapping_size >=
+                 first.handle.compilation_stats()->code_size,
+         "code handles must expose immutable compilation metadata");
+  const CodeHandle first_lease = first.handle;
+
+  const CodeHandle first_hit = cache.find("alpha", 1);
+  const auto first_result = first_hit.invoke(nullptr, 0);
+  expect(first_result.ok() && first_result.value == 11,
+         "code-cache lookup must return callable native code");
+  expect(!cache.find("alpha", 2).valid(),
+         "code-cache lookup must reject a mismatched fingerprint");
+
+  auto reused = cache.publish("alpha", 1, compile_constant(99));
+  const auto reused_result = reused.handle.invoke(nullptr, 0);
+  expect(reused.ok() && reused.cached && reused.reused &&
+             reused.handle.generation() == first.handle.generation() &&
+             reused_result.ok() && reused_result.value == 11,
+         "duplicate publication must reuse the resident generation");
+
+  auto replacement = cache.publish("alpha", 2, compile_constant(22));
+  const auto replacement_result = replacement.handle.invoke(nullptr, 0);
+  const auto stale_result = first_lease.invoke(nullptr, 0);
+  expect(replacement.ok() && replacement.cached && !replacement.reused &&
+             replacement.handle.generation() != first.handle.generation() &&
+             replacement_result.ok() && replacement_result.value == 22,
+         "new fingerprints must replace the resident generation");
+  expect(stale_result.ok() && stale_result.value == 11,
+         "replacement must not reclaim an active code lease");
+
+  expect(!cache.invalidate("alpha", 1) && cache.invalidate("alpha", 2) &&
+             !cache.find("alpha", 2).valid(),
+         "fingerprinted invalidation must only remove the matching entry");
+  const auto invalidated_lease_result = replacement.handle.invoke(nullptr, 0);
+  expect(invalidated_lease_result.ok() && invalidated_lease_result.value == 22,
+         "invalidated code must remain callable through an active lease");
+
+  auto beta = cache.publish("beta", 1, compile_constant(31));
+  auto gamma = cache.publish("gamma", 1, compile_constant(32));
+  expect(beta.ok() && gamma.ok() && cache.find("beta", 1).valid(),
+         "LRU fixture must populate and touch two entries");
+  auto delta = cache.publish("delta", 1, compile_constant(33));
+  expect(delta.ok() && cache.find("beta", 1).valid() &&
+             !cache.find("gamma", 1).valid() &&
+             cache.find("delta", 1).valid(),
+         "entry budget must evict the least-recently-used generation");
+
+  const CodeHandle surviving_clear = beta.handle;
+  cache.clear();
+  const auto clear_result = surviving_clear.invoke(nullptr, 0);
+  const auto statistics = cache.stats();
+  expect(clear_result.ok() && clear_result.value == 31,
+         "cache clear must preserve active code leases");
+  expect(statistics.resident_entries == 0 &&
+             statistics.resident_code_bytes == 0 &&
+             statistics.hits >= 4 && statistics.misses >= 3 &&
+             statistics.publication_reuses == 1 &&
+             statistics.replacements == 1 &&
+             statistics.invalidations == 1 && statistics.evictions == 1 &&
+             statistics.clears == 1,
+         "code cache must report bounded lifecycle metrics");
+
+  CodeCache disabled(CodeCacheLimits{0, 0});
+  auto uncached = disabled.publish("bounded", 1, compile_constant(41));
+  const auto uncached_result = uncached.handle.invoke(nullptr, 0);
+  expect(uncached.ok() && !uncached.cached && uncached_result.ok() &&
+             uncached_result.value == 41 &&
+             disabled.stats().uncached_publications == 1,
+         "disabled caching must still return an owned callable lease");
+
+  CodeHandle surviving_cache;
+  {
+    CodeCache temporary;
+    auto publication =
+        temporary.publish("survivor", 7, compile_constant(77));
+    surviving_cache = publication.handle;
+  }
+  const auto destroyed_cache_result = surviving_cache.invoke(nullptr, 0);
+  expect(destroyed_cache_result.ok() && destroyed_cache_result.value == 77,
+         "destroying a cache must not reclaim an active lease");
+}
+
+void test_code_cache_concurrency() {
+  using unijit::jit::CodeCache;
+  using unijit::jit::CodeCacheLimits;
+
+  CodeCache cache(CodeCacheLimits{2, 1024U * 1024U});
+  expect(cache.publish("hot", 1, compile_constant(101)).ok(),
+         "concurrent cache fixture must publish its first generation");
+
+  std::atomic<bool> start{false};
+  std::atomic<std::size_t> errors{0};
+  std::vector<std::thread> readers;
+  for (std::size_t thread_index = 0; thread_index < 4; ++thread_index) {
+    readers.emplace_back([&] {
+      while (!start.load(std::memory_order_acquire)) {
+        std::this_thread::yield();
+      }
+      for (std::size_t iteration = 0; iteration < 5000; ++iteration) {
+        for (std::uint64_t fingerprint = 1; fingerprint <= 2;
+             ++fingerprint) {
+          const auto handle = cache.find("hot", fingerprint);
+          if (!handle.valid()) {
+            continue;
+          }
+          const auto result = handle.invoke(nullptr, 0);
+          const Word expected = fingerprint == 1 ? 101 : 202;
+          if (!result.ok() || result.value != expected) {
+            errors.fetch_add(1, std::memory_order_relaxed);
+          }
+        }
+      }
+    });
+  }
+
+  start.store(true, std::memory_order_release);
+  for (std::size_t iteration = 0; iteration < 128; ++iteration) {
+    const std::uint64_t fingerprint = (iteration & 1U) == 0 ? 2 : 1;
+    const Word value = fingerprint == 1 ? 101 : 202;
+    const auto publication =
+        cache.publish("hot", fingerprint, compile_constant(value));
+    if (!publication.ok()) {
+      errors.fetch_add(1, std::memory_order_relaxed);
+    }
+    if ((iteration % 11U) == 0) {
+      (void)cache.invalidate("hot", fingerprint);
+    }
+  }
+  for (std::thread& reader : readers) {
+    reader.join();
+  }
+  expect(errors.load(std::memory_order_relaxed) == 0,
+         "concurrent lookup, replacement, invalidation, and invocation must be safe");
 }
 
 Function arithmetic_function() {
@@ -1160,6 +1318,8 @@ void test_control_flow_builder_rejects_edge_arity() {
 }  // namespace
 
 int main() {
+  test_code_cache_lifecycle();
+  test_code_cache_concurrency();
   test_verifier_rejects_forward_reference();
   test_constant_native_function();
   test_execution_context_lifecycle();

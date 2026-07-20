@@ -132,8 +132,10 @@ CompilationResult Compiler::compile(const ir::Function& function) {
       return {publication, nullptr};
     }
 
-    CompilationStats stats{lowering.code.size(), lowering.spill_slots,
-                           function.nodes().size(), optimized.nodes().size()};
+    CompilationStats stats{lowering.code.size(),
+                           implementation->memory.mapping_size(),
+                           lowering.spill_slots, function.nodes().size(),
+                           optimized.nodes().size()};
     const bool requires_context = std::any_of(
         optimized.nodes().begin(), optimized.nodes().end(),
         [](const ir::Node& node) {
@@ -184,8 +186,10 @@ CompilationResult Compiler::compile(const ir::ControlFlowFunction& function) {
       return {publication, nullptr};
     }
 
-    CompilationStats stats{lowering.code.size(), lowering.spill_slots,
-                           function.nodes().size(), function.nodes().size()};
+    CompilationStats stats{lowering.code.size(),
+                           implementation->memory.mapping_size(),
+                           lowering.spill_slots, function.nodes().size(),
+                           function.nodes().size()};
     const bool requires_context = std::any_of(
         function.nodes().begin(), function.nodes().end(),
         [](const ir::ControlNode& node) {
