@@ -17,6 +17,9 @@ enum class StatusCode {
   kMemoryProtectionFailed,
   kExecutionInterrupted,
   kRuntimeExit,
+  kCancelled,
+  kDeadlineExceeded,
+  kUnavailable,
 };
 
 class Status final {
