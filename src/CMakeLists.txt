@@ -1,5 +1,6 @@
 add_library(unijit
   ir/function.cpp
+  ir/interpreter.cpp
   ir/verifier.cpp)
 
 add_library(UniJIT::unijit ALIAS unijit)
