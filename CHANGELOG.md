@@ -1,6 +1,6 @@
 ## 0.1.8
 
-- Added independent Word and Float64 CFG register classes on AArch64, x86-64, and RISC-V 64, keeping loop-carried floating-point values resident through arithmetic and typed parallel edges, preserving exact guard and stack-map capture plus oversubscribed stack fallback, and retaining checksum-matched per-platform code-size and throughput evidence.
+- Added independent Word and Float64 CFG register classes on AArch64, x86-64, and RISC-V 64, keeping loop-carried floating-point values resident through arithmetic and typed parallel edges, preserving exact guard and stack-map capture plus oversubscribed stack fallback, and enforcing checksum-matched hosted floors of at least 5x reference-interpreter speed with no more than 400 bytes for the fixed 29-node workload.
 
 ## 0.1.7
 
