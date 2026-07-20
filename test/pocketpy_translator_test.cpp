@@ -28,11 +28,35 @@ int main() {
     return EXIT_FAILURE;
   }
 
-  constexpr std::array<const char *, 7> kRejectedSources = {
+  const auto division =
+      unijit::frontend::pocketpy::translate_numeric_function(
+          "def quotient(a, b): return (a + 1) / b");
+  if (!division.ok() || !division.function->requires_context()) {
+    std::cerr << "PocketPy checked division did not compile\n";
+    return EXIT_FAILURE;
+  }
+  const std::array<unijit::ir::Word, 2> division_arguments = {
+      unijit::ir::pack_float64(9.0), unijit::ir::pack_float64(2.0)};
+  const auto quotient = division.function->invoke(division_arguments.data(),
+                                                   division_arguments.size());
+  if (!quotient.ok() || unijit::ir::unpack_float64(quotient.value) != 5.0) {
+    std::cerr << "PocketPy checked division produced the wrong result\n";
+    return EXIT_FAILURE;
+  }
+  const std::array<unijit::ir::Word, 2> zero_division_arguments = {
+      unijit::ir::pack_float64(9.0), unijit::ir::pack_float64(-0.0)};
+  const auto zero_division = division.function->invoke(
+      zero_division_arguments.data(), zero_division_arguments.size());
+  if (zero_division.ok() ||
+      zero_division.status.code() != unijit::StatusCode::kRuntimeExit) {
+    std::cerr << "PocketPy checked division accepted a zero divisor\n";
+    return EXIT_FAILURE;
+  }
+
+  constexpr std::array<const char *, 6> kRejectedSources = {
       "lambda a: a + 1",
       "def f(a, a): return a",
       "def f(class): return class",
-      "def f(a): return a / 2",
       "def f(a): return external + a",
       "def f(a):\n    b = a\n    return b",
       "def f(a): return a; return 0"};
@@ -53,7 +77,8 @@ int main() {
   constexpr char kNativeSource[] =
       "import unijit\n"
       "native = unijit.compile(\"def affine(a, b): return (a + 2.5) * "
-      "(b - -3)\")\n";
+      "(b - -3)\")\n"
+      "divide = unijit.compile(\"def divide(a, b): return a / b\")\n";
   if (!py_exec(kNativeSource, "<unijit-pocketpy-native>", EXEC_MODE, nullptr)) {
     py_printexc();
     py_finalize();
@@ -71,6 +96,33 @@ int main() {
     std::cerr << "PocketPy did not execute the compiled native callable\n";
     py_finalize();
     return EXIT_FAILURE;
+  }
+
+  if (!py_exec("quotient = divide(9, 3)", "<unijit-pocketpy-division>",
+               EXEC_MODE, nullptr)) {
+    py_printexc();
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  const py_Ref division_result = py_getglobal(py_name("quotient"));
+  if (division_result == nullptr || !py_isfloat(division_result) ||
+      py_tofloat(division_result) != 3.0) {
+    std::cerr << "PocketPy did not execute checked native division\n";
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+
+  constexpr std::array<const char *, 2> kZeroDivisions = {
+      "divide(1, 0.0)", "divide(1, -0.0)"};
+  for (const char *expression : kZeroDivisions) {
+    if (py_exec(expression, "<unijit-pocketpy-zero-division>", EVAL_MODE,
+                nullptr) ||
+        !py_matchexc(tp_ZeroDivisionError)) {
+      std::cerr << "PocketPy native division did not raise ZeroDivisionError\n";
+      py_finalize();
+      return EXIT_FAILURE;
+    }
+    py_clearexc(nullptr);
   }
 
   if (py_exec("native('1.5', 4)", "<unijit-pocketpy-guard>", EVAL_MODE,
