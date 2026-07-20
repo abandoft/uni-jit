@@ -38,7 +38,7 @@ int main() {
 
   const auto translation =
       unijit::frontend::quickjs::translate_numeric_function(
-          "function affine(a, b) { return (a + 2.5) * (b - -3); }");
+          "function affine(a, b) { return (a + 2.5) * (b - -3) / 2; }");
   if (!translation.ok() || translation.parameter_count != 2) {
     std::cerr << "QuickJS numeric source did not compile: "
               << translation.status.message() << '\n';
@@ -48,14 +48,13 @@ int main() {
       unijit::ir::pack_float64(1.5), unijit::ir::pack_float64(4.0)};
   const auto native = translation.function->invoke(arguments.data(),
                                                     arguments.size());
-  if (!native.ok() || unijit::ir::unpack_float64(native.value) != 28.0) {
+  if (!native.ok() || unijit::ir::unpack_float64(native.value) != 14.0) {
     std::cerr << "QuickJS numeric source produced the wrong native result\n";
     return EXIT_FAILURE;
   }
 
-  constexpr std::array<const char*, 4> kRejectedSources = {
+  constexpr std::array<const char*, 3> kRejectedSources = {
       "function(a, a) { return a; }",
-      "function(a) { return a / 2; }",
       "function(a) { return external + a; }",
       "function(a) { const b = a; return b; }"};
   for (const char* source : kRejectedSources) {
@@ -72,7 +71,7 @@ int main() {
   }
   constexpr char kNativeSource[] =
       "function sourceFunction(a, b) {"
-      "  return (a + 2.5) * (b - -3);"
+      "  return (a + 2.5) * (b - -3) / 2;"
       "}"
       "sourceFunction.toString = () => 'function(a, b) { return 999; }';"
       "const native = unijit.compile(sourceFunction);"
@@ -81,7 +80,7 @@ int main() {
                    "<unijit-quickjs-native>", JS_EVAL_TYPE_GLOBAL);
   number = 0.0;
   if (JS_IsException(result) ||
-      JS_ToFloat64(context, &number, result) != 0 || number != 28.0) {
+      JS_ToFloat64(context, &number, result) != 0 || number != 14.0) {
     std::cerr << "QuickJS did not execute the compiled native closure\n";
     JS_FreeValue(context, result);
     return EXIT_FAILURE;
