@@ -42,6 +42,13 @@ ir::EvaluationResult invalid_tiered_code() {
           0};
 }
 
+runtime::OsrEntryResult invalid_tiered_osr_entry() {
+  runtime::OsrArguments arguments;
+  arguments.status = {StatusCode::kInvalidArgument,
+                      "tiered code has no published baseline"};
+  return {arguments, {arguments.status, 0}};
+}
+
 bool is_assumption_exit(const CodeHandle& handle,
                         const ir::EvaluationResult& result) noexcept {
   if (result.status.code() != StatusCode::kRuntimeExit) {
@@ -215,6 +222,9 @@ struct TieredCode::Impl final {
   std::atomic<std::uint64_t> withdrawals{0};
   std::atomic<std::uint64_t> assumption_deoptimizations{0};
   std::atomic<std::uint64_t> baseline_retries{0};
+  std::atomic<std::uint64_t> osr_attempts{0};
+  std::atomic<std::uint64_t> osr_entries{0};
+  std::atomic<std::uint64_t> osr_exits{0};
 };
 
 TieredCode::TieredCode(TieringThresholds thresholds)
@@ -393,6 +403,42 @@ TieredInvocationResult TieredCode::invoke(
   return invocation;
 }
 
+TieredOsrEntryResult TieredCode::enter_osr(
+    const runtime::OsrFrame& frame, const runtime::OsrEntryPlan& plan,
+    runtime::ExecutionContext* context) const {
+  if (impl_ == nullptr) {
+    return {invalid_tiered_osr_entry(), {}, CodeTier::kNone, 0, false};
+  }
+  saturating_add(&impl_->osr_attempts, 1);
+  const std::shared_ptr<const Impl::State> state =
+      std::atomic_load_explicit(&impl_->state, std::memory_order_acquire);
+  if (state == nullptr || !state->active.valid()) {
+    return {invalid_tiered_osr_entry(), {}, CodeTier::kNone, 0, false};
+  }
+
+  TieredOsrEntryResult transfer;
+  transfer.attempted_handle = state->active;
+  transfer.attempted_tier = state->tier;
+  transfer.generation = state->generation;
+  transfer.entry = state->active.enter_osr(frame, plan, context);
+  if (!transfer.entry.entered()) {
+    return transfer;
+  }
+  saturating_add(&impl_->osr_entries, 1);
+  if (transfer.entry.result.status.code() != StatusCode::kRuntimeExit) {
+    return transfer;
+  }
+
+  transfer.deoptimized = true;
+  saturating_add(&impl_->osr_exits, 1);
+  if (state->tier == CodeTier::kOptimized &&
+      is_assumption_exit(state->active, transfer.entry.result)) {
+    saturating_add(&impl_->assumption_deoptimizations, 1);
+    (void)withdraw_optimized(state->generation);
+  }
+  return transfer;
+}
+
 void TieredCode::record_backedges(std::uint64_t count) noexcept {
   if (impl_ != nullptr) {
     impl_->hotness.record_backedges(count);
@@ -432,7 +478,10 @@ TieredCodeStats TieredCode::stats() const noexcept {
           impl_->promotions.load(std::memory_order_relaxed),
           impl_->withdrawals.load(std::memory_order_relaxed),
           impl_->assumption_deoptimizations.load(std::memory_order_relaxed),
-          impl_->baseline_retries.load(std::memory_order_relaxed)};
+          impl_->baseline_retries.load(std::memory_order_relaxed),
+          impl_->osr_attempts.load(std::memory_order_relaxed),
+          impl_->osr_entries.load(std::memory_order_relaxed),
+          impl_->osr_exits.load(std::memory_order_relaxed)};
 }
 
 }  // namespace unijit::jit

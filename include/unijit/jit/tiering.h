@@ -86,6 +86,17 @@ struct TieredInvocationResult final {
   bool ok() const noexcept { return result.ok(); }
 };
 
+struct TieredOsrEntryResult final {
+  runtime::OsrEntryResult entry;
+  CodeHandle attempted_handle;
+  CodeTier attempted_tier{CodeTier::kNone};
+  std::uint64_t generation{0};
+  bool deoptimized{false};
+
+  bool entered() const noexcept { return entry.entered(); }
+  bool ok() const noexcept { return entry.ok(); }
+};
+
 struct TieredCodeStats final {
   HotnessStats hotness;
   CodeTier active_tier{CodeTier::kNone};
@@ -94,6 +105,9 @@ struct TieredCodeStats final {
   std::uint64_t withdrawals{0};
   std::uint64_t assumption_deoptimizations{0};
   std::uint64_t baseline_retries{0};
+  std::uint64_t osr_attempts{0};
+  std::uint64_t osr_entries{0};
+  std::uint64_t osr_exits{0};
 };
 
 class TieredCode final {
@@ -119,6 +133,9 @@ class TieredCode final {
       runtime::ExecutionContext* context = nullptr,
       DeoptimizationPolicy policy =
           DeoptimizationPolicy::kReturnExit) const;
+  TieredOsrEntryResult enter_osr(
+      const runtime::OsrFrame& frame, const runtime::OsrEntryPlan& plan,
+      runtime::ExecutionContext* context = nullptr) const;
 
   void record_backedges(std::uint64_t count = 1) noexcept;
   bool try_begin_optimization() noexcept;
