@@ -1,5 +1,9 @@
 ## 0.1.6
 
+- Added complete QuickJS numeric counted-loop compilation with Float64 local state, arithmetic assignments, ordered conditional resets, SSA merges, backedge safepoints, GC-owned native invocation, and a bit-exact target benchmark that exceeds V8 Jitless on the validated workload.
+- Added complete PocketPy `range(count)` numeric-loop compilation with indentation validation, Float64 local state, conditional updates, SSA merges, backedge safepoints, GC-owned native invocation, and a bit-exact target benchmark that exceeds CPython 3.14.6 interpreter and JIT modes on the validated workload.
+- Fixed CFG compilation metadata so functions containing safepoints always receive an execution context through the safe invocation API.
+- Fixed CFG parallel edge copies when multiple target parameters share a physical register, preventing nonlocal loop state from being overwritten before its required stack publication.
 - Added ordered Float64 CFG comparisons with IEEE-754 unordered-false semantics and native encodings on all three architectures.
 - Added typed Float64 CFG parameters, constants, arithmetic, loop-carried edge validation, interpreter execution, and native lowering on AArch64, x86-64, and RISC-V 64.
 
