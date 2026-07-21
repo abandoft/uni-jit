@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "unijit/status.h"
+#include "unijit/ir/memory.h"
 
 namespace unijit::ir {
 
@@ -77,6 +78,8 @@ enum class Opcode : std::uint8_t {
   kGuardFloatNonzero,
   kCall,
   kSafepoint,
+  kLoadWord,
+  kStoreWord,
 };
 
 enum class ValueType : std::uint8_t {
@@ -92,6 +95,7 @@ struct Node final {
   ValueType type{ValueType::kWord};
   std::uint32_t argument_begin{0};
   std::uint32_t argument_count{0};
+  std::uint32_t memory_access{MemoryAccessDescriptor::kInvalidIndex};
 };
 
 class Function final {
@@ -106,6 +110,12 @@ class Function final {
   const std::vector<Node>& nodes() const noexcept { return nodes_; }
   const std::vector<Value>& call_arguments() const noexcept {
     return call_arguments_;
+  }
+  std::size_t memory_region_count() const noexcept {
+    return memory_region_count_;
+  }
+  const std::vector<MemoryAccessDescriptor>& memory_accesses() const noexcept {
+    return memory_accesses_;
   }
   Value return_value() const noexcept { return return_value_; }
   ValueType return_type() const noexcept {
@@ -126,13 +136,17 @@ class Function final {
   std::vector<ValueType> parameter_types_;
   std::vector<Node> nodes_;
   std::vector<Value> call_arguments_;
+  std::size_t memory_region_count_{0};
+  std::vector<MemoryAccessDescriptor> memory_accesses_;
   Value return_value_;
 };
 
 class FunctionBuilder final {
  public:
-  explicit FunctionBuilder(std::size_t parameter_count);
-  explicit FunctionBuilder(std::vector<ValueType> parameter_types);
+  explicit FunctionBuilder(std::size_t parameter_count,
+                           std::size_t memory_region_count = 0);
+  explicit FunctionBuilder(std::vector<ValueType> parameter_types,
+                           std::size_t memory_region_count = 0);
 
   std::size_t parameter_count() const noexcept {
     return function_.parameter_count_;
@@ -173,6 +187,10 @@ class FunctionBuilder final {
   Value call(RuntimeHelper helper, std::vector<Value> arguments,
              ValueType result_type = ValueType::kWord);
   Value safepoint(std::size_t site);
+  Value load_word(Value byte_offset, MemoryAccessDescriptor access,
+                  std::size_t site);
+  Value store_word(Value byte_offset, Value value,
+                   MemoryAccessDescriptor access, std::size_t site);
   Status set_return(Value value);
 
   Function build() && noexcept;

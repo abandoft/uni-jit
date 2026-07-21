@@ -5,6 +5,8 @@
 #include <new>
 #include <vector>
 
+#include "ir/memory_access.h"
+
 namespace unijit::ir {
 namespace {
 
@@ -90,6 +92,8 @@ Word evaluate_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
     case Opcode::kConstant:
     case Opcode::kCall:
     case Opcode::kSafepoint:
+    case Opcode::kLoadWord:
+    case Opcode::kStoreWord:
       return 0;
   }
   return 0;
@@ -174,6 +178,28 @@ EvaluationResult Interpreter::evaluate(const Function& function,
                     0};
           }
           break;
+        case Opcode::kLoadWord: {
+          const detail::MemoryAccessResult result = detail::load_bounded_word(
+              function.memory_accesses()[node.memory_access],
+              values[node.lhs.id()], static_cast<std::size_t>(node.immediate),
+              context);
+          if (!result.ok()) {
+            return {result.status, 0};
+          }
+          values[index] = result.value;
+          break;
+        }
+        case Opcode::kStoreWord: {
+          const detail::MemoryAccessResult result = detail::store_bounded_word(
+              function.memory_accesses()[node.memory_access],
+              values[node.lhs.id()], values[node.rhs.id()],
+              static_cast<std::size_t>(node.immediate), context);
+          if (!result.ok()) {
+            return {result.status, 0};
+          }
+          values[index] = result.value;
+          break;
+        }
         case Opcode::kAdd:
         case Opcode::kSubtract:
         case Opcode::kMultiply:

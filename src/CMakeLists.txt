@@ -2,6 +2,7 @@ add_library(unijit
   ir/control_flow.cpp
   ir/function.cpp
   ir/interpreter.cpp
+  ir/memory_access.cpp
   ir/optimizer.cpp
   ir/verifier.cpp
   jit/compilation_scheduler.cpp
@@ -13,6 +14,7 @@ add_library(unijit
   jit/tiering.cpp
   runtime/assumption.cpp
   runtime/deoptimization.cpp
+  runtime/execution_context.cpp
   runtime/materialization.cpp
   runtime/on_stack_replacement.cpp)
 

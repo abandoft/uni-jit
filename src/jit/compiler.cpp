@@ -700,6 +700,8 @@ Status validate_compilation_limits(const CompilationLimits& limits) {
   if (limits.maximum_parameters == 0 || limits.maximum_ir_nodes == 0 ||
       limits.maximum_cfg_blocks == 0 ||
       limits.maximum_ir_arguments == 0 ||
+      limits.maximum_memory_regions == 0 ||
+      limits.maximum_memory_accesses == 0 ||
       limits.maximum_stack_maps == 0 ||
       limits.maximum_metadata_values == 0 ||
       limits.maximum_code_bytes == 0) {
@@ -809,6 +811,17 @@ Status validate_function_limits(
             "compilation exceeds the IR argument limit",
             function.call_arguments().size()};
   }
+  if (function.memory_region_count() > limits.maximum_memory_regions) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the memory region limit",
+            function.memory_region_count()};
+  }
+  if (function.memory_accesses().size() >
+      limits.maximum_memory_accesses) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the memory access limit",
+            function.memory_accesses().size()};
+  }
   return validate_requested_metadata(deoptimization_table, assumptions,
                                      function.parameter_count(), limits);
 }
@@ -836,6 +849,17 @@ Status validate_function_limits(
     return {StatusCode::kResourceExhausted,
             "compilation exceeds the CFG block limit",
             function.blocks().size()};
+  }
+  if (function.memory_region_count() > limits.maximum_memory_regions) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the CFG memory region limit",
+            function.memory_region_count()};
+  }
+  if (function.memory_accesses().size() >
+      limits.maximum_memory_accesses) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the CFG memory access limit",
+            function.memory_accesses().size()};
   }
   std::size_t arguments = function.call_arguments().size();
   if (arguments > limits.maximum_ir_arguments) {

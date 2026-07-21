@@ -1,0 +1,28 @@
+#ifndef UNIJIT_SRC_IR_MEMORY_ACCESS_H
+#define UNIJIT_SRC_IR_MEMORY_ACCESS_H
+
+#include <cstddef>
+
+#include "unijit/ir/function.h"
+#include "unijit/runtime/execution_context.h"
+
+namespace unijit::ir::detail {
+
+struct MemoryAccessResult final {
+  Status status;
+  Word value{0};
+
+  bool ok() const noexcept { return status.ok(); }
+};
+
+MemoryAccessResult load_bounded_word(
+    const MemoryAccessDescriptor& access, Word byte_offset, std::size_t site,
+    runtime::ExecutionContext* context) noexcept;
+
+MemoryAccessResult store_bounded_word(
+    const MemoryAccessDescriptor& access, Word byte_offset, Word value,
+    std::size_t site, runtime::ExecutionContext* context) noexcept;
+
+}  // namespace unijit::ir::detail
+
+#endif  // UNIJIT_SRC_IR_MEMORY_ACCESS_H

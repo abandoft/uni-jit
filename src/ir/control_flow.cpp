@@ -10,6 +10,8 @@
 #include <utility>
 #include <vector>
 
+#include "ir/memory_access.h"
+
 namespace unijit::ir {
 namespace {
 
@@ -55,6 +57,8 @@ bool is_binary(ControlOpcode opcode) {
   case ControlOpcode::kGuardWordNonzero:
   case ControlOpcode::kGuardFloatNonzero:
   case ControlOpcode::kSafepoint:
+  case ControlOpcode::kLoadWord:
+  case ControlOpcode::kStoreWord:
     return false;
   }
   return false;
@@ -64,6 +68,28 @@ bool is_unary(ControlOpcode opcode) {
   return opcode == ControlOpcode::kNegate ||
          opcode == ControlOpcode::kBitwiseNot ||
          opcode == ControlOpcode::kFloatNegate;
+}
+
+bool is_memory(ControlOpcode opcode) {
+  return opcode == ControlOpcode::kLoadWord ||
+         opcode == ControlOpcode::kStoreWord;
+}
+
+bool valid_memory_width(MemoryWidth width) {
+  return width == MemoryWidth::k8 || width == MemoryWidth::k16 ||
+         width == MemoryWidth::k32 || width == MemoryWidth::k64;
+}
+
+bool valid_byte_order(MemoryByteOrder order) {
+  return order == MemoryByteOrder::kNative ||
+         order == MemoryByteOrder::kLittleEndian ||
+         order == MemoryByteOrder::kBigEndian;
+}
+
+bool is_runtime_exit(ControlOpcode opcode) {
+  return opcode == ControlOpcode::kGuardWordNonzero ||
+         opcode == ControlOpcode::kGuardFloatNonzero ||
+         opcode == ControlOpcode::kSafepoint || is_memory(opcode);
 }
 
 Status invalid_control_flow(std::size_t location, const char *message) {
@@ -79,6 +105,11 @@ Status verify_impl(const ControlFlowFunction &function) {
   if (function.parameter_count() != blocks[0].parameters.size()) {
     return invalid_control_flow(
         0, "entry block parameters do not match the function signature");
+  }
+  if (function.memory_region_count() >
+      static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
+    return invalid_control_flow(
+        0, "memory region count exceeds the CFG index range");
   }
 
   const std::size_t no_owner = blocks.size();
@@ -106,6 +137,11 @@ Status verify_impl(const ControlFlowFunction &function) {
       position[value.id()] = instruction_index;
 
       const ControlNode &node = nodes[value.id()];
+      if (!is_memory(node.opcode) &&
+          node.memory_access != MemoryAccessDescriptor::kInvalidIndex) {
+        return invalid_control_flow(
+            value.id(), "non-memory CFG node has a memory descriptor");
+      }
       if (instruction_index < block.parameters.size()) {
         if (block.parameters[instruction_index] != value) {
           return invalid_control_flow(block_index,
@@ -241,6 +277,8 @@ Status verify_impl(const ControlFlowFunction &function) {
 
   std::vector<bool> claimed_call_arguments(function.call_arguments().size(),
                                            false);
+  std::vector<bool> claimed_memory_accesses(function.memory_accesses().size(),
+                                            false);
 
   for (std::size_t block_index = 0; block_index < blocks.size();
        ++block_index) {
@@ -280,6 +318,49 @@ Status verify_impl(const ControlFlowFunction &function) {
         }
         continue;
       }
+      if (is_memory(node.opcode)) {
+        if (node.memory_access >= function.memory_accesses().size() ||
+            claimed_memory_accesses[node.memory_access]) {
+          return invalid_control_flow(
+              value.id(), "CFG memory descriptor is invalid or duplicated");
+        }
+        claimed_memory_accesses[node.memory_access] = true;
+        const MemoryAccessDescriptor& access =
+            function.memory_accesses()[node.memory_access];
+        const std::size_t width = memory_width_bytes(access.width);
+        if (access.region >= function.memory_region_count() ||
+            !valid_memory_width(access.width) || access.alignment == 0 ||
+            access.alignment > width ||
+            (access.alignment & (access.alignment - 1U)) != 0 ||
+            !valid_byte_order(access.byte_order) ||
+            (node.opcode == ControlOpcode::kStoreWord &&
+             access.sign_extend) ||
+            node.immediate < 0 || node.type != ValueType::kWord ||
+            !available(node.lhs, block_index, instruction_index) ||
+            function.value_type(node.lhs) != ValueType::kWord ||
+            node.argument_begin != 0 || node.argument_count != 0) {
+          return invalid_control_flow(
+              value.id(), "bounded CFG memory operation is malformed");
+        }
+        if (node.opcode == ControlOpcode::kLoadWord && node.rhs.valid()) {
+          return invalid_control_flow(
+              value.id(), "bounded CFG memory load has a stored value");
+        }
+        if (node.opcode == ControlOpcode::kStoreWord &&
+            (!available(node.rhs, block_index, instruction_index) ||
+             function.value_type(node.rhs) != ValueType::kWord)) {
+          return invalid_control_flow(
+              value.id(), "bounded CFG memory store value is malformed");
+        }
+        for (std::size_t previous = 0; previous < value.id(); ++previous) {
+          if (is_runtime_exit(nodes[previous].opcode) &&
+              nodes[previous].immediate == node.immediate) {
+            return invalid_control_flow(
+                value.id(), "control-flow runtime exit site is duplicated");
+          }
+        }
+        continue;
+      }
       if (node.opcode == ControlOpcode::kGuardWordNonzero ||
           node.opcode == ControlOpcode::kGuardFloatNonzero) {
         const bool is_float =
@@ -294,10 +375,7 @@ Status verify_impl(const ControlFlowFunction &function) {
               value.id(), "control-flow nonzero guard is malformed");
         }
         for (std::size_t previous = 0; previous < value.id(); ++previous) {
-          if ((nodes[previous].opcode == ControlOpcode::kGuardWordNonzero ||
-               nodes[previous].opcode ==
-                   ControlOpcode::kGuardFloatNonzero ||
-               nodes[previous].opcode == ControlOpcode::kSafepoint) &&
+          if (is_runtime_exit(nodes[previous].opcode) &&
               nodes[previous].immediate == node.immediate) {
             return invalid_control_flow(
                 value.id(), "control-flow runtime exit site is duplicated");
@@ -313,10 +391,7 @@ Status verify_impl(const ControlFlowFunction &function) {
                                       "control-flow safepoint is malformed");
         }
         for (std::size_t previous = 0; previous < value.id(); ++previous) {
-          if ((nodes[previous].opcode == ControlOpcode::kGuardWordNonzero ||
-               nodes[previous].opcode ==
-                   ControlOpcode::kGuardFloatNonzero ||
-               nodes[previous].opcode == ControlOpcode::kSafepoint) &&
+          if (is_runtime_exit(nodes[previous].opcode) &&
               nodes[previous].immediate == node.immediate) {
             return invalid_control_flow(
                 value.id(), "control-flow runtime exit site is duplicated");
@@ -426,6 +501,12 @@ Status verify_impl(const ControlFlowFunction &function) {
     return invalid_control_flow(
         0, "control-flow graph contains unreferenced call arguments");
   }
+  if (std::find(claimed_memory_accesses.begin(),
+                claimed_memory_accesses.end(), false) !=
+      claimed_memory_accesses.end()) {
+    return invalid_control_flow(
+        0, "control-flow graph contains unreferenced memory descriptors");
+  }
   return Status::ok_status();
 }
 
@@ -523,14 +604,18 @@ Word evaluate_node(ControlOpcode opcode, Word lhs, Word rhs) noexcept {
 
 } // namespace
 
-ControlFlowBuilder::ControlFlowBuilder(std::size_t parameter_count)
+ControlFlowBuilder::ControlFlowBuilder(std::size_t parameter_count,
+                                       std::size_t memory_region_count)
     : ControlFlowBuilder(
-          std::vector<ValueType>(parameter_count, ValueType::kWord)) {}
+          std::vector<ValueType>(parameter_count, ValueType::kWord),
+          memory_region_count) {}
 
 ControlFlowBuilder::ControlFlowBuilder(
-    std::vector<ValueType> parameter_types) {
+    std::vector<ValueType> parameter_types,
+    std::size_t memory_region_count) {
   function_.parameter_count_ = parameter_types.size();
   function_.parameter_types_ = std::move(parameter_types);
+  function_.memory_region_count_ = memory_region_count;
   function_.entry_block_ = Block{0};
   function_.blocks_.emplace_back();
   insertion_block_ = function_.entry_block_;
@@ -787,6 +872,49 @@ Value ControlFlowBuilder::safepoint(std::size_t site) {
                                  static_cast<Word>(site), ValueType::kWord});
 }
 
+Value ControlFlowBuilder::load_word(Value byte_offset,
+                                    MemoryAccessDescriptor access,
+                                    std::size_t site) {
+  if (function_.memory_accesses_.size() >=
+          MemoryAccessDescriptor::kInvalidIndex ||
+      site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {
+    return {};
+  }
+  const auto access_index =
+      static_cast<std::uint32_t>(function_.memory_accesses_.size());
+  function_.memory_accesses_.push_back(access);
+  const Value result = append_node(
+      ControlNode{ControlOpcode::kLoadWord, byte_offset, {},
+                  static_cast<Word>(site), ValueType::kWord, 0, 0,
+                  access_index});
+  if (!result.valid()) {
+    function_.memory_accesses_.pop_back();
+  }
+  return result;
+}
+
+Value ControlFlowBuilder::store_word(Value byte_offset, Value value,
+                                     MemoryAccessDescriptor access,
+                                     std::size_t site) {
+  if (function_.memory_accesses_.size() >=
+          MemoryAccessDescriptor::kInvalidIndex ||
+      site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {
+    return {};
+  }
+  access.sign_extend = false;
+  const auto access_index =
+      static_cast<std::uint32_t>(function_.memory_accesses_.size());
+  function_.memory_accesses_.push_back(access);
+  const Value result = append_node(
+      ControlNode{ControlOpcode::kStoreWord, byte_offset, value,
+                  static_cast<Word>(site), ValueType::kWord, 0, 0,
+                  access_index});
+  if (!result.valid()) {
+    function_.memory_accesses_.pop_back();
+  }
+  return result;
+}
+
 Status
 ControlFlowBuilder::validate_edge(Block target,
                                   const std::vector<Value> &arguments) const {
@@ -970,6 +1098,24 @@ ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
                      site},
                     0};
           }
+        } else if (node.opcode == ControlOpcode::kLoadWord) {
+          const detail::MemoryAccessResult result = detail::load_bounded_word(
+              function.memory_accesses()[node.memory_access],
+              values[node.lhs.id()], static_cast<std::size_t>(node.immediate),
+              context);
+          if (!result.ok()) {
+            return {result.status, 0};
+          }
+          values[value.id()] = result.value;
+        } else if (node.opcode == ControlOpcode::kStoreWord) {
+          const detail::MemoryAccessResult result = detail::store_bounded_word(
+              function.memory_accesses()[node.memory_access],
+              values[node.lhs.id()], values[node.rhs.id()],
+              static_cast<std::size_t>(node.immediate), context);
+          if (!result.ok()) {
+            return {result.status, 0};
+          }
+          values[value.id()] = result.value;
         } else {
           values[value.id()] = evaluate_node(
               node.opcode, values[node.lhs.id()],

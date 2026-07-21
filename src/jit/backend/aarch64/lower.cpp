@@ -974,6 +974,11 @@ LoweringResult lower_impl(const ir::Function& function,
         }
         break;
       }
+      case ir::Opcode::kLoadWord:
+      case ir::Opcode::kStoreWord:
+        return {{StatusCode::kCodeGenerationFailed,
+                 "AArch64 bounded memory lowering is not available"},
+                {}, 0};
       case ir::Opcode::kSafepoint: {
         assembler.load(kScratch0, kStackPointer,
                        context_slot * sizeof(ir::Word));
@@ -1612,6 +1617,11 @@ LoweringResult lower_control_flow_impl(
           }
           break;
         }
+        case ir::ControlOpcode::kLoadWord:
+        case ir::ControlOpcode::kStoreWord:
+          return {{StatusCode::kCodeGenerationFailed,
+                   "AArch64 CFG bounded memory lowering is not available"},
+                  {}, 0};
         case ir::ControlOpcode::kSafepoint: {
           assembler.load(kScratch0, kStackPointer,
                          context_slot * sizeof(ir::Word));

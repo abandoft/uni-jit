@@ -436,6 +436,195 @@ void test_target_profiles() {
          "profile-scoped code caches must retain and execute matching code");
 }
 
+void test_bounded_memory_interpreter() {
+  using unijit::ir::MemoryAccessDescriptor;
+  using unijit::ir::MemoryByteOrder;
+  using unijit::ir::MemoryWidth;
+  using unijit::runtime::ExecutionContext;
+  using unijit::runtime::MemoryRegion;
+
+  alignas(8) std::array<std::uint8_t, 32> bytes{};
+  bytes[0] = 0x80;
+  bytes[2] = 0x34;
+  bytes[3] = 0x12;
+  bytes[5] = 0x01;
+  bytes[6] = 0x23;
+  bytes[7] = 0x45;
+  bytes[8] = 0x67;
+  MemoryRegion writable{bytes.data(), bytes.size(), true};
+  ExecutionContext context;
+  expect(context.bind_memory_regions(&writable, 1).ok(),
+         "execution context must accept a valid bounded region");
+  expect(!context.bind_memory_regions(nullptr, 1).ok(),
+         "execution context must reject missing region descriptors");
+  const MemoryRegion invalid_nonempty{nullptr, 1, false};
+  expect(!context.bind_memory_regions(&invalid_nonempty, 1).ok(),
+         "execution context must reject a null non-empty region");
+  expect(context.bind_memory_regions(&writable, 1).ok(),
+         "valid memory binding must be restorable after rejection");
+
+  const auto evaluate_load = [&](MemoryAccessDescriptor access, Word offset,
+                                 std::size_t site) {
+    FunctionBuilder builder(1, 1);
+    const Value loaded = builder.load_word(builder.parameter(0), access, site);
+    expect(builder.set_return(loaded).ok(),
+           "bounded load fixture must have a return value");
+    const Function function = std::move(builder).build();
+    expect(unijit::ir::verify(function).ok(),
+           "bounded load fixture must verify");
+    return Interpreter::evaluate(function, std::vector<Word>{offset},
+                                 &context);
+  };
+
+  MemoryAccessDescriptor unsigned8;
+  unsigned8.width = MemoryWidth::k8;
+  const auto unsigned_result = evaluate_load(unsigned8, 0, 10);
+  expect(unsigned_result.ok() && unsigned_result.value == 128,
+         "unsigned 8-bit loads must zero-extend");
+
+  MemoryAccessDescriptor signed8 = unsigned8;
+  signed8.sign_extend = true;
+  const auto signed_result = evaluate_load(signed8, 0, 11);
+  expect(signed_result.ok() && signed_result.value == -128,
+         "signed 8-bit loads must sign-extend");
+
+  MemoryAccessDescriptor little16;
+  little16.width = MemoryWidth::k16;
+  little16.alignment = 2;
+  little16.byte_order = MemoryByteOrder::kLittleEndian;
+  const auto little_result = evaluate_load(little16, 2, 12);
+  expect(little_result.ok() && little_result.value == 0x1234,
+         "little-endian 16-bit loads must preserve byte order");
+
+  MemoryAccessDescriptor big32;
+  big32.width = MemoryWidth::k32;
+  big32.byte_order = MemoryByteOrder::kBigEndian;
+  big32.is_volatile = true;
+  const auto big_result = evaluate_load(big32, 5, 13);
+  expect(big_result.ok() && big_result.value == 0x01234567,
+         "unaligned volatile big-endian loads must be byte exact");
+
+  FunctionBuilder store_builder(2, 1);
+  MemoryAccessDescriptor little32;
+  little32.width = MemoryWidth::k32;
+  little32.byte_order = MemoryByteOrder::kLittleEndian;
+  const Value stored = store_builder.store_word(
+      store_builder.parameter(0), store_builder.parameter(1), little32, 20);
+  expect(store_builder.set_return(stored).ok(),
+         "bounded store fixture must return the stored word");
+  const Function store_function = std::move(store_builder).build();
+  const std::array<Word, 2> store_arguments = {12, 0x76543210};
+  const auto store_result = Interpreter::evaluate(
+      store_function, store_arguments.data(), store_arguments.size(),
+      &context);
+  expect(store_result.ok() && store_result.value == store_arguments[1] &&
+             bytes[12] == 0x10 && bytes[13] == 0x32 && bytes[14] == 0x54 &&
+             bytes[15] == 0x76,
+         "bounded stores must return their value and write explicit order");
+  const auto optimized_store = unijit::ir::Optimizer::run(store_function);
+  const auto optimized_store_result =
+      optimized_store.ok()
+          ? Interpreter::evaluate(optimized_store.function,
+                                  store_arguments.data(),
+                                  store_arguments.size(), &context)
+          : unijit::ir::EvaluationResult{optimized_store.status, 0};
+  expect(optimized_store.ok() &&
+             optimized_store.function.memory_region_count() == 1 &&
+             optimized_store.function.memory_accesses().size() == 1 &&
+             optimized_store_result.ok() &&
+             optimized_store_result.value == store_arguments[1],
+         "optimizer must retain effectful bounded memory descriptors");
+
+  MemoryAccessDescriptor aligned32 = little32;
+  aligned32.alignment = 4;
+  const auto misaligned = evaluate_load(aligned32, 1, 30);
+  expect(!misaligned.ok() &&
+             misaligned.status.code() == unijit::StatusCode::kRuntimeExit &&
+             context.exit_reason() == unijit::runtime::ExitReason::kRuntime &&
+             context.exit_site() == 30 && context.exit_value() == 1,
+         "misaligned loads must produce a diagnosed runtime exit");
+
+  const auto out_of_bounds = evaluate_load(unsigned8, -1, 31);
+  expect(!out_of_bounds.ok() && context.exit_site() == 31 &&
+             context.exit_value() == -1,
+         "negative offsets must fail unsigned bounds checks without wrapping");
+
+  MemoryRegion read_only{bytes.data(), bytes.size(), false};
+  expect(context.bind_memory_regions(&read_only, 1).ok(),
+         "read-only region fixture must bind");
+  const auto read_only_store = Interpreter::evaluate(
+      store_function, store_arguments.data(), store_arguments.size(),
+      &context);
+  expect(!read_only_store.ok() && context.exit_site() == 20,
+         "stores must reject a read-only region at their declared site");
+  expect(context.bind_memory_regions(&writable, 1).ok(),
+         "writable memory fixture must be restored");
+
+  FunctionBuilder duplicate_builder(1, 1);
+  const Value duplicate_load = duplicate_builder.load_word(
+      duplicate_builder.parameter(0), unsigned8, 40);
+  const Value duplicate_guard =
+      duplicate_builder.guard_word_nonzero(duplicate_load, 40);
+  expect(duplicate_builder.set_return(duplicate_guard).ok() &&
+             !unijit::ir::verify(std::move(duplicate_builder).build()).ok(),
+         "memory exits and guards must share one globally unique site space");
+
+  FunctionBuilder bad_region_builder(1, 1);
+  MemoryAccessDescriptor bad_region = unsigned8;
+  bad_region.region = 1;
+  const Value invalid_load = bad_region_builder.load_word(
+      bad_region_builder.parameter(0), bad_region, 41);
+  expect(bad_region_builder.set_return(invalid_load).ok() &&
+             !unijit::ir::verify(std::move(bad_region_builder).build()).ok(),
+         "verifier must reject an access outside the declared region table");
+}
+
+void test_bounded_memory_control_flow_interpreter() {
+  using unijit::ir::ControlFlowBuilder;
+  using unijit::ir::MemoryAccessDescriptor;
+  using unijit::ir::MemoryByteOrder;
+  using unijit::ir::MemoryWidth;
+  using unijit::runtime::ExecutionContext;
+  using unijit::runtime::MemoryRegion;
+
+  alignas(8) std::array<std::uint8_t, 16> bytes{};
+  MemoryRegion region{bytes.data(), bytes.size(), true};
+  ExecutionContext context;
+  expect(context.bind_memory_regions(&region, 1).ok(),
+         "CFG bounded memory fixture must bind its region");
+
+  ControlFlowBuilder builder(2, 1);
+  MemoryAccessDescriptor big16;
+  big16.width = MemoryWidth::k16;
+  big16.byte_order = MemoryByteOrder::kBigEndian;
+  const Value stored = builder.store_word(builder.parameter(0),
+                                          builder.parameter(1), big16, 50);
+  const Value loaded = builder.load_word(builder.parameter(0), big16, 51);
+  const Value combined = builder.add(stored, loaded);
+  expect(builder.set_return(combined).ok(),
+         "CFG bounded memory fixture must return its ordered result");
+  const auto function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "CFG bounded store/load sequence must verify");
+  const std::array<Word, 2> arguments = {3, 0x1234};
+  const auto result = unijit::ir::ControlFlowInterpreter::evaluate(
+      function, arguments.data(), arguments.size(), 10, &context);
+  expect(result.ok() && result.value == 0x2468 && bytes[3] == 0x12 &&
+             bytes[4] == 0x34,
+         "CFG interpreter must preserve store-before-load effects and order");
+  const auto optimized = unijit::ir::Optimizer::run(function);
+  const auto optimized_result =
+      optimized.ok()
+          ? unijit::ir::ControlFlowInterpreter::evaluate(
+                optimized.function, arguments.data(), arguments.size(), 10,
+                &context)
+          : unijit::ir::EvaluationResult{optimized.status, 0};
+  expect(optimized.ok() && optimized.function.memory_region_count() == 1 &&
+             optimized.function.memory_accesses().size() == 2 &&
+             optimized_result.ok() && optimized_result.value == 0x2468,
+         "CFG optimization must retain ordered bounded memory effects");
+}
+
 void test_code_cache_lifecycle() {
   using unijit::jit::CodeCache;
   using unijit::jit::CodeCacheLimits;
@@ -5064,6 +5253,8 @@ void test_control_flow_builder_rejects_edge_arity() {
 
 int main() {
   test_target_profiles();
+  test_bounded_memory_interpreter();
+  test_bounded_memory_control_flow_interpreter();
   test_code_cache_lifecycle();
   test_code_cache_concurrency();
   test_verifier_rejects_forward_reference();

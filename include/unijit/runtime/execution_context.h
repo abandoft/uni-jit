@@ -8,6 +8,7 @@
 #include <type_traits>
 
 #include "unijit/ir/function.h"
+#include "unijit/runtime/memory_region.h"
 
 namespace unijit::jit {
 class CompiledFunction;
@@ -90,6 +91,19 @@ class ExecutionContext final {
   void* user_data() const noexcept { return user_data_; }
   void set_user_data(void* value) noexcept { user_data_ = value; }
 
+  Status bind_memory_regions(const MemoryRegion* regions,
+                             std::size_t count) noexcept;
+  void clear_memory_regions() noexcept {
+    memory_regions_ = nullptr;
+    memory_region_count_ = 0;
+  }
+  const MemoryRegion* memory_regions() const noexcept {
+    return memory_regions_;
+  }
+  std::size_t memory_region_count() const noexcept {
+    return memory_region_count_;
+  }
+
   static constexpr std::size_t interrupt_requested_offset() noexcept;
   static constexpr std::size_t exit_reason_offset() noexcept;
   static constexpr std::size_t exit_site_offset() noexcept;
@@ -97,6 +111,8 @@ class ExecutionContext final {
   static constexpr std::size_t captured_value_count_offset() noexcept;
   static constexpr std::size_t captured_values_offset() noexcept;
   static constexpr std::size_t safepoint_polls_offset() noexcept;
+  static constexpr std::size_t memory_regions_offset() noexcept;
+  static constexpr std::size_t memory_region_count_offset() noexcept;
 
  private:
   friend class Assumption;
@@ -123,6 +139,8 @@ class ExecutionContext final {
   std::array<ir::Word, kMaximumCapturedValues> captured_values_;
   std::uint64_t safepoint_polls_{0};
   void* user_data_{nullptr};
+  const MemoryRegion* memory_regions_{nullptr};
+  std::size_t memory_region_count_{0};
 };
 
 constexpr std::size_t ExecutionContext::interrupt_requested_offset() noexcept {
@@ -152,6 +170,15 @@ constexpr std::size_t ExecutionContext::captured_values_offset() noexcept {
 
 constexpr std::size_t ExecutionContext::safepoint_polls_offset() noexcept {
   return offsetof(ExecutionContext, safepoint_polls_);
+}
+
+constexpr std::size_t ExecutionContext::memory_regions_offset() noexcept {
+  return offsetof(ExecutionContext, memory_regions_);
+}
+
+constexpr std::size_t
+ExecutionContext::memory_region_count_offset() noexcept {
+  return offsetof(ExecutionContext, memory_region_count_);
 }
 
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free,

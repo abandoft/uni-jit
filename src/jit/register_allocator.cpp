@@ -46,7 +46,12 @@ void visit_control_operands(const ir::ControlFlowFunction& function,
     case ir::ControlOpcode::kFloatNegate:
     case ir::ControlOpcode::kGuardWordNonzero:
     case ir::ControlOpcode::kGuardFloatNonzero:
+    case ir::ControlOpcode::kLoadWord:
       visitor(node.lhs);
+      break;
+    case ir::ControlOpcode::kStoreWord:
+      visitor(node.lhs);
+      visitor(node.rhs);
       break;
     case ir::ControlOpcode::kCall:
       for (std::size_t index = 0; index < node.argument_count; ++index) {
@@ -110,8 +115,12 @@ RegisterAllocation allocate_impl(const ir::Function& function,
                node.opcode == ir::Opcode::kBitwiseNot ||
                node.opcode == ir::Opcode::kFloatNegate ||
                node.opcode == ir::Opcode::kGuardWordNonzero ||
-               node.opcode == ir::Opcode::kGuardFloatNonzero) {
+               node.opcode == ir::Opcode::kGuardFloatNonzero ||
+               node.opcode == ir::Opcode::kLoadWord) {
       note_use(&last_use, node.lhs, index);
+    } else if (node.opcode == ir::Opcode::kStoreWord) {
+      note_use(&last_use, node.lhs, index);
+      note_use(&last_use, node.rhs, index);
     } else if (node.opcode == ir::Opcode::kCall) {
       for (std::size_t argument_index = 0;
            argument_index < node.argument_count; ++argument_index) {
@@ -276,7 +285,12 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kFloatNegate:
         case ir::ControlOpcode::kGuardWordNonzero:
         case ir::ControlOpcode::kGuardFloatNonzero:
+        case ir::ControlOpcode::kLoadWord:
           note_local_use(node.lhs);
+          break;
+        case ir::ControlOpcode::kStoreWord:
+          note_local_use(node.lhs);
+          note_local_use(node.rhs);
           break;
         case ir::ControlOpcode::kCall:
           for (std::size_t argument_index = 0;
@@ -458,7 +472,12 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kFloatNegate:
         case ir::ControlOpcode::kGuardWordNonzero:
         case ir::ControlOpcode::kGuardFloatNonzero:
+        case ir::ControlOpcode::kLoadWord:
           note_nonlocal_use(block_index, node.lhs);
+          break;
+        case ir::ControlOpcode::kStoreWord:
+          note_nonlocal_use(block_index, node.lhs);
+          note_nonlocal_use(block_index, node.rhs);
           break;
         case ir::ControlOpcode::kCall:
           for (std::size_t argument_index = 0;

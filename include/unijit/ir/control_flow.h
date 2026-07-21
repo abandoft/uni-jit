@@ -67,6 +67,8 @@ enum class ControlOpcode : std::uint8_t {
   kGuardWordNonzero,
   kGuardFloatNonzero,
   kSafepoint,
+  kLoadWord,
+  kStoreWord,
 };
 
 struct ControlNode final {
@@ -77,6 +79,7 @@ struct ControlNode final {
   ValueType type{ValueType::kWord};
   std::uint32_t argument_begin{0};
   std::uint32_t argument_count{0};
+  std::uint32_t memory_access{MemoryAccessDescriptor::kInvalidIndex};
 };
 
 struct ControlEdge final {
@@ -131,6 +134,12 @@ public:
   const std::vector<Value> &call_arguments() const noexcept {
     return call_arguments_;
   }
+  std::size_t memory_region_count() const noexcept {
+    return memory_region_count_;
+  }
+  const std::vector<MemoryAccessDescriptor> &memory_accesses() const noexcept {
+    return memory_accesses_;
+  }
   const std::vector<BasicBlock> &blocks() const noexcept { return blocks_; }
 
 private:
@@ -141,13 +150,17 @@ private:
   Block entry_block_;
   std::vector<ControlNode> nodes_;
   std::vector<Value> call_arguments_;
+  std::size_t memory_region_count_{0};
+  std::vector<MemoryAccessDescriptor> memory_accesses_;
   std::vector<BasicBlock> blocks_;
 };
 
 class ControlFlowBuilder final {
 public:
-  explicit ControlFlowBuilder(std::size_t parameter_count);
-  explicit ControlFlowBuilder(std::vector<ValueType> parameter_types);
+  explicit ControlFlowBuilder(std::size_t parameter_count,
+                              std::size_t memory_region_count = 0);
+  explicit ControlFlowBuilder(std::vector<ValueType> parameter_types,
+                              std::size_t memory_region_count = 0);
 
   Block entry_block() const noexcept { return function_.entry_block_; }
   Block insertion_block() const noexcept { return insertion_block_; }
@@ -192,6 +205,10 @@ public:
   Value guard_word_nonzero(Value value, std::size_t site);
   Value guard_float64_nonzero(Value value, std::size_t site);
   Value safepoint(std::size_t site);
+  Value load_word(Value byte_offset, MemoryAccessDescriptor access,
+                  std::size_t site);
+  Value store_word(Value byte_offset, Value value,
+                   MemoryAccessDescriptor access, std::size_t site);
 
   Status set_return(Value value);
   Status jump(Block target, std::vector<Value> arguments);

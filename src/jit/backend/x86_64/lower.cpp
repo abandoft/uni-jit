@@ -1101,6 +1101,11 @@ LoweringResult lower_impl(const ir::Function& function,
         }
         break;
       }
+      case ir::Opcode::kLoadWord:
+      case ir::Opcode::kStoreWord:
+        return {{StatusCode::kCodeGenerationFailed,
+                 "x86-64 bounded memory lowering is not available"},
+                {}, 0};
       case ir::Opcode::kSafepoint: {
         assembler.load(kScratch0, kRsp, context_slot * sizeof(ir::Word));
         const std::size_t no_context = assembler.branch_zero(kScratch0);
@@ -1709,6 +1714,11 @@ LoweringResult lower_control_flow_impl(
           }
           break;
         }
+        case ir::ControlOpcode::kLoadWord:
+        case ir::ControlOpcode::kStoreWord:
+          return {{StatusCode::kCodeGenerationFailed,
+                   "x86-64 CFG bounded memory lowering is not available"},
+                  {}, 0};
         case ir::ControlOpcode::kSafepoint: {
           assembler.load(kScratch0, kRsp, context_slot * sizeof(ir::Word));
           const std::size_t no_context = assembler.branch_zero(kScratch0);

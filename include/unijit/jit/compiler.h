@@ -42,6 +42,8 @@ struct CompilationLimits final {
   std::size_t maximum_ir_nodes{64U * 1024U};
   std::size_t maximum_cfg_blocks{1024};
   std::size_t maximum_ir_arguments{256U * 1024U};
+  std::size_t maximum_memory_regions{64};
+  std::size_t maximum_memory_accesses{64U * 1024U};
   std::size_t maximum_stack_maps{4096};
   std::size_t maximum_metadata_values{256U * 1024U};
   std::size_t maximum_code_bytes{16U * 1024U * 1024U};
