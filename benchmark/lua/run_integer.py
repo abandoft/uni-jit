@@ -159,6 +159,7 @@ def main() -> int:
             "integer_loop",
             "integer_parameter_loop",
             "integer_guarded_loop",
+            "integer_conditional_loop",
         }
         else "language_call"
     )
