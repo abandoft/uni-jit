@@ -5,6 +5,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <limits>
 #include <memory>
@@ -772,6 +773,12 @@ void test_native_bounded_memory_matrix() {
                                            memory_case.value};
     const auto reference = Interpreter::evaluate(
         function, arguments.data(), arguments.size(), &reference_context);
+    const auto optimized = unijit::ir::Optimizer::run(function);
+    const auto optimized_result =
+        optimized.ok()
+            ? Interpreter::evaluate(optimized.function, arguments.data(),
+                                    arguments.size(), &reference_context)
+            : unijit::ir::EvaluationResult{optimized.status, 0};
     auto compilation = Compiler::compile(function);
     const auto native =
         compilation.ok()
@@ -797,7 +804,10 @@ void test_native_bounded_memory_matrix() {
       byte_exact = byte_exact && reference_bytes[position] == expected &&
                    native_bytes[position] == expected;
     }
-    expect(reference.ok() && native.ok() &&
+    expect(reference.ok() && optimized.ok() && optimized_result.ok() &&
+               optimized_result.value == memory_case.value &&
+               optimized.function.memory_accesses().size() == 2 &&
+               native.ok() &&
                reference.value == memory_case.value &&
                native.value == reference.value &&
                reference_bytes == native_bytes && byte_exact &&
@@ -806,6 +816,292 @@ void test_native_bounded_memory_matrix() {
                compilation.function->stack_map(load_site) != nullptr,
            label +
                " native lowering must match the byte-exact interpreter");
+  }
+}
+
+void test_word_byte_swap() {
+  using unijit::ir::ControlFlowBuilder;
+  using unijit::ir::MemoryWidth;
+
+  struct ByteSwapCase final {
+    MemoryWidth width;
+    Word input;
+    Word expected;
+  };
+  const std::array<ByteSwapCase, 3> cases = {{
+      {MemoryWidth::k16, INT64_C(0x112233445566A1B2), INT64_C(0xB2A1)},
+      {MemoryWidth::k32, INT64_C(0x11223344A1B2C3D4), INT64_C(0xD4C3B2A1)},
+      {MemoryWidth::k64, INT64_C(0x1020304050607080),
+       static_cast<Word>(UINT64_C(0x8070605040302010))},
+  }};
+
+  for (const ByteSwapCase& byte_swap_case : cases) {
+    FunctionBuilder builder(1);
+    const Value swapped =
+        builder.byte_swap(builder.parameter(0), byte_swap_case.width);
+    expect(builder.set_return(swapped).ok(),
+           "byte-swap fixture must have a return value");
+    const Function function = std::move(builder).build();
+    const std::array<Word, 1> arguments = {byte_swap_case.input};
+    const auto interpreted =
+        Interpreter::evaluate(function, arguments.data(), arguments.size());
+    auto compilation = Compiler::compile(function);
+    const auto native =
+        compilation.ok()
+            ? compilation.function->invoke(arguments.data(), arguments.size())
+            : unijit::ir::EvaluationResult{compilation.status, 0};
+    expect(interpreted.ok() && native.ok() &&
+               interpreted.value == byte_swap_case.expected &&
+               native.value == byte_swap_case.expected,
+           "native byte swap must reverse and zero-extend the selected width");
+
+    FunctionBuilder constant_builder(0);
+    const Value constant_swapped = constant_builder.byte_swap(
+        constant_builder.constant(byte_swap_case.input), byte_swap_case.width);
+    expect(constant_builder.set_return(constant_swapped).ok(),
+           "constant byte-swap fixture must return its result");
+    const auto optimized =
+        unijit::ir::Optimizer::run(std::move(constant_builder).build());
+    const auto folded =
+        optimized.ok() ? Interpreter::evaluate(optimized.function, nullptr, 0)
+                       : unijit::ir::EvaluationResult{optimized.status, 0};
+    expect(optimized.ok() && optimized.stats.constants_folded == 1 &&
+               folded.ok() && folded.value == byte_swap_case.expected,
+           "optimizer must fold byte swap with width-aware semantics");
+
+    ControlFlowBuilder control_builder(1);
+    const Value control_swapped = control_builder.byte_swap(
+        control_builder.parameter(0), byte_swap_case.width);
+    expect(control_builder.set_return(control_swapped).ok(),
+           "CFG byte-swap fixture must return its result");
+    const auto control_function = std::move(control_builder).build();
+    const auto control_reference = unijit::ir::ControlFlowInterpreter::evaluate(
+        control_function, arguments.data(), arguments.size(), 4);
+    auto control_compilation = Compiler::compile(control_function);
+    const auto control_native =
+        control_compilation.ok()
+            ? control_compilation.function->invoke(arguments.data(),
+                                                   arguments.size())
+            : unijit::ir::EvaluationResult{control_compilation.status, 0};
+    expect(control_reference.ok() && control_native.ok() &&
+               control_reference.value == byte_swap_case.expected &&
+               control_native.value == byte_swap_case.expected,
+           "CFG byte swap must match the straight-line contract");
+  }
+
+  FunctionBuilder invalid_builder(1);
+  const Value invalid =
+      invalid_builder.byte_swap(invalid_builder.parameter(0), MemoryWidth::k8);
+  expect(invalid_builder.set_return(invalid).ok() &&
+             !unijit::ir::verify(std::move(invalid_builder).build()).ok(),
+         "verifier must reject a meaningless one-byte swap");
+}
+
+void test_native_bounded_float_memory_matrix() {
+  using unijit::ir::MemoryAccessDescriptor;
+  using unijit::ir::MemoryByteOrder;
+  using unijit::ir::MemoryWidth;
+  using unijit::ir::ValueType;
+  using unijit::runtime::ExecutionContext;
+  using unijit::runtime::MemoryRegion;
+
+  struct FloatMemoryCase final {
+    MemoryWidth width;
+    MemoryByteOrder byte_order;
+    std::uint8_t alignment;
+    Word offset;
+    double value;
+    const char* name;
+  };
+  const std::array<FloatMemoryCase, 6> cases = {{
+      {MemoryWidth::k32, MemoryByteOrder::kNative, 4, 0, 1.5,
+       "aligned-native-f32"},
+      {MemoryWidth::k32, MemoryByteOrder::kLittleEndian, 1, 5, 0.1,
+       "unaligned-little-f32"},
+      {MemoryWidth::k32, MemoryByteOrder::kBigEndian, 1, 3, -13.25,
+       "unaligned-big-f32"},
+      {MemoryWidth::k64, MemoryByteOrder::kNative, 8, 8, 3.141592653589793,
+       "aligned-native-f64"},
+      {MemoryWidth::k64, MemoryByteOrder::kLittleEndian, 1, 3, 1.0e200,
+       "unaligned-little-f64"},
+      {MemoryWidth::k64, MemoryByteOrder::kBigEndian, 1, 7, -0.0,
+       "unaligned-big-f64"},
+  }};
+
+  for (std::size_t index = 0; index < cases.size(); ++index) {
+    const FloatMemoryCase& memory_case = cases[index];
+    alignas(8) std::array<std::uint8_t, 32> reference_bytes{};
+    alignas(8) std::array<std::uint8_t, 32> native_bytes{};
+    reference_bytes.fill(0xCC);
+    native_bytes.fill(0xCC);
+    MemoryRegion reference_region{reference_bytes.data(),
+                                  reference_bytes.size(), true};
+    MemoryRegion native_region{native_bytes.data(), native_bytes.size(), true};
+    ExecutionContext reference_context;
+    ExecutionContext native_context;
+    expect(reference_context.bind_memory_regions(&reference_region, 1).ok() &&
+               native_context.bind_memory_regions(&native_region, 1).ok(),
+           std::string(memory_case.name) + " contexts must bind");
+
+    MemoryAccessDescriptor access;
+    access.width = memory_case.width;
+    access.alignment = memory_case.alignment;
+    access.byte_order = memory_case.byte_order;
+    const std::size_t store_site = 2000 + index * 2;
+    const std::size_t load_site = store_site + 1;
+    FunctionBuilder builder({ValueType::kWord, ValueType::kFloat64}, 1);
+    builder.store_float(builder.parameter(0), builder.parameter(1), access,
+                        store_site);
+    const Value loaded =
+        builder.load_float(builder.parameter(0), access, load_site);
+    expect(builder.set_return(loaded).ok(),
+           std::string(memory_case.name) + " must return its loaded value");
+    const Function function = std::move(builder).build();
+    expect(unijit::ir::verify(function).ok(),
+           std::string(memory_case.name) + " must verify");
+
+    const Word input_bits = unijit::ir::pack_float64(memory_case.value);
+    const std::array<Word, 2> arguments = {memory_case.offset, input_bits};
+    const auto reference = Interpreter::evaluate(
+        function, arguments.data(), arguments.size(), &reference_context);
+    const auto optimized = unijit::ir::Optimizer::run(function);
+    const auto optimized_result =
+        optimized.ok()
+            ? Interpreter::evaluate(optimized.function, arguments.data(),
+                                    arguments.size(), &reference_context)
+            : unijit::ir::EvaluationResult{optimized.status, 0};
+    auto compilation = Compiler::compile(function);
+    const auto native =
+        compilation.ok()
+            ? compilation.function->invoke(arguments.data(), arguments.size(),
+                                           &native_context)
+            : unijit::ir::EvaluationResult{compilation.status, 0};
+
+    std::uint64_t stored_bits = static_cast<std::uint64_t>(input_bits);
+    Word expected_result = input_bits;
+    if (memory_case.width == MemoryWidth::k32) {
+      const float narrowed = static_cast<float>(memory_case.value);
+      std::uint32_t narrowed_bits = 0;
+      std::memcpy(&narrowed_bits, &narrowed, sizeof(narrowed_bits));
+      stored_bits = narrowed_bits;
+      expected_result = unijit::ir::pack_float64(static_cast<double>(narrowed));
+    }
+    const std::size_t width = unijit::ir::memory_width_bytes(memory_case.width);
+    bool byte_exact = true;
+    for (std::size_t byte = 0; byte < width; ++byte) {
+      const std::size_t shift =
+          (memory_case.byte_order == MemoryByteOrder::kBigEndian
+               ? width - byte - 1
+               : byte) *
+          8U;
+      const std::uint8_t expected =
+          static_cast<std::uint8_t>(stored_bits >> shift);
+      const std::size_t position =
+          static_cast<std::size_t>(memory_case.offset) + byte;
+      byte_exact = byte_exact && reference_bytes[position] == expected &&
+                   native_bytes[position] == expected;
+    }
+    expect(reference.ok() && optimized.ok() && optimized_result.ok() &&
+               optimized_result.value == expected_result &&
+               optimized.function.memory_accesses().size() == 2 &&
+               native.ok() && reference.value == expected_result &&
+               native.value == expected_result &&
+               reference_bytes == native_bytes && byte_exact &&
+               compilation.function->stack_map(store_site) != nullptr &&
+               compilation.function->stack_map(load_site) != nullptr,
+           std::string(memory_case.name) +
+               " native path must match conversion and byte order semantics");
+  }
+
+  MemoryAccessDescriptor invalid_access;
+  invalid_access.width = MemoryWidth::k16;
+  FunctionBuilder invalid_builder(1, 1);
+  const Value invalid = invalid_builder.load_float(invalid_builder.parameter(0),
+                                                   invalid_access, 2100);
+  expect(invalid_builder.set_return(invalid).ok() &&
+             !unijit::ir::verify(std::move(invalid_builder).build()).ok(),
+         "verifier must reject non-IEEE float memory widths");
+
+  FunctionBuilder mixed_builder(2, 1);
+  MemoryAccessDescriptor float64_access;
+  float64_access.width = MemoryWidth::k64;
+  const Value mixed = mixed_builder.store_float(mixed_builder.parameter(0),
+                                                mixed_builder.parameter(1),
+                                                float64_access, 2101);
+  expect(mixed_builder.set_return(mixed).ok() &&
+             !unijit::ir::verify(std::move(mixed_builder).build()).ok(),
+         "verifier must reject a Word value passed to a floating store");
+}
+
+void test_bounded_float_memory_control_flow() {
+  using unijit::ir::ControlFlowBuilder;
+  using unijit::ir::MemoryAccessDescriptor;
+  using unijit::ir::MemoryByteOrder;
+  using unijit::ir::MemoryWidth;
+  using unijit::ir::ValueType;
+  using unijit::runtime::ExecutionContext;
+  using unijit::runtime::MemoryRegion;
+
+  alignas(8) std::array<std::uint8_t, 24> bytes{};
+  MemoryRegion region{bytes.data(), bytes.size(), true};
+  ExecutionContext context;
+  expect(context.bind_memory_regions(&region, 1).ok(),
+         "CFG float memory context must bind");
+  MemoryAccessDescriptor access;
+  access.width = MemoryWidth::k32;
+  access.alignment = 1;
+  access.byte_order = MemoryByteOrder::kBigEndian;
+  ControlFlowBuilder builder({ValueType::kWord, ValueType::kFloat64}, 1);
+  const Value offset_parameter = builder.parameter(0);
+  const Value float_parameter = builder.parameter(1);
+  const Value stored =
+      builder.store_float(offset_parameter, float_parameter, access, 2200);
+  const Value loaded = builder.load_float(offset_parameter, access, 2201);
+  const Value result = builder.float64_add(stored, loaded);
+  expect(builder.set_return(result).ok(),
+         "CFG float memory fixture must return a Float64 result");
+  const auto function = std::move(builder).build();
+  const std::array<Word, 2> arguments = {3, unijit::ir::pack_float64(0.1)};
+  const float rounded = 0.1F;
+  const Word expected =
+      unijit::ir::pack_float64(0.1 + static_cast<double>(rounded));
+  const auto reference = unijit::ir::ControlFlowInterpreter::evaluate(
+      function, arguments.data(), arguments.size(), 4, &context);
+  const auto optimized = unijit::ir::Optimizer::run(function);
+  const auto optimized_result =
+      optimized.ok() ? unijit::ir::ControlFlowInterpreter::evaluate(
+                           optimized.function, arguments.data(),
+                           arguments.size(), 4, &context)
+                     : unijit::ir::EvaluationResult{optimized.status, 0};
+  auto compilation = Compiler::compile(function);
+  const auto native = compilation.ok()
+                          ? compilation.function->invoke(
+                                arguments.data(), arguments.size(), &context)
+                          : unijit::ir::EvaluationResult{compilation.status, 0};
+  expect(reference.ok() && reference.value == expected && optimized.ok() &&
+             optimized_result.ok() && optimized_result.value == expected &&
+             optimized.function.memory_accesses().size() == 2 && native.ok() &&
+             native.value == expected && bytes[3] == 0x3D && bytes[4] == 0xCC &&
+             bytes[5] == 0xCC && bytes[6] == 0xCD,
+         "CFG Float32 memory must preserve store result, rounding, effects, "
+         "and endian order");
+  if (compilation.ok()) {
+    const auto* store_map = compilation.function->stack_map(2200);
+    const std::array<Word, 2> failing_arguments = {
+        22, unijit::ir::pack_float64(4.25)};
+    const auto failed = compilation.function->invoke(
+        failing_arguments.data(), failing_arguments.size(), &context);
+    const auto capture = compilation.function->reconstruct_stack_map(context);
+    const auto* captured_offset =
+        capture.ok() ? capture.capture.find(offset_parameter) : nullptr;
+    const auto* captured_float =
+        capture.ok() ? capture.capture.find(float_parameter) : nullptr;
+    expect(store_map != nullptr && store_map->live_values.size() == 2 &&
+               !failed.ok() && context.exit_site() == 2200 && capture.ok() &&
+               captured_offset != nullptr && captured_float != nullptr &&
+               captured_offset->value_bits == failing_arguments[0] &&
+               captured_float->value_bits == failing_arguments[1],
+           "memory exits must capture all live Word and Float64 values");
   }
 }
 
@@ -5440,6 +5736,9 @@ int main() {
   test_bounded_memory_interpreter();
   test_bounded_memory_control_flow_interpreter();
   test_native_bounded_memory_matrix();
+  test_word_byte_swap();
+  test_native_bounded_float_memory_matrix();
+  test_bounded_float_memory_control_flow();
   test_code_cache_lifecycle();
   test_code_cache_concurrency();
   test_verifier_rejects_forward_reference();
