@@ -1105,6 +1105,165 @@ void test_bounded_float_memory_control_flow() {
   }
 }
 
+void test_controlled_frame_slots() {
+  using unijit::ir::ControlFlowBuilder;
+  using unijit::ir::ControlFlowInterpreter;
+  using unijit::ir::FrameSlot;
+  using unijit::ir::ValueType;
+
+  FunctionBuilder builder({ValueType::kWord, ValueType::kFloat64});
+  const FrameSlot word_slot =
+      builder.create_frame_slot(ValueType::kWord, true);
+  const FrameSlot float_slot = builder.create_frame_slot(ValueType::kFloat64);
+  const Value initial_word = builder.load_frame(word_slot);
+  const Value stored_word =
+      builder.store_frame(word_slot, builder.parameter(0));
+  const Value stored_float =
+      builder.store_frame(float_slot, builder.parameter(1));
+  const Value loaded_word = builder.load_frame(word_slot);
+  const Value loaded_float = builder.load_frame(float_slot);
+  const Value float_matches = builder.float64_equal(loaded_float, stored_float);
+  const Value result = builder.add(
+      builder.add(initial_word, loaded_word), float_matches);
+  expect(stored_word.valid() && builder.set_return(result).ok(),
+         "controlled frame fixture must store and reload typed values");
+  const Function function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok() &&
+             function.frame_slots().size() == 2 &&
+             function.frame_slots()[0].type == ValueType::kWord &&
+             function.frame_slots()[0].sensitive &&
+             function.frame_slots()[1].type == ValueType::kFloat64 &&
+             !function.frame_slots()[1].sensitive,
+         "frame descriptors must retain type and sensitivity metadata");
+
+  const std::array<Word, 2> first_arguments = {
+      41, unijit::ir::pack_float64(6.25)};
+  const std::array<Word, 2> second_arguments = {
+      -9, unijit::ir::pack_float64(-0.0)};
+  const auto interpreted =
+      Interpreter::evaluate(function, first_arguments.data(),
+                            first_arguments.size());
+  const auto optimization = unijit::ir::Optimizer::run(function);
+  const auto optimized_result =
+      optimization.ok()
+          ? Interpreter::evaluate(optimization.function,
+                                  first_arguments.data(),
+                                  first_arguments.size())
+          : unijit::ir::EvaluationResult{optimization.status, 0};
+  auto compilation = Compiler::compile(function);
+  expect(interpreted.ok() && interpreted.value == 42 && optimization.ok() &&
+             optimized_result.ok() && optimized_result.value == 42 &&
+             optimization.function.frame_slots().size() == 2 &&
+             optimization.function.frame_slots()[0].sensitive &&
+             compilation.ok(),
+         "interpreter, optimizer, and compiler must preserve frame state");
+  if (compilation.ok()) {
+    const auto first = compilation.function->invoke(first_arguments.data(),
+                                                     first_arguments.size());
+    const auto second = compilation.function->invoke(
+        second_arguments.data(), second_arguments.size());
+    expect(first.ok() && first.value == 42 && second.ok() &&
+               second.value == -8 &&
+               compilation.function->stats().frame_slots == 2 &&
+               !compilation.function->requires_context(),
+           "native frames must be zeroed per invocation without requiring a runtime context");
+  }
+
+  FunctionBuilder sensitive_builder(0);
+  const FrameSlot sensitive_slot =
+      sensitive_builder.create_frame_slot(ValueType::kWord, true);
+  expect(sensitive_builder
+             .set_return(sensitive_builder.load_frame(sensitive_slot))
+             .ok(),
+         "sensitive frame fixture must return its initial value");
+  FunctionBuilder ordinary_builder(0);
+  const FrameSlot ordinary_slot =
+      ordinary_builder.create_frame_slot(ValueType::kWord);
+  expect(ordinary_builder
+             .set_return(ordinary_builder.load_frame(ordinary_slot))
+             .ok(),
+         "ordinary frame fixture must return its initial value");
+  auto sensitive_compilation =
+      Compiler::compile(std::move(sensitive_builder).build());
+  auto ordinary_compilation =
+      Compiler::compile(std::move(ordinary_builder).build());
+  expect(sensitive_compilation.ok() && ordinary_compilation.ok() &&
+             sensitive_compilation.function->stats().code_size >
+                 ordinary_compilation.function->stats().code_size,
+         "sensitive slots must emit additional native return-path clearing");
+
+  ControlFlowBuilder cfg_builder(
+      {ValueType::kWord, ValueType::kFloat64});
+  const FrameSlot cfg_word =
+      cfg_builder.create_frame_slot(ValueType::kWord, true);
+  const FrameSlot cfg_float =
+      cfg_builder.create_frame_slot(ValueType::kFloat64);
+  const Value cfg_initial = cfg_builder.load_frame(cfg_word);
+  cfg_builder.store_frame(cfg_word, cfg_builder.parameter(0));
+  cfg_builder.store_frame(cfg_float, cfg_builder.parameter(1));
+  const unijit::ir::Block body = cfg_builder.create_block(0);
+  expect(cfg_builder.jump(body, {}).ok() &&
+             cfg_builder.set_insertion_block(body).ok(),
+         "controlled CFG frame fixture must enter its return block");
+  const Value cfg_loaded_word = cfg_builder.load_frame(cfg_word);
+  const Value cfg_loaded_float = cfg_builder.load_frame(cfg_float);
+  const Value cfg_float_matches =
+      cfg_builder.float64_equal(cfg_loaded_float, cfg_builder.parameter(1));
+  expect(cfg_builder
+             .set_return(cfg_builder.add(
+                 cfg_builder.add(cfg_initial, cfg_loaded_word),
+                 cfg_float_matches))
+             .ok(),
+         "controlled CFG frame fixture must return reloaded state");
+  const auto cfg_function = std::move(cfg_builder).build();
+  const auto cfg_reference = ControlFlowInterpreter::evaluate(
+      cfg_function, first_arguments.data(), first_arguments.size());
+  const auto cfg_optimization = unijit::ir::Optimizer::run(cfg_function);
+  const auto cfg_optimized_result =
+      cfg_optimization.ok()
+          ? ControlFlowInterpreter::evaluate(
+                cfg_optimization.function, first_arguments.data(),
+                first_arguments.size())
+          : unijit::ir::EvaluationResult{cfg_optimization.status, 0};
+  auto cfg_compilation = Compiler::compile(cfg_function);
+  expect(unijit::ir::verify(cfg_function).ok() && cfg_reference.ok() &&
+             cfg_reference.value == 42 && cfg_optimization.ok() &&
+             cfg_optimized_result.ok() && cfg_optimized_result.value == 42 &&
+             cfg_optimization.function.frame_slots().size() == 2 &&
+             cfg_compilation.ok(),
+         "CFG frame state must survive verification, optimization, and lowering");
+  if (cfg_compilation.ok()) {
+    const auto first = cfg_compilation.function->invoke(
+        first_arguments.data(), first_arguments.size());
+    const auto second = cfg_compilation.function->invoke(
+        second_arguments.data(), second_arguments.size());
+    expect(first.ok() && first.value == 42 && second.ok() &&
+               second.value == -8 &&
+               cfg_compilation.function->stats().frame_slots == 2,
+           "native CFG frames must preserve cross-block state and per-call initialization");
+  }
+
+  FunctionBuilder invalid_slot_builder(0);
+  expect(invalid_slot_builder
+             .set_return(invalid_slot_builder.load_frame(FrameSlot{999}))
+             .ok() &&
+             !unijit::ir::verify(
+                  std::move(invalid_slot_builder).build())
+                  .ok(),
+         "verifier must reject an undeclared frame slot");
+
+  FunctionBuilder invalid_type_builder(1);
+  const FrameSlot invalid_float_slot =
+      invalid_type_builder.create_frame_slot(ValueType::kFloat64);
+  const Value invalid_store = invalid_type_builder.store_frame(
+      invalid_float_slot, invalid_type_builder.parameter(0));
+  expect(invalid_type_builder.set_return(invalid_store).ok() &&
+             !unijit::ir::verify(
+                  std::move(invalid_type_builder).build())
+                  .ok(),
+         "verifier must reject a frame store whose SSA type differs from its slot");
+}
+
 void test_code_cache_lifecycle() {
   using unijit::jit::CodeCache;
   using unijit::jit::CodeCacheLimits;
@@ -3073,6 +3232,21 @@ void test_compilation_resource_limits() {
                  unijit::StatusCode::kResourceExhausted &&
              cfg_limited.status.location() == 2,
          "compilation must reject oversized CFGs before dominance analysis");
+
+  FunctionBuilder frame_builder(0);
+  frame_builder.create_frame_slot(unijit::ir::ValueType::kWord);
+  frame_builder.create_frame_slot(unijit::ir::ValueType::kFloat64);
+  expect(frame_builder.set_return(frame_builder.constant(0)).ok(),
+         "resource-limit frame fixture must be constructible");
+  unijit::jit::CompilationOptions frame_options;
+  frame_options.limits.maximum_frame_slots = 1;
+  const auto frame_limited = Compiler::compile(
+      std::move(frame_builder).build(), frame_options);
+  expect(!frame_limited.ok() &&
+             frame_limited.status.code() ==
+                 unijit::StatusCode::kResourceExhausted &&
+             frame_limited.status.location() == 2,
+         "compilation must bound fixed frame storage before optimization");
 }
 
 void test_constant_float64_nonzero_guard_elimination() {
@@ -5739,6 +5913,7 @@ int main() {
   test_word_byte_swap();
   test_native_bounded_float_memory_matrix();
   test_bounded_float_memory_control_flow();
+  test_controlled_frame_slots();
   test_code_cache_lifecycle();
   test_code_cache_concurrency();
   test_verifier_rejects_forward_reference();
