@@ -8,9 +8,10 @@ std::int64_t generated(const std::int64_t* arguments,
 ```
 
 Generated code only uses caller-saved registers and restores its stack before
-returning. The optional context carries cooperative interruption and diagnosed
-runtime exits; null bypasses polling. Integer operations have modulo-2^64
-semantics in both the reference interpreter and native backends.
+returning. The context carries cooperative interruption, diagnosed runtime
+exits, bounded regions, and trusted-object bindings; null bypasses polling only
+for functions that do not require other context state. Integer operations have
+modulo-2^64 semantics in both the reference interpreter and native backends.
 
 ## Backend baselines
 
@@ -89,6 +90,18 @@ the native unit suite. The matrix compares both IR forms and optimized IR with
 the interpreter, checks exact bytes for native/little/big order and aligned or
 unaligned access, and reconstructs live Word and Float64 values after a
 diagnosed out-of-bounds exit.
+
+At commit `6815182`, controlled frame slots and trusted runtime-object layouts
+passed the warnings-as-errors eight-test qualification configuration on Darwin
+arm64, Ubuntu 24.04 x86-64 with GCC 13.3, Windows 11 x86-64 with MSVC 19.50,
+and Bianbu riscv64 with GCC 14.2. Darwin x86-64 through Rosetta also executed
+the native unit suite. The object matrix covers managed identity/size/alignment
+and write-permission preflight, read-only load-only bindings, Word/Float64
+fields, baseline and optimized straight-line code, CFG optimization and native
+lowering, neighboring-field preservation, invalid layout/field rejection, and
+resource limits. The real Windows and RISC-V hosts received the exact Git
+archive over their registered SSH channels; all build output remained under
+the archive's root `build/` directory.
 
 The v2 benchmark at commit `8e78b8e` uses deterministic finite binary64 input
 bits so FMA contraction cannot change cross-host checksums. With 1,000 warmup
