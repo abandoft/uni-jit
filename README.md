@@ -10,9 +10,12 @@ management. Third-party JIT projects under `third/` are references and
 benchmark competitors; UniJIT does not link against them as its backend.
 
 Native Word and Float64 backends currently target AArch64, x86-64, and
-RISC-V 64. Bounded Word memory supports byte-exact 8/16/32/64-bit loads and
-stores, explicit byte order, alignment and permission checks, diagnosed exits,
-and native lowering on all three backends.
+RISC-V 64. The complete current explicit strict 128-bit SIMD surface also has
+native AArch64 Advanced SIMD/NEON lowering; x86-64 and RISC-V 64 vector code
+remain fail-closed until their independent lowering is qualified. Bounded Word
+memory supports byte-exact 8/16/32/64-bit loads and stores, explicit byte
+order, alignment and permission checks, diagnosed exits, and native lowering
+on all three backends.
 See [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) for the design and delivery
 gates, [doc/PORTABILITY.md](doc/PORTABILITY.md) for verified platforms, and
 [doc/RUNTIME.md](doc/RUNTIME.md) for execution contexts, exits, and safepoints.
@@ -44,7 +47,8 @@ atomics, immutable patch cells, fast and tail calls, bounded frame locals,
 target profiles, and validated serialization/AOT.
 [doc/PORTABLE_SIMD.md](doc/PORTABLE_SIMD.md) defines the delivered strict
 128-bit semantic core, lane and mask rules, verifier and optimizer guarantees,
-fail-closed native boundary, qualification, and remaining three-backend gates.
+AArch64 native lowering, fail-closed target boundaries, qualification, and
+remaining cross-backend gates.
 [doc/TARGET_PROFILES.md](doc/TARGET_PROFILES.md) defines host feature discovery,
 portable baselines, immutable compilation identity, and profile-scoped caches.
 [doc/TYPED_MEMORY.md](doc/TYPED_MEMORY.md) defines bounded regions, Word and

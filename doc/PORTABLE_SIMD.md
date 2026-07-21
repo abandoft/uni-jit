@@ -3,19 +3,19 @@
 ## Delivery status
 
 UniJIT now has the semantic core for explicit, fixed-width 128-bit SIMD in
-both straight-line SSA and CFG SSA. The public types, verifier, two reference
-interpreters, optimizer folding, deterministic differential generator, table
-limits, and fail-closed compilation boundary are implemented independently of
-SLJIT or another JIT backend.
+both straight-line SSA and CFG SSA, plus native AArch64 Advanced SIMD/NEON
+lowering for the complete current explicit operation surface. The public
+types, verifier, two reference interpreters, optimizer folding, deterministic
+differential generator, table limits, allocation, and encoders are implemented
+independently of SLJIT or another JIT backend.
 
-This is not yet a native-SIMD delivery claim. Vector register allocation,
-16-byte spills, call preservation, bounded vector memory, AArch64 NEON,
-x86-64 SSE2, RISC-V RVV or verified scalar fallback, capability telemetry,
-and real-host performance gates remain P0 work. Compilation returns
+This is an AArch64 native-SIMD delivery claim, not yet a three-backend or
+vector-memory claim. x86-64 SSE2, RISC-V RVV or verified scalar fallback,
+bounded vector memory, capability telemetry, and cross-host performance gates
+remain P0 work. On x86-64 and RISC-V 64, compilation returns
 `StatusCode::kCodeGenerationFailed` if a vector node survives optimization.
 An optimized program whose vector work folds completely to scalar SSA may use
-the existing scalar native backend; baseline compilation cannot bypass the
-vector preflight.
+the existing scalar native backend on every target.
 
 ## Representation and lane order
 
@@ -110,8 +110,9 @@ The optimizer treats every vector operation as pure, retains all three select
 operands in liveness, remaps side tables, and folds complete constant vector
 expressions bit-for-bit. It can collapse a constant vector program to one
 scalar constant. Dynamic vector expressions remain explicit; they are never
-silently discarded or reinterpreted by allocation. Native compilation still
-rejects them before an incomplete encoder can publish code.
+silently discarded or reinterpreted by allocation. AArch64 compiles them
+natively, while targets without complete lowering reject them before an
+incomplete encoder can publish code.
 
 ## Qualification and remaining gates
 
@@ -127,22 +128,37 @@ The typed allocation foundation is delivered. Straight-line and CFG allocation
 use independent Word and physical SIMD banks, allow Float64 and vectors to
 share the latter without overlap, reserve aligned two-word spill and
 caller-clobber backup slots, detect mixed Float64/vector CFG register cycles by
-physical bank, and preserve a full 128-bit cycle source when required. A
-stack-only vector mode is available to the RISC-V backend until RVV is selected.
-Non-reference vector lanes are deliberately excluded from the scalar
-`ExecutionContext` capture payload; vector deoptimization remains unsupported.
+physical bank, and preserve a full 128-bit cycle source when required. The
+AArch64 backend consumes those plans for full-width loads, stores, mixed edge
+copies, and helper-call saves. A stack-only vector mode is available to the
+RISC-V backend until RVV is selected. Non-reference vector lanes are
+deliberately excluded from the scalar `ExecutionContext` capture payload;
+vector deoptimization remains unsupported.
+
+The AArch64 encoder covers integer and floating arithmetic, bitwise logic,
+canonical integer and ordered floating comparisons, mask selection, splats,
+lane insert/extract, sign masks, constant shuffles, and signed/unsigned
+widening. I64x2 multiplication is deliberately scalar-legalized per lane
+because the architectural 128-bit NEON floor has no matching two-lane multiply
+instruction. No operation silently selects relaxed floating-point semantics.
+
+Native qualification executes the current operation surface in both IR forms
+on a real Apple AArch64 host, including deliberate `v0` clobbering by a runtime
+helper, 24-way register pressure, aligned vector spills, vector CFG block
+parameters, fallback edge temporaries, and mixed Float64/vector cycles. Both
+baseline and optimized native tiers are checked against the appropriate
+reference interpreter by the committed 128-program deterministic corpus and
+two extended 512-program runs; the same corpus passes under ASan/UBSan.
 
 The P0 feature remains incomplete until all of the following are delivered:
 
 1. bounded aligned and unaligned vector loads/stores using the existing memory
    provenance and diagnosed-exit model;
-2. backend integration of the delivered allocation plans for 16-byte spills,
-   CFG parallel copies, helper-call preservation, and any ABI-specific
-   nonvolatile saves;
-3. independent NEON and SSE2 lowering plus RVV lowering or an explicitly
-   reported verified scalar fallback;
-4. target-profile-scoped `native`/`legalized`/`scalarized`/`unsupported`
+2. independent SSE2 lowering plus RVV lowering or an explicitly reported
+   verified scalar fallback, including their spill, CFG-copy, helper-call, and
+   ABI-specific nonvolatile paths;
+3. target-profile-scoped `native`/`legalized`/`scalarized`/`unsupported`
    preflight and compilation telemetry;
-5. interpreter/native differential, sanitizer, spill, call, and complete-loop
-   performance evidence on real AArch64, Ubuntu and Windows x86-64, and
-   RISC-V 64 hosts.
+4. complete-loop SIMD performance evidence on real AArch64, Ubuntu and Windows
+   x86-64, and RISC-V 64 hosts, plus native differential, sanitizer, spill,
+   call, and edge-copy evidence on each newly enabled backend.
