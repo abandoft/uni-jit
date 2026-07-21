@@ -31,13 +31,17 @@ int main() {
     return EXIT_FAILURE;
   }
 
-  constexpr std::array<const char *, 4> kComparisonSources = {
+  constexpr std::array<const char *, 6> kComparisonSources = {
       "def compare(a, b): return a < b",
       "def compare(a, b): return a <= b",
       "def compare(a, b): return a > b",
-      "def compare(a, b): return a >= b"};
-  constexpr std::array<unijit::ir::Word, 4> kEqualComparisonResults = {
-      0, 1, 0, 1};
+      "def compare(a, b): return a >= b",
+      "def compare(a, b): return a == b",
+      "def compare(a, b): return a != b"};
+  constexpr std::array<unijit::ir::Word, 6> kEqualComparisonResults = {
+      0, 1, 0, 1, 1, 0};
+  constexpr std::array<unijit::ir::Word, 6> kUnorderedComparisonResults = {
+      0, 0, 0, 0, 0, 1};
   const std::array<unijit::ir::Word, 2> equal_arguments = {
       unijit::ir::pack_float64(2.0), unijit::ir::pack_float64(2.0)};
   const std::array<unijit::ir::Word, 2> unordered_arguments = {
@@ -63,8 +67,9 @@ int main() {
         comparison.function->return_type() !=
             unijit::ir::ValueType::kWord ||
         !equal.ok() || equal.value != kEqualComparisonResults[index] ||
-        !unordered.ok() || unordered.value != 0) {
-      std::cerr << "PocketPy ordered comparison semantics were not preserved\n";
+        !unordered.ok() ||
+        unordered.value != kUnorderedComparisonResults[index]) {
+      std::cerr << "PocketPy numeric comparison semantics were not preserved\n";
       return EXIT_FAILURE;
     }
   }
@@ -246,6 +251,30 @@ int main() {
               << loop_control.status.message() << '\n';
     return EXIT_FAILURE;
   }
+
+  constexpr char kEqualityLoopSource[] =
+      "def equality_loop():\n"
+      "    sum = 0.0\n"
+      "    for iteration in range(6.0):\n"
+      "        if iteration == 2.0:\n"
+      "            continue\n"
+      "        if iteration == 5.0:\n"
+      "            break\n"
+      "        if iteration != 3.0:\n"
+      "            sum += iteration\n"
+      "    return sum\n";
+  const auto equality_loop =
+      unijit::frontend::pocketpy::translate_numeric_function(
+          kEqualityLoopSource);
+  const auto equality_loop_result =
+      equality_loop.ok() ? equality_loop.function->invoke(nullptr, 0)
+                         : unijit::ir::EvaluationResult{};
+  if (!equality_loop.ok() || !equality_loop_result.ok() ||
+      equality_loop_result.value != unijit::ir::pack_float64(5.0)) {
+    std::cerr << "PocketPy equality loop semantics were not preserved: "
+              << equality_loop.status.message() << '\n';
+    return EXIT_FAILURE;
+  }
   constexpr char kRejectedControlElse[] =
       "def rejected(count):\n"
       "    sum = 0.0\n"
@@ -419,7 +448,8 @@ int main() {
       "native_cached = unijit.compile(\"def affine(a, b): return (a + 2.5) * "
       "(b - -3)\")\n"
       "divide = unijit.compile(\"def divide(a, b): return a / b\")\n"
-      "compare = unijit.compile(\"def compare(a, b): return (a + 1) >= b * 2\")\n";
+      "compare = unijit.compile(\"def compare(a, b): return (a + 1) >= b * 2\")\n"
+      "equality = unijit.compile(\"def equality(a, b): return a != b\")\n";
   if (!py_exec(kNativeSource, "<unijit-pocketpy-native>", EXEC_MODE, nullptr)) {
     py_printexc();
     py_finalize();
@@ -442,13 +472,20 @@ int main() {
     return EXIT_FAILURE;
   }
   if (!py_exec("comparison = compare(3, 2)\n"
+               "equality_result = equality(3, 2)\n"
                "for comparison_iteration in range(63):\n"
                "    comparison = compare(3, 2)\n"
+               "    equality_result = equality(3, 2)\n"
                "assert unijit.wait(compare, 5000)\n"
+               "assert unijit.wait(equality, 5000)\n"
                "comparison_after = compare(2, 2)\n"
+               "equality_after = equality(0.0, -0.0)\n"
                "comparison_tier = unijit.stats(compare)\n"
+               "equality_tier = unijit.stats(equality)\n"
                "assert comparison_tier['active_tier'] == 'optimized'\n"
-               "assert comparison_tier['promotions'] == 1\n",
+               "assert comparison_tier['promotions'] == 1\n"
+               "assert equality_tier['active_tier'] == 'optimized'\n"
+               "assert equality_tier['promotions'] == 1\n",
                "<unijit-pocketpy-boolean>", EXEC_MODE, nullptr)) {
     py_printexc();
     py_finalize();
@@ -456,9 +493,14 @@ int main() {
   }
   const py_Ref comparison_result = py_getglobal(py_name("comparison"));
   const py_Ref comparison_after = py_getglobal(py_name("comparison_after"));
+  const py_Ref equality_result = py_getglobal(py_name("equality_result"));
+  const py_Ref equality_after = py_getglobal(py_name("equality_after"));
   if (comparison_result == nullptr || !py_isbool(comparison_result) ||
       !py_tobool(comparison_result) || comparison_after == nullptr ||
-      !py_isbool(comparison_after) || py_tobool(comparison_after)) {
+      !py_isbool(comparison_after) || py_tobool(comparison_after) ||
+      equality_result == nullptr || !py_isbool(equality_result) ||
+      !py_tobool(equality_result) || equality_after == nullptr ||
+      !py_isbool(equality_after) || py_tobool(equality_after)) {
     std::cerr << "PocketPy did not retain bool results across tiering\n";
     py_finalize();
     return EXIT_FAILURE;
@@ -514,6 +556,33 @@ int main() {
   if (control_loop_result == nullptr || !py_isfloat(control_loop_result) ||
       py_tofloat(control_loop_result) != 25.0) {
     std::cerr << "PocketPy runtime did not execute loop control guards\n";
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  constexpr char kNativeEqualityLoopSource[] =
+      "native_equality_loop = unijit.compile('''def equality_loop():\n"
+      "    sum = 0.0\n"
+      "    for iteration in range(6.0):\n"
+      "        if iteration == 2.0:\n"
+      "            continue\n"
+      "        if iteration == 5.0:\n"
+      "            break\n"
+      "        if iteration != 3.0:\n"
+      "            sum += iteration\n"
+      "    return sum\n''')\n"
+      "equality_loop_result = native_equality_loop()\n";
+  if (!py_exec(kNativeEqualityLoopSource,
+               "<unijit-pocketpy-equality-loop>", EXEC_MODE, nullptr)) {
+    py_printexc();
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  const py_Ref native_equality_loop_result =
+      py_getglobal(py_name("equality_loop_result"));
+  if (native_equality_loop_result == nullptr ||
+      !py_isfloat(native_equality_loop_result) ||
+      py_tofloat(native_equality_loop_result) != 5.0) {
+    std::cerr << "PocketPy runtime did not execute an equality loop\n";
     py_finalize();
     return EXIT_FAILURE;
   }

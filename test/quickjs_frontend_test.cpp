@@ -68,13 +68,19 @@ int main() {
     return EXIT_FAILURE;
   }
 
-  constexpr std::array<const char*, 4> kComparisonSources = {
+  constexpr std::array<const char*, 8> kComparisonSources = {
       "function compare(a, b) { return a < b; }",
       "function compare(a, b) { return a <= b; }",
       "function compare(a, b) { return a > b; }",
-      "function compare(a, b) { return a >= b; }"};
-  constexpr std::array<unijit::ir::Word, 4> kEqualComparisonResults = {
-      0, 1, 0, 1};
+      "function compare(a, b) { return a >= b; }",
+      "function compare(a, b) { return a == b; }",
+      "function compare(a, b) { return a != b; }",
+      "function compare(a, b) { return a === b; }",
+      "function compare(a, b) { return a !== b; }"};
+  constexpr std::array<unijit::ir::Word, 8> kEqualComparisonResults = {
+      0, 1, 0, 1, 1, 0, 1, 0};
+  constexpr std::array<unijit::ir::Word, 8> kUnorderedComparisonResults = {
+      0, 0, 0, 0, 0, 1, 0, 1};
   const std::array<unijit::ir::Word, 2> equal_arguments = {
       unijit::ir::pack_float64(2.0), unijit::ir::pack_float64(2.0)};
   const std::array<unijit::ir::Word, 2> unordered_arguments = {
@@ -100,8 +106,9 @@ int main() {
         comparison.function->return_type() !=
             unijit::ir::ValueType::kWord ||
         !equal.ok() || equal.value != kEqualComparisonResults[index] ||
-        !unordered.ok() || unordered.value != 0) {
-      std::cerr << "QuickJS ordered comparison semantics were not preserved\n";
+        !unordered.ok() ||
+        unordered.value != kUnorderedComparisonResults[index]) {
+      std::cerr << "QuickJS numeric comparison semantics were not preserved\n";
       return EXIT_FAILURE;
     }
   }
@@ -195,6 +202,29 @@ int main() {
       loop_control_result.value != unijit::ir::pack_float64(25.0)) {
     std::cerr << "QuickJS break/continue loop semantics were not preserved: "
               << loop_control.status.message() << '\n';
+    return EXIT_FAILURE;
+  }
+
+  constexpr char kEqualityLoopSource[] =
+      "function equalityLoop() {"
+      "  let sum = 0.0;"
+      "  for (let iteration = 0.0; iteration !== 6.0; ++iteration) {"
+      "    if (iteration === 2.0) { continue; }"
+      "    if (iteration == 5.0) { break; }"
+      "    sum += iteration;"
+      "  }"
+      "  return sum;"
+      "}";
+  const auto equality_loop =
+      unijit::frontend::quickjs::translate_numeric_function(
+          kEqualityLoopSource);
+  const auto equality_loop_result =
+      equality_loop.ok() ? equality_loop.function->invoke(nullptr, 0)
+                         : unijit::ir::EvaluationResult{};
+  if (!equality_loop.ok() || !equality_loop_result.ok() ||
+      equality_loop_result.value != unijit::ir::pack_float64(8.0)) {
+    std::cerr << "QuickJS equality loop semantics were not preserved: "
+              << equality_loop.status.message() << '\n';
     return EXIT_FAILURE;
   }
   constexpr char kRejectedControlElse[] =
@@ -319,9 +349,11 @@ int main() {
       "}"
       "sourceFunction.toString = () => 'function(a, b) { return 999; }';"
       "function compareFunction(a, b) { return (a + 1) >= b * 2; }"
+      "function equalityFunction(a, b) { return a !== b; }"
       "const native = unijit.compile(sourceFunction);"
       "const nativeCached = unijit.compile(sourceFunction);"
       "const nativeCompare = unijit.compile(compareFunction);"
+      "const nativeEquality = unijit.compile(equalityFunction);"
       "native(1.5, 4.0, 99) + nativeCached(1.5, 4.0);";
   result = JS_Eval(context, kNativeSource, std::strlen(kNativeSource),
                    "<unijit-quickjs-native>", JS_EVAL_TYPE_GLOBAL);
@@ -338,18 +370,41 @@ int main() {
       "let comparisonTyped = true;"
       "for (let index = 0; index < 64; ++index) {"
       "  comparisonTyped = comparisonTyped && nativeCompare(3, 2) === true;"
+      "  comparisonTyped = comparisonTyped && nativeEquality(3, 2) === true;"
       "}"
       "const comparisonWaited = unijit.wait(nativeCompare, 5000);"
+      "const equalityWaited = unijit.wait(nativeEquality, 5000);"
       "const comparisonStats = unijit.stats(nativeCompare);"
-      "comparisonTyped && comparisonWaited &&"
+      "const equalityStats = unijit.stats(nativeEquality);"
+      "comparisonTyped && comparisonWaited && equalityWaited &&"
       "nativeCompare(2, 2) === false &&"
+      "nativeEquality(0, -0) === false &&"
+      "nativeEquality(NaN, NaN) === true &&"
       "typeof nativeCompare(3, 2) === 'boolean' &&"
+      "typeof nativeEquality(3, 2) === 'boolean' &&"
       "comparisonStats.active_tier === 'optimized' &&"
-      "comparisonStats.promotions === 1;";
+      "comparisonStats.promotions === 1 &&"
+      "equalityStats.active_tier === 'optimized' &&"
+      "equalityStats.promotions === 1;";
   result = JS_Eval(context, kBooleanSource, std::strlen(kBooleanSource),
                    "<unijit-quickjs-boolean>", JS_EVAL_TYPE_GLOBAL);
   if (JS_IsException(result) || JS_ToBool(context, result) != 1) {
     std::cerr << "QuickJS did not retain Boolean results across tiering\n";
+    JS_FreeValue(context, result);
+    return EXIT_FAILURE;
+  }
+  JS_FreeValue(context, result);
+
+  const std::string equality_loop_call =
+      std::string("const nativeEqualityLoop = unijit.compile(") +
+      kEqualityLoopSource + "); nativeEqualityLoop();";
+  result = JS_Eval(context, equality_loop_call.data(),
+                   equality_loop_call.size(),
+                   "<unijit-quickjs-equality-loop>", JS_EVAL_TYPE_GLOBAL);
+  number = 0.0;
+  if (JS_IsException(result) ||
+      JS_ToFloat64(context, &number, result) != 0 || number != 8.0) {
+    std::cerr << "QuickJS runtime did not execute an equality loop\n";
     JS_FreeValue(context, result);
     return EXIT_FAILURE;
   }
