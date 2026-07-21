@@ -3760,6 +3760,71 @@ void test_control_flow_float64_edge_spill_copy() {
   }
 }
 
+void test_control_flow_duplicate_float64_edge_arguments() {
+  using unijit::ir::ControlFlowBuilder;
+  using unijit::ir::ValueType;
+
+  const std::vector<ValueType> parameter_types(4, ValueType::kFloat64);
+  const std::vector<ValueType> state_types(8, ValueType::kFloat64);
+  ControlFlowBuilder builder(parameter_types);
+  const auto positive = builder.create_block(0);
+  const auto nonpositive = builder.create_block(0);
+  const auto dispatch = builder.create_block(state_types);
+  const auto body = builder.create_block(state_types);
+  const Value value0 = builder.parameter(0);
+  const Value value1 = builder.parameter(1);
+  const Value value2 = builder.parameter(2);
+  const Value value3 = builder.parameter(3);
+  const Value zero = builder.float64_constant(0.0);
+  expect(builder.guard_float64_nonzero(value2, 99).valid() &&
+             builder
+                 .branch(builder.float64_less_than(zero, value2), positive,
+                         {}, nonpositive, {})
+                 .ok(),
+         "duplicate Float64 edge fixture must select an empty block");
+  const std::vector<Value> arguments_to_dispatch = {
+      value0, value1, value2, value3, value3, value1, value2, value0};
+  expect(builder.set_insertion_block(positive).ok() &&
+             builder.jump(dispatch, arguments_to_dispatch).ok() &&
+             builder.set_insertion_block(nonpositive).ok() &&
+             builder.jump(dispatch, arguments_to_dispatch).ok(),
+         "duplicate Float64 edge arguments must cross empty blocks");
+  expect(builder.set_insertion_block(dispatch).ok() &&
+             builder.safepoint(100).valid(),
+         "duplicate Float64 edge fixture must contain a safepoint");
+  std::vector<Value> dispatch_arguments;
+  for (std::size_t index = 0; index < state_types.size(); ++index) {
+    dispatch_arguments.push_back(builder.block_parameter(dispatch, index));
+  }
+  expect(builder.jump(body, dispatch_arguments).ok() &&
+             builder.set_insertion_block(body).ok() &&
+             builder.set_return(builder.block_parameter(body, 5)).ok(),
+         "duplicate Float64 edge fixture must return its sixth value");
+  const auto function = std::move(builder).build();
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(),
+         "duplicate Float64 edge fixture must compile");
+  const std::array<std::array<Word, 4>, 2> cases = {{
+      {unijit::ir::pack_float64(1.0), unijit::ir::pack_float64(20.0),
+       unijit::ir::pack_float64(1.0), unijit::ir::pack_float64(0.25)},
+      {unijit::ir::pack_float64(20.0), unijit::ir::pack_float64(1.0),
+       unijit::ir::pack_float64(-1.0), unijit::ir::pack_float64(-0.25)},
+  }};
+  for (const auto& arguments : cases) {
+    const auto interpreted = unijit::ir::ControlFlowInterpreter::evaluate(
+        function, arguments.data(), arguments.size());
+    expect(interpreted.ok() && interpreted.value == arguments[1],
+           "duplicate Float64 edge fixture must interpret each direction");
+    if (!compilation.ok()) {
+      continue;
+    }
+    const auto native =
+        compilation.function->invoke(arguments.data(), arguments.size());
+    expect(native.ok() && native.value == interpreted.value,
+           "native duplicate Float64 edge arguments must preserve positions");
+  }
+}
+
 void test_control_flow_preserves_nonlocal_merge_state() {
   using unijit::ir::ValueType;
   const std::vector<ValueType> state_types(4, ValueType::kFloat64);
@@ -4915,6 +4980,7 @@ int main() {
   test_control_flow_parallel_edge_copy();
   test_control_flow_float64_parallel_edge_copy();
   test_control_flow_float64_edge_spill_copy();
+  test_control_flow_duplicate_float64_edge_arguments();
   test_control_flow_preserves_nonlocal_merge_state();
   test_control_flow_rejects_non_dominating_value();
   test_control_flow_safepoint();

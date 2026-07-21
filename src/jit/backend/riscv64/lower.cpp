@@ -1176,6 +1176,9 @@ void spill_control_stack_map_values(
     const ControlFlowRegisterAllocation& allocation,
     const std::vector<ir::Value>& live_values, std::size_t current_block) {
   for (const ir::Value value : live_values) {
+    if (allocation.requires_stack[value.id()]) {
+      continue;
+    }
     if (function.value_type(value) == ir::ValueType::kFloat64) {
       const int source =
           control_float_register(allocation, value, current_block);
