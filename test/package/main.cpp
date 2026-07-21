@@ -262,6 +262,31 @@ int main() {
       shift_result.value != 1) {
     return 59;
   }
+  unijit::ir::FunctionBuilder floor_builder(2);
+  const auto floor_quotient = floor_builder.floor_divide(
+      floor_builder.parameter(0), floor_builder.parameter(1));
+  const auto floor_remainder = floor_builder.floor_modulo(
+      floor_builder.parameter(0), floor_builder.parameter(1));
+  if (!floor_builder
+           .set_return(floor_builder.add(
+               floor_builder.multiply(floor_quotient,
+                                      floor_builder.constant(10)),
+               floor_remainder))
+           .ok()) {
+    return 62;
+  }
+  auto floor_compilation = unijit::jit::Compiler::compile(
+      std::move(floor_builder).build());
+  const std::array<unijit::ir::Word, 2> floor_arguments = {-17, 5};
+  const auto floor_result =
+      floor_compilation.ok()
+          ? floor_compilation.function->invoke(floor_arguments.data(),
+                                                floor_arguments.size())
+          : unijit::ir::EvaluationResult{};
+  if (!floor_compilation.ok() || !floor_result.ok() ||
+      floor_result.value != -37) {
+    return 63;
+  }
   unijit::jit::CompilationLimits package_limits;
   package_limits.maximum_ir_nodes = 2;
   const auto limited_compilation = unijit::jit::Compiler::compile(
@@ -423,6 +448,29 @@ int main() {
       static_cast<std::uint64_t>(cfg_shift_result.value) !=
           UINT64_C(0x8000000000000000)) {
     return 61;
+  }
+  unijit::ir::ControlFlowBuilder cfg_floor_builder(2);
+  if (!cfg_floor_builder
+           .set_return(cfg_floor_builder.add(
+               cfg_floor_builder.floor_divide(
+                   cfg_floor_builder.parameter(0),
+                   cfg_floor_builder.parameter(1)),
+               cfg_floor_builder.floor_modulo(
+                   cfg_floor_builder.parameter(0),
+                   cfg_floor_builder.parameter(1))))
+           .ok()) {
+    return 64;
+  }
+  auto cfg_floor = unijit::jit::Compiler::compile(
+      std::move(cfg_floor_builder).build());
+  const auto cfg_floor_result =
+      cfg_floor.ok()
+          ? cfg_floor.function->invoke(floor_arguments.data(),
+                                       floor_arguments.size())
+          : unijit::ir::EvaluationResult{};
+  if (!cfg_floor.ok() || !cfg_floor_result.ok() ||
+      cfg_floor_result.value != -1) {
+    return 65;
   }
   unijit::ir::FunctionBuilder safepoint_builder(0);
   if (!safepoint_builder.safepoint(23).valid() ||

@@ -92,7 +92,7 @@ bool fuzz_word_function(std::mt19937_64* random, const Options& options,
     }
     const Value lhs = values[(*random)() % values.size()];
     const Value rhs = values[(*random)() % values.size()];
-    switch ((*random)() % 9ULL) {
+    switch ((*random)() % 11ULL) {
       case 0:
         values.push_back(builder.add(lhs, rhs));
         break;
@@ -117,8 +117,14 @@ bool fuzz_word_function(std::mt19937_64* random, const Options& options,
       case 7:
         values.push_back(builder.bitwise_xor(lhs, rhs));
         break;
-      default:
+      case 8:
         values.push_back(builder.shift_left(lhs, rhs));
+        break;
+      case 9:
+        values.push_back(builder.floor_divide(lhs, rhs));
+        break;
+      default:
+        values.push_back(builder.floor_modulo(lhs, rhs));
         break;
     }
   }
@@ -251,7 +257,7 @@ std::vector<Value> make_cfg_arm(ControlFlowBuilder* builder,
       const Word constant_value =
           static_cast<Word>(static_cast<std::int64_t>((*random)() % 17ULL) - 8);
       const Value constant = builder->constant(constant_value);
-      switch ((*random)() % 9ULL) {
+      switch ((*random)() % 11ULL) {
         case 0:
           result.push_back(builder->add(source, constant));
           break;
@@ -276,8 +282,14 @@ std::vector<Value> make_cfg_arm(ControlFlowBuilder* builder,
         case 7:
           result.push_back(builder->bitwise_xor(source, constant));
           break;
-        default:
+        case 8:
           result.push_back(builder->shift_left(source, constant));
+          break;
+        case 9:
+          result.push_back(builder->floor_divide(source, constant));
+          break;
+        default:
+          result.push_back(builder->floor_modulo(source, constant));
           break;
       }
     }
