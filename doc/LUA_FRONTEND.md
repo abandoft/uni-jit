@@ -66,12 +66,17 @@ the callable requests the same cancellation automatically.
 
 The initial tier accepts straight-line `MOVE`, integer `LOADI`/`LOADK`, integer
 `ADDI`, `ADDK`, `SUBK`, `MULK`, `ADD`, `SUB`, `MUL`, unary `UNM`/`BNOT`, and
-dynamic or constant `BAND`/`BOR`/`BXOR`, plus one-value fixed returns. Binary
-arithmetic and bitwise operations are accepted only when the corresponding Lua
-metamethod fallback instruction is structurally present.
+dynamic or constant `BAND`/`BOR`/`BXOR`, immediate `SHLI`/`SHRI`, dynamic
+`SHL`/`SHR`, plus one-value fixed returns. Binary arithmetic, bitwise, and
+shift operations are accepted only when the corresponding Lua metamethod
+fallback instruction is structurally present.
 Runtime integer guards make every accepted metamethod dispatch unreachable in
 the specialized closure. Integer unary minus wraps exactly as Lua does at
 `math.mininteger`, and all bitwise operations consume all 64 integer bits.
+Shifts match `luaV_shiftl`: negative amounts reverse direction, logical right
+shift never propagates the sign bit, and magnitudes of 64 or more return zero.
+Right shift negates its amount modulo 2^64, retaining Lua's exact
+`math.mininteger` behavior.
 
 The Float64 tier accepts the corresponding straight-line numeric loads,
 constant arithmetic, binary `ADD`/`SUB`/`MUL`/`DIV`, unary `UNM`, and one-value
@@ -97,8 +102,8 @@ parameter step raises Lua's exact error before native entry.
 Loop-carried Lua registers become explicit CFG block parameters, and a bytecode
 liveness scan avoids carrying dead setup registers. Loop bodies use the same
 integer arithmetic contract, including exact `UNM`, `BNOT`, `BAND`, `BOR`, and
-`BXOR`, in both tiers. Constant bitwise setup expressions remain visible to the
-loop start/step analysis.
+`BXOR` plus `SHLI`, `SHRI`, `SHL`, and `SHR`, in both tiers. Constant bitwise
+and shift setup expressions remain visible to the loop start/step analysis.
 The constant-step baseline
 emits one scalar body copy, while its optimized path uses overflow-safe
 eight-way body unrolling whenever the seven-step group offset is representable

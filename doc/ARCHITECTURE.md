@@ -78,6 +78,16 @@ annihilators, identical operands, dead values, and block-local duplicates.
 The native mappings are AArch64 `AND`/`ORR`/`EOR`, x86-64
 `AND`/`OR`/`XOR`, and RISC-V 64 `AND`/`OR`/`XOR`, so no frontend bitwise
 operation crosses a runtime-helper boundary.
+Word `shift_left(value, amount)` is a signed bidirectional primitive: a
+nonnegative amount shifts left, a negative amount logically shifts right, and
+any magnitude of 64 or more produces zero. This contract is defined over the
+unsigned 64-bit representation, including `INT64_MIN` as an amount, rather
+than inheriting the masked-count behavior of host instructions. Constant
+folding, zero identities, dead-value removal, local value numbering, and both
+IR builders preserve the same rule. AArch64 lowers to guarded `LSLV`/`LSRV`,
+x86-64 to guarded `SHL`/`SHR` while preserving an allocated `RCX`, and RISC-V
+64 to guarded `SLL`/`SRL`; no runtime helper or target-specific semantic leak
+is involved.
 
 Effectful runtime helpers use one portable signature: a pointer to a flat
 value-bits argument area plus its element count, returning one value-bits word.
