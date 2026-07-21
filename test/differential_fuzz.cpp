@@ -648,7 +648,8 @@ bool fuzz_vector_function(std::mt19937_64* random, const Options& options,
     return false;
   }
 
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || \
+    defined(_M_X64)
   const unijit::jit::CompilationOptions baseline{
       unijit::jit::OptimizationLevel::kBaseline};
   const unijit::jit::CompilationOptions optimized{
@@ -661,7 +662,7 @@ bool fuzz_vector_function(std::mt19937_64* random, const Options& options,
   const auto cfg_optimized = unijit::jit::Compiler::compile(cfg, optimized);
   if (!straight_baseline.ok() || !straight_optimized.ok() ||
       !cfg_baseline.ok() || !cfg_optimized.ok()) {
-    std::cerr << "generated AArch64 vector IR failed native compilation\n";
+    std::cerr << "generated vector IR failed native compilation\n";
     return false;
   }
 #endif
@@ -696,7 +697,8 @@ bool fuzz_vector_function(std::mt19937_64* random, const Options& options,
                              cfg_result_value);
     }
 
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || \
+    defined(_M_X64)
     const auto straight_baseline_value = straight_baseline.function->invoke(
         arguments.data(), arguments.size());
     const auto straight_optimized_value = straight_optimized.function->invoke(
@@ -707,25 +709,25 @@ bool fuzz_vector_function(std::mt19937_64* random, const Options& options,
         cfg_optimized.function->invoke(arguments.data(), arguments.size());
     if (!straight_baseline_value.ok() ||
         straight_baseline_value.value != straight_result_value.value) {
-      return report_mismatch("AArch64 baseline straight-line SIMD",
+      return report_mismatch("baseline native straight-line SIMD",
                              options.seed, program_index, input,
                              straight_result_value, straight_baseline_value);
     }
     if (!straight_optimized_value.ok() ||
         straight_optimized_value.value != straight_result_value.value) {
-      return report_mismatch("AArch64 optimized straight-line SIMD",
+      return report_mismatch("optimized native straight-line SIMD",
                              options.seed, program_index, input,
                              straight_result_value, straight_optimized_value);
     }
     if (!cfg_baseline_value.ok() ||
         cfg_baseline_value.value != cfg_result_value.value) {
-      return report_mismatch("AArch64 baseline CFG SIMD", options.seed,
+      return report_mismatch("baseline native CFG SIMD", options.seed,
                              program_index, input, cfg_result_value,
                              cfg_baseline_value);
     }
     if (!cfg_optimized_value.ok() ||
         cfg_optimized_value.value != cfg_result_value.value) {
-      return report_mismatch("AArch64 optimized CFG SIMD", options.seed,
+      return report_mismatch("optimized native CFG SIMD", options.seed,
                              program_index, input, cfg_result_value,
                              cfg_optimized_value);
     }

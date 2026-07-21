@@ -284,10 +284,13 @@ Word sum_runtime_helper(const Word* arguments, std::size_t count) {
   return result;
 }
 
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || \
+    defined(_M_X64)
 Word vector_clobber_runtime_helper(const Word* arguments, std::size_t count) {
 #if defined(__aarch64__) && (defined(__GNUC__) || defined(__clang__))
   __asm__ volatile("movi v0.16b, #0xa5" ::: "v0");
+#elif defined(__x86_64__) && (defined(__GNUC__) || defined(__clang__))
+  __asm__ volatile("pxor %%xmm0, %%xmm0" ::: "xmm0");
 #endif
   return sum_runtime_helper(arguments, count);
 }
@@ -6386,7 +6389,8 @@ void test_control_flow_vector_register_allocation() {
       });
   expect(liveness.status.ok() && !captures_vector,
          "CFG runtime-exit capture must omit non-reference vector payloads");
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || \
+    defined(_M_X64)
   const std::array<Word, 1> arguments = {11};
   const auto interpreted = unijit::ir::ControlFlowInterpreter::evaluate(
       function, arguments.data(), arguments.size());
@@ -6399,7 +6403,7 @@ void test_control_flow_vector_register_allocation() {
                           : unijit::ir::EvaluationResult{};
   expect(interpreted.ok() && compilation.ok() && native.ok() &&
              native.value == interpreted.value,
-         "AArch64 mixed Float64/vector CFG cycles must execute in parallel");
+         "native mixed Float64/vector CFG cycles must execute in parallel");
 #endif
 }
 
@@ -6609,14 +6613,15 @@ void test_vector128_straight_line_ir() {
   }
 
   const auto compilation = Compiler::compile(function);
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || \
+    defined(_M_X64)
   const auto native = compilation.ok()
                           ? compilation.function->invoke(arguments.data(),
                                                          arguments.size())
                           : unijit::ir::EvaluationResult{};
   expect(compilation.ok() && native.ok() &&
              native.value == interpreted.value,
-         "AArch64 native SIMD must match the straight-line interpreter");
+         "native SIMD must match the straight-line interpreter");
 #else
   expect(!compilation.ok() &&
              compilation.status.code() ==
@@ -6662,14 +6667,15 @@ void test_vector128_straight_line_ir() {
       unijit::jit::OptimizationLevel::kBaseline;
   const auto baseline_compilation =
       Compiler::compile(folding_function, baseline_options);
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || \
+    defined(_M_X64)
   const auto baseline_native =
       baseline_compilation.ok()
           ? baseline_compilation.function->invoke(nullptr, 0)
           : unijit::ir::EvaluationResult{};
   expect(baseline_compilation.ok() && baseline_native.ok() &&
              baseline_native.value == 4,
-         "AArch64 baseline compilation must execute explicit vector nodes");
+         "baseline compilation must execute explicit vector nodes");
 #else
   expect(!baseline_compilation.ok() &&
              baseline_compilation.status.code() ==
@@ -6722,14 +6728,15 @@ void test_vector128_control_flow_ir() {
            "optimized CFG SIMD must remain bit-exact");
   }
   const auto dynamic_compilation = Compiler::compile(function);
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || \
+    defined(_M_X64)
   const auto native = dynamic_compilation.ok()
                           ? dynamic_compilation.function->invoke(
                                 arguments.data(), arguments.size())
                           : unijit::ir::EvaluationResult{};
   expect(dynamic_compilation.ok() && native.ok() &&
              native.value == interpreted.value,
-         "AArch64 native CFG SIMD must preserve whole-vector edge values");
+         "native CFG SIMD must preserve whole-vector edge values");
 #else
   expect(!dynamic_compilation.ok() &&
              dynamic_compilation.status.code() ==
@@ -6774,8 +6781,9 @@ void test_vector128_control_flow_ir() {
   }
 }
 
-void test_aarch64_native_vector_operation_surface() {
-#if defined(__aarch64__) || defined(_M_ARM64)
+void test_native_vector_operation_surface() {
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || \
+    defined(_M_X64)
   using unijit::ir::ControlFlowBuilder;
   using unijit::ir::ControlFlowFunction;
   using unijit::ir::ControlFlowInterpreter;
@@ -6805,7 +6813,7 @@ void test_aarch64_native_vector_operation_surface() {
     expect(unijit::ir::verify(function).ok() && interpreted.ok() &&
                compilation.ok() && native.ok() &&
                native.value == interpreted.value,
-           "AArch64 native SIMD mismatch: " + label);
+           "native SIMD mismatch: " + label);
     return compilation.ok() ? compilation.function->stats().spill_slots : 0;
   };
   const auto control_matches = [&](const ControlFlowFunction& function,
@@ -6824,7 +6832,7 @@ void test_aarch64_native_vector_operation_surface() {
     expect(unijit::ir::verify(function).ok() && interpreted.ok() &&
                compilation.ok() && native.ok() &&
                native.value == interpreted.value,
-           "AArch64 native CFG SIMD mismatch: " + label);
+           "native CFG SIMD mismatch: " + label);
     return compilation.ok() ? compilation.function->stats().spill_slots : 0;
   };
 
@@ -7057,7 +7065,7 @@ void test_aarch64_native_vector_operation_surface() {
         std::move(builder).build(), arguments,
         "register spills and spilled select");
     expect(spill_slots > 0,
-           "AArch64 SIMD pressure must exercise aligned vector spills");
+           "native SIMD pressure must exercise aligned vector spills");
   }
 
   {
@@ -7100,7 +7108,7 @@ void test_aarch64_native_vector_operation_surface() {
         std::move(builder).build(), scalar_arguments,
         "spilled parallel edge copy");
     expect(spill_slots > 0,
-           "AArch64 CFG SIMD pressure must exercise stack edge copies");
+           "native CFG SIMD pressure must exercise stack edge copies");
   }
 #endif
 }
@@ -7335,7 +7343,7 @@ int main() {
   test_vector128_strict_semantics();
   test_vector128_straight_line_ir();
   test_vector128_control_flow_ir();
-  test_aarch64_native_vector_operation_surface();
+  test_native_vector_operation_surface();
   test_vector128_verifier_and_limits();
   test_control_flow_compact_spill_frame();
   test_control_flow_execution_budget();
