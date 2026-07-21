@@ -759,6 +759,110 @@ void test_float64_division() {
   }
 }
 
+void test_word_unary_operations() {
+  FunctionBuilder negate_builder(1);
+  expect(negate_builder
+             .set_return(negate_builder.negate(negate_builder.parameter(0)))
+             .ok(),
+         "Word negation fixture must record its result");
+  const Function negate_function = std::move(negate_builder).build();
+  FunctionBuilder not_builder(1);
+  expect(not_builder
+             .set_return(not_builder.bitwise_not(not_builder.parameter(0)))
+             .ok(),
+         "Word bitwise-not fixture must record its result");
+  const Function not_function = std::move(not_builder).build();
+  expect(unijit::ir::verify(negate_function).ok() &&
+             unijit::ir::verify(not_function).ok(),
+         "typed Word unary operations must pass verification");
+
+  const auto negate_compilation = Compiler::compile(negate_function);
+  const auto not_compilation = Compiler::compile(not_function);
+  expect(negate_compilation.ok() && not_compilation.ok(),
+         "Word unary operations must compile to native code");
+  constexpr std::array<Word, 7> kSamples = {
+      0, 1, -1, 42, -97, std::numeric_limits<Word>::min(),
+      std::numeric_limits<Word>::max()};
+  for (const Word sample : kSamples) {
+    const std::uint64_t bits = static_cast<std::uint64_t>(sample);
+    const auto interpreted_negate =
+        Interpreter::evaluate(negate_function, &sample, 1);
+    const auto interpreted_not = Interpreter::evaluate(not_function, &sample, 1);
+    expect(interpreted_negate.ok() &&
+               static_cast<std::uint64_t>(interpreted_negate.value) ==
+                   UINT64_C(0) - bits,
+           "Word negation must wrap modulo 2^64");
+    expect(interpreted_not.ok() &&
+               static_cast<std::uint64_t>(interpreted_not.value) == ~bits,
+           "Word bitwise-not must flip every bit");
+    if (negate_compilation.ok() && not_compilation.ok()) {
+      const auto native_negate =
+          negate_compilation.function->invoke(&sample, 1);
+      const auto native_not = not_compilation.function->invoke(&sample, 1);
+      expect(native_negate.ok() && native_not.ok() &&
+                 native_negate.value == interpreted_negate.value &&
+                 native_not.value == interpreted_not.value,
+             "native Word unary operations must match exact interpreter bits");
+    }
+  }
+
+  FunctionBuilder optimized_builder(1);
+  const Value double_negate = optimized_builder.negate(
+      optimized_builder.negate(optimized_builder.parameter(0)));
+  const Value double_not = optimized_builder.bitwise_not(
+      optimized_builder.bitwise_not(optimized_builder.parameter(0)));
+  expect(optimized_builder
+             .set_return(optimized_builder.add(double_negate, double_not))
+             .ok(),
+         "Word unary optimization fixture must record its result");
+  const auto optimized =
+      unijit::ir::Optimizer::run(std::move(optimized_builder).build());
+  expect(optimized.ok() && optimized.stats.algebraic_simplifications >= 2 &&
+             optimized.function.nodes().size() == 2,
+         "optimizer must cancel paired Word unary operations and remove them");
+
+  unijit::ir::ControlFlowBuilder cfg_builder(1);
+  const Value cfg_negate = cfg_builder.negate(cfg_builder.parameter(0));
+  const Value cfg_not = cfg_builder.bitwise_not(cfg_builder.parameter(0));
+  expect(cfg_builder.set_return(cfg_builder.add(cfg_negate, cfg_not)).ok(),
+         "CFG Word unary fixture must record its result");
+  const auto cfg_function = std::move(cfg_builder).build();
+  expect(unijit::ir::verify(cfg_function).ok(),
+         "CFG Word unary operations must pass verification");
+  const auto cfg_compilation = Compiler::compile(cfg_function);
+  expect(cfg_compilation.ok(), "CFG Word unary operations must compile");
+  for (const Word sample : kSamples) {
+    const auto interpreted = unijit::ir::ControlFlowInterpreter::evaluate(
+        cfg_function, &sample, 1);
+    if (cfg_compilation.ok()) {
+      const auto native = cfg_compilation.function->invoke(&sample, 1);
+      expect(interpreted.ok() && native.ok() &&
+                 native.value == interpreted.value,
+             "native CFG Word unary operations must match the interpreter");
+    }
+  }
+
+  unijit::ir::ControlFlowBuilder cfg_optimized_builder(1);
+  const Value cfg_double_not = cfg_optimized_builder.bitwise_not(
+      cfg_optimized_builder.bitwise_not(
+          cfg_optimized_builder.parameter(0)));
+  expect(cfg_optimized_builder.set_return(cfg_double_not).ok(),
+         "CFG unary optimization fixture must record its result");
+  const auto cfg_optimized =
+      unijit::ir::Optimizer::run(std::move(cfg_optimized_builder).build());
+  expect(cfg_optimized.ok() &&
+             cfg_optimized.stats.algebraic_simplifications >= 1 &&
+             cfg_optimized.function.nodes().size() == 1,
+         "CFG optimizer must cancel paired Word unary operations");
+
+  FunctionBuilder malformed(
+      std::vector<unijit::ir::ValueType>{unijit::ir::ValueType::kFloat64});
+  const Value invalid = malformed.bitwise_not(malformed.parameter(0));
+  expect(malformed.set_return(invalid).ok() &&
+             !unijit::ir::verify(std::move(malformed).build()).ok(),
+         "verifier must reject Word unary operations over Float64 operands");
+}
+
 void test_float64_negation() {
   using unijit::ir::ValueType;
   FunctionBuilder builder(std::vector<ValueType>{ValueType::kFloat64});
@@ -4135,6 +4239,7 @@ int main() {
   test_differential_arithmetic();
   test_float64_ir_and_interpreter();
   test_float64_division();
+  test_word_unary_operations();
   test_float64_negation();
   test_float64_comparisons();
   test_float64_nonzero_guard();
