@@ -34,6 +34,7 @@ endif()
 string(TOLOWER "${UNIJIT_PROCESSOR}" UNIJIT_SYSTEM_PROCESSOR)
 if(UNIJIT_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
   target_sources(unijit PRIVATE
+    jit/atomic_fallback.cpp
     jit/backend/aarch64/lower.cpp)
   target_compile_definitions(unijit PRIVATE UNIJIT_TARGET_AARCH64=1)
 elseif(UNIJIT_SYSTEM_PROCESSOR MATCHES "^(amd64|x86_64)$")

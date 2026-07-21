@@ -157,6 +157,24 @@ void note_use(std::vector<std::size_t>* last_use, ir::Value value,
   entry = std::max(entry, use_index);
 }
 
+bool may_call_atomic_fallback(ir::Opcode opcode) noexcept {
+  return opcode == ir::Opcode::kAtomicExchange ||
+         opcode == ir::Opcode::kAtomicCompareExchange ||
+         opcode == ir::Opcode::kAtomicFetchAdd ||
+         opcode == ir::Opcode::kAtomicFetchAnd ||
+         opcode == ir::Opcode::kAtomicFetchOr ||
+         opcode == ir::Opcode::kAtomicFetchXor;
+}
+
+bool may_call_atomic_fallback(ir::ControlOpcode opcode) noexcept {
+  return opcode == ir::ControlOpcode::kAtomicExchange ||
+         opcode == ir::ControlOpcode::kAtomicCompareExchange ||
+         opcode == ir::ControlOpcode::kAtomicFetchAdd ||
+         opcode == ir::ControlOpcode::kAtomicFetchAnd ||
+         opcode == ir::ControlOpcode::kAtomicFetchOr ||
+         opcode == ir::ControlOpcode::kAtomicFetchXor;
+}
+
 RegisterAllocation allocate_impl(const ir::Function& function,
                                  std::size_t word_register_count,
                                  std::size_t simd_register_count,
@@ -328,7 +346,8 @@ RegisterAllocation allocate_impl(const ir::Function& function,
   }
 
   for (std::size_t call_index = 0; call_index < value_count; ++call_index) {
-    if (function.nodes()[call_index].opcode != ir::Opcode::kCall) {
+    if (function.nodes()[call_index].opcode != ir::Opcode::kCall &&
+        !may_call_atomic_fallback(function.nodes()[call_index].opcode)) {
       continue;
     }
     for (std::size_t value_index = 0; value_index < call_index;
@@ -539,7 +558,8 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
     for (std::size_t index = 0; index < block.instructions.size(); ++index) {
       const ir::Value value = block.instructions[index];
       const ir::ControlOpcode opcode = function.nodes()[value.id()].opcode;
-      if (opcode == ir::ControlOpcode::kCall) {
+      if (opcode == ir::ControlOpcode::kCall ||
+          may_call_atomic_fallback(opcode)) {
         std::vector<ir::Value>& live = live_across_calls[value.id()];
         live.reserve(active_word.size() + active_simd.size());
         const auto note_live = [&](const std::vector<std::size_t>& active) {
