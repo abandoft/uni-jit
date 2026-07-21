@@ -20,19 +20,53 @@ qualifying the shared commercial contract on those three targets.
 |---|---|---|---|
 | Scalar Word and Float64 operations | Implemented in both IR forms and all three backends | Continue expanding through the same typed contract | Delivered |
 | SIMD | No vector IR or vector allocation | Add strict portable SIMD, then guarded wider target profiles and loop vectorization | P0 |
-| Typed memory, unaligned access, byte reversal | Bounded 8/16/32/64-bit Word memory, Float32/Float64 storage, and standalone 16/32/64-bit byte reversal are delivered in both IR forms, the interpreter, optimizer, and all three native backends; trusted layouts and frame slots remain | Complete the remaining typed scalar provenance and storage surface before SIMD, atomics, or FFI lowering | P0 partial |
+| Typed memory, unaligned access, byte reversal | Bounded 8/16/32/64-bit Word memory, Float32/Float64 storage, standalone 16/32/64-bit byte reversal, and fixed Word/Float64 frame slots are delivered in both IR forms, the interpreter, optimizer, and all three native backends; trusted layouts remain | Complete trusted scalar provenance before SIMD, atomics, or FFI lowering | P0 partial |
 | Generated-code atomics | Runtime control structures use C++ atomics; generated IR has none | Add typed atomic IR with explicit memory order and natural-alignment rules | P1 |
 | Fast internal calls | Calls currently use the portable runtime-helper ABI | Add a private JIT-to-JIT convention without weakening external ABI safety | P1 |
 | Tail calls | Not represented | Add verified tail transfers after fast calls and unwind metadata exist | P2 |
 | Self-modifying code | Published code is immutable RX | Keep code immutable; use atomic RW non-executable patch cells and versioned replacement | P1 |
 | Direct physical-register access | Intentionally absent from public IR | Keep physical registers private to MIR; expose only verified role constraints | Architectural rule |
-| Function-local stack storage | Only compiler-managed spills, call areas, and metadata slots exist | Add bounded typed frame slots with alignment and lifetime verification | P1 |
+| Function-local stack storage | Fixed zero-initialized Word/Float64 slots, optional slot zeroization, resource limits, and three-backend lowering are delivered | Add aligned vector/aggregate slots, lexical lifetime reuse, stack probing, and whole-value secret erasure | P1 partial |
 | All-in-one hidden compilation | Native encoders are already internal | Add an opaque versioned C17 embedding ABI over the C++ implementation | P1 |
 | Serialization and AOT | No persistent compilation artifact | Add canonical portable IR packages first, then validated target code objects | P1 |
 
 P0 closes a prerequisite for several language and numerical workloads. P1 is
 required before claiming a broadly embeddable commercial backend. P2 improves
 call-heavy workloads after the metadata and lifecycle foundations are proven.
+
+## Findings from the SLJIT capability checklist
+
+The short SLJIT README is useful because it groups several facilities that a
+commercial low-level JIT eventually needs, but the linked LIR interface also
+shows why a feature name alone is not an adequate UniJIT contract:
+
+- SIMD covers register widths, element widths, aligned and unaligned memory,
+  splats, lane movement, signed/unsigned widening, lane-sign extraction,
+  bitwise operations, shuffles, and a way to test availability without
+  emitting code. UniJIT therefore needs explicit typed semantics and a
+  preflight legalization report, not a single `supports_simd` Boolean.
+- SLJIT's atomic surface exposes a low-level paired load/store transaction with
+  natural-alignment obligations. UniJIT will instead expose complete atomic
+  operations with verifier-checked memory orders, while retaining natural
+  alignment, availability testing, and explicit lowering fallbacks.
+- Raw local stack bytes are useful but too permissive for untrusted frontend
+  IR. UniJIT's delivered floor uses non-addressable typed slots, per-invocation
+  zero initialization, explicit sensitivity metadata, and a fixed resource
+  budget. Raw local addresses and unbounded `alloca` remain excluded.
+- Rewritable instructions are not adopted. Immutable RX code plus separate
+  atomic non-executable patch cells provides retargeting without reopening a
+  published code page.
+- Fast calls, tail calls, hidden compilation state, and resumable AOT are valid
+  product requirements, but they require generation leases, stack maps,
+  unwind metadata, a versioned C boundary, and validated artifacts rather than
+  exposing a platform-independent assembler directly.
+- Direct physical-register access and the long tail of 32-bit or additional
+  architectures are deliberately not copied. Typed allocation and deep
+  qualification of AArch64, x86-64, and RISC-V 64 take priority.
+
+This assessment is a requirements input only. No SLJIT opcode, register model,
+serialization format, generated-code convention, or implementation source is
+part of UniJIT.
 
 ## Target and feature profiles
 
@@ -54,6 +88,12 @@ interfaces on AArch64, and the Linux RISC-V hardware-probe or auxiliary-vector
 interfaces where available. Cross compilation requires an explicit profile and
 must not infer target features from the build host. Unknown features select the
 portable baseline rather than optimistic emission.
+
+Before atomics and wider SIMD land, the profile vocabulary must add every
+feature that changes legality or ABI state, including x86 SSE4.1 where used by
+vector legalization, AArch64 LSE, and the RISC-V `A` extension. A profile must
+not infer atomic support from the architecture name, and RVV execution must be
+authorized by both ISA discovery and operating-system vector-state support.
 
 The current minimum profiles remain AArch64 with FP64, x86-64 with SSE2, and
 RV64IMD. Optional profiles are monotonic: code compiled for a wider profile is
@@ -98,8 +138,10 @@ reversal in straight-line and CFG IR. It includes the interpreter oracle,
 optimizer preservation, resource limits, live-value stack-map reconstruction,
 diagnosed exits, and AArch64, x86-64, and RISC-V 64 native lowering.
 [`TYPED_MEMORY.md`](TYPED_MEMORY.md) is the normative delivered contract.
-Trusted runtime-object layouts, standalone address calculation, and frame slots
-remain follow-on work. Every delivered access records:
+Trusted runtime-object layouts, standalone address calculation, and advanced
+vector/aggregate frame classes remain follow-on work. The delivered fixed
+Word/Float64 slot floor is specified separately in
+[`FRAME_LOCALS.md`](FRAME_LOCALS.md). Every delivered access records:
 
 - a declared bounded-region index;
 - byte width and required alignment;
@@ -140,7 +182,17 @@ zeroes or all ones in each lane. Initial operations are:
 - integer add, subtract, multiply where natively portable, and bitwise logic;
 - Float32/Float64 add, subtract, multiply, and divide;
 - ordered comparisons, mask logic, and lane select;
+- verifier-checked signed and unsigned widening conversions;
+- lane-sign extraction to a Word bit mask for text and byte-search kernels;
 - a bounded compile-time shuffle with verifier-checked lane indices.
+
+Lane zero is the lowest-addressed logical element. Integer lane extraction
+states whether it sign-extends or zero-extends into `Word`; floating extraction
+preserves the lane's exact IEEE bits. Vector memory uses the same bounded
+region, alias, permission, alignment, and diagnosed-exit model as scalar
+memory. Explicit byte order applies independently to each lane and never
+reverses the logical lane sequence. A shuffle index is part of immutable IR;
+dynamic swizzles are deferred until their out-of-range behavior is specified.
 
 Floating-point vector operations are lane-wise versions of strict scalar
 operations. The optimizer cannot contract multiply/add into FMA, reassociate a
@@ -173,6 +225,23 @@ They may combine independent 128-bit operations, but cannot change exception,
 NaN, or reduction order. This prevents x86 AVX width or RISC-V VLEN from
 silently changing a language result.
 
+Some portable operations do not have one baseline instruction, such as all
+integer multiply lane shapes under SSE2. The legalizer may use a verified
+instruction sequence or scalar lanes, but the compilation result and telemetry
+must report `native`, `legalized`, or `scalarized` for every vector operation
+class. Automatic vectorization may only choose a scalarized operation when its
+target cost model still proves a benefit.
+
+### Capability preflight
+
+An embedder must be able to ask whether a typed operation set can compile for a
+specific immutable target profile without generating code. The planned report
+uses four outcomes: `native`, `legalized`, `helper`, and `unsupported`, plus the
+required feature bits, vector width, estimated temporary register class, and
+whether execution needs an `ExecutionContext`. Compilation rechecks the same
+decision so a stale preflight result cannot bypass verification. This replaces
+per-op probe flags with one cacheable, target-profile-scoped contract.
+
 ### Vectorization stages
 
 1. Land explicit vector IR, verifier, interpreter, folding, allocation, and
@@ -193,7 +262,11 @@ Generated-code atomics operate on naturally aligned 8-, 16-, 32-, or 64-bit
 integer locations from a verified memory region. The IR supports atomic load,
 store, exchange, compare-exchange, fetch add/and/or/xor, and fences with
 `relaxed`, `acquire`, `release`, `acq_rel`, or `seq_cst` order where meaningful.
-Invalid load/store order combinations are verifier errors.
+Invalid load/store order combinations are verifier errors. Compare-exchange
+returns both the observed value and a success condition, distinguishes weak
+from strong form, and carries separate success and failure orders. A failure
+order cannot be `release` or `acq_rel` and cannot be stronger than the success
+order. The expected value is never modified through an implicit host pointer.
 
 x86-64 lowers through its TSO rules and `LOCK` operations, AArch64 selects LSE
 only when the feature profile permits it and otherwise uses bounded LL/SC
@@ -222,11 +295,18 @@ empty, the outgoing argument area fits the verified frame, and unwind/stack
 walk metadata can describe the transition. Lowering tears down the caller
 frame before the final jump. Otherwise the compiler emits a normal fast call.
 
-Typed frame slots provide fixed compile-time size, power-of-two alignment,
-value kind, and lexical lifetime. Dynamic or unbounded `alloca` is not part of
-the public contract. Frame layout accounts for ABI alignment, Windows shadow
-space, stack probes for large frames, spill/call/edge temporary areas, and
-zeroization of slots explicitly marked sensitive.
+The delivered controlled-frame floor provides fixed eight-byte Word or Float64
+slots with whole-function lifetime, per-invocation zero initialization, and
+optional slot zeroization on every native return path. Slots have no IR-visible
+address and do not require an execution context. The exact contract is defined
+in [`FRAME_LOCALS.md`](FRAME_LOCALS.md).
+
+Aligned vector/aggregate slots and lexical lifetime reuse remain future work.
+Dynamic or unbounded `alloca` is not part of the public contract. Larger frame
+classes must account for ABI alignment, Windows shadow space, guard-page stack
+probes, spill/call/edge temporary areas, and unwind metadata. Slot zeroization
+does not by itself prove that copied register or spill values were erased; a
+future sensitive-value data-flow class must carry that stronger obligation.
 
 Physical registers remain a MIR implementation detail. Target-independent IR
 may request a role such as call argument, return value, shift-count register,
@@ -255,7 +335,10 @@ The public commercial embedding boundary will be an opaque versioned C17 API.
 It owns compiler, target-profile, artifact, compiled-function, error, and lease
 handles while keeping the C++ graph builders and native encoders hidden. API
 entry points never expose internal structure sizes and return structured status
-codes plus bounded diagnostics.
+codes plus bounded diagnostics. Separate compiler instances can be used
+concurrently, while each mutable instance has explicit single-owner rules.
+The embedder can provide bounded allocation, executable-memory publication,
+logging, clock, and entropy callbacks without replacing verifier policy.
 
 Persistent compilation is split into two formats:
 
@@ -287,8 +370,9 @@ byte-identical packages for identical inputs and target profiles.
 
 1. Complete bounded typed memory, byte reversal, unaligned scalar access, frame
    slots, target profiles, and negative verifier tests. Target profiles, Word
-   and Float scalar memory, and standalone byte reversal are delivered; trusted
-   layouts and frame slots remain.
+   and Float scalar memory, standalone byte reversal, and the fixed
+   Word/Float64 frame-slot floor are delivered; trusted layouts and advanced
+   aligned/lifetime frame classes remain.
 2. Deliver strict 128-bit SIMD with interpreter parity, spills, calls, CFG edge
    copies, feature discovery, and scalar fallback where required.
 3. Add explicit SIMD and complete-loop performance gates on real AArch64,
