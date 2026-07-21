@@ -36,10 +36,10 @@ Hosted platform validation rejects fewer than seven samples, a narrower
 measurement boundary, less than a 5x interpreter speedup, or more than 400
 native code bytes, and retains the structured gate decision with the raw record.
 
-The bounded-memory benchmark measures one verified 64-bit store/load pair in
-the naturally aligned native-order fast path and the deliberately unaligned
-big-endian path. Both native cases use a bound execution context and are
-checksum- and byte-matched against the reference interpreter:
+The bounded-memory benchmark measures verified Word u64, Float64, and Float32
+store/load pairs. It covers naturally aligned native-order fast paths and
+deliberately unaligned big-endian paths. All native cases use a bound execution
+context and are checksum- and byte-matched against the reference interpreter:
 
 ```sh
 build/benchmark/benchmark/unijit_bounded_memory_benchmark \
@@ -47,8 +47,8 @@ build/benchmark/benchmark/unijit_bounded_memory_benchmark \
   > build/benchmark/bounded-memory.json
 ```
 
-The versioned JSON records compilation latency, native code bytes, median
-latency, interpreter latency, speedup, and checksum for each path. Initial
+The v2 JSON records compilation latency, native code bytes, median latency,
+interpreter latency, speedup, and checksum for each path. Initial
 records establish architecture-specific baselines; a release-blocking floor is
 added only after the same boundary is stable on real AArch64, Ubuntu/Windows
 x86-64, and RISC-V 64 hosts.

@@ -26,6 +26,7 @@ using unijit::ir::Interpreter;
 using unijit::ir::MemoryAccessDescriptor;
 using unijit::ir::MemoryByteOrder;
 using unijit::ir::MemoryWidth;
+using unijit::ir::ValueType;
 using unijit::ir::Word;
 using unijit::runtime::ExecutionContext;
 using unijit::runtime::MemoryRegion;
@@ -50,6 +51,11 @@ struct CaseResult final {
   std::uint64_t checksum{0};
 };
 
+enum class AccessKind : std::uint8_t {
+  kWord,
+  kFloat,
+};
+
 std::uint64_t bits(Word value) noexcept {
   std::uint64_t result = 0;
   std::memcpy(&result, &value, sizeof(result));
@@ -62,21 +68,36 @@ Word word(std::uint64_t value) noexcept {
   return result;
 }
 
-void advance(std::array<Word, 2>* arguments) noexcept {
+void advance(std::array<Word, 2>* arguments, AccessKind kind) noexcept {
+  if (kind == AccessKind::kFloat) {
+    const double current = unijit::ir::unpack_float64((*arguments)[1]);
+    (*arguments)[1] = unijit::ir::pack_float64(current * 1.0000001 + 0.000001);
+    return;
+  }
   const std::uint64_t next =
       bits((*arguments)[1]) * UINT64_C(6364136223846793005) +
       UINT64_C(1442695040888963407);
   (*arguments)[1] = word(next);
 }
 
-Function make_function(MemoryByteOrder order, std::uint8_t alignment) {
-  FunctionBuilder builder(2, 1);
+Function make_function(AccessKind kind, MemoryWidth width,
+                       MemoryByteOrder order, std::uint8_t alignment) {
+  FunctionBuilder builder(
+      kind == AccessKind::kFloat
+          ? std::vector<ValueType>{ValueType::kWord, ValueType::kFloat64}
+          : std::vector<ValueType>{ValueType::kWord, ValueType::kWord}, 1);
   MemoryAccessDescriptor access;
-  access.width = MemoryWidth::k64;
+  access.width = width;
   access.alignment = alignment;
   access.byte_order = order;
-  builder.store_word(builder.parameter(0), builder.parameter(1), access, 10);
-  const auto loaded = builder.load_word(builder.parameter(0), access, 11);
+  if (kind == AccessKind::kFloat) {
+    builder.store_float(builder.parameter(0), builder.parameter(1), access, 10);
+  } else {
+    builder.store_word(builder.parameter(0), builder.parameter(1), access, 10);
+  }
+  const auto loaded = kind == AccessKind::kFloat
+                          ? builder.load_float(builder.parameter(0), access, 11)
+                          : builder.load_word(builder.parameter(0), access, 11);
   if (!builder.set_return(loaded).ok()) {
     return {};
   }
@@ -84,9 +105,11 @@ Function make_function(MemoryByteOrder order, std::uint8_t alignment) {
 }
 
 template <typename Invoke>
-Measurement measure(Invoke&& invoke, Word offset, std::size_t iterations) {
+Measurement measure(Invoke&& invoke, AccessKind kind, Word offset,
+                    std::size_t iterations) {
   std::array<Word, 2> arguments = {
-      offset, word(UINT64_C(0x0123456789ABCDEF))};
+      offset, kind == AccessKind::kFloat ? unijit::ir::pack_float64(1.25)
+                                         : word(UINT64_C(0x0123456789ABCDEF))};
   std::uint64_t checksum = 0;
   const auto started = Clock::now();
   for (std::size_t iteration = 0; iteration < iterations; ++iteration) {
@@ -96,7 +119,7 @@ Measurement measure(Invoke&& invoke, Word offset, std::size_t iterations) {
     }
     checksum = (checksum << 9U) | (checksum >> (64U - 9U));
     checksum ^= bits(result.value) + static_cast<std::uint64_t>(iteration);
-    advance(&arguments);
+    advance(&arguments, kind);
   }
   const double elapsed =
       std::chrono::duration<double, std::nano>(Clock::now() - started).count();
@@ -108,9 +131,10 @@ double median(std::vector<double> values) {
   return values[values.size() / 2];
 }
 
-bool run_case(const char* name, MemoryByteOrder order, std::uint8_t alignment,
+bool run_case(const char* name, AccessKind kind, MemoryWidth width,
+              MemoryByteOrder order, std::uint8_t alignment,
               Word offset, const Options& options, CaseResult* result) {
-  const Function function = make_function(order, alignment);
+  const Function function = make_function(kind, width, order, alignment);
   const auto compilation_started = Clock::now();
   auto compilation = unijit::jit::Compiler::compile(function);
   const auto compilation_elapsed = Clock::now() - compilation_started;
@@ -145,9 +169,9 @@ bool run_case(const char* name, MemoryByteOrder order, std::uint8_t alignment,
   };
 
   const Measurement native_warmup =
-      measure(native_invoke, offset, options.warmup);
+      measure(native_invoke, kind, offset, options.warmup);
   const Measurement interpreter_warmup =
-      measure(interpreter_invoke, offset, options.warmup);
+      measure(interpreter_invoke, kind, offset, options.warmup);
   if (native_warmup.nanoseconds_per_iteration < 0 ||
       interpreter_warmup.nanoseconds_per_iteration < 0 ||
       native_warmup.checksum != interpreter_warmup.checksum ||
@@ -162,9 +186,10 @@ bool run_case(const char* name, MemoryByteOrder order, std::uint8_t alignment,
   interpreter_samples.reserve(options.samples);
   std::uint64_t checksum = 0;
   for (std::size_t sample = 0; sample < options.samples; ++sample) {
-    const Measurement native = measure(native_invoke, offset, options.iterations);
+    const Measurement native =
+        measure(native_invoke, kind, offset, options.iterations);
     const Measurement interpreted =
-        measure(interpreter_invoke, offset, options.iterations);
+        measure(interpreter_invoke, kind, offset, options.iterations);
     if (native.nanoseconds_per_iteration < 0 ||
         interpreted.nanoseconds_per_iteration < 0 ||
         native.checksum != interpreted.checksum ||
@@ -247,12 +272,15 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
 
-  CaseResult aligned;
-  CaseResult unaligned;
-  if (!run_case("aligned_native_u64", MemoryByteOrder::kNative, 8, 0,
-                options, &aligned) ||
-      !run_case("unaligned_big_u64", MemoryByteOrder::kBigEndian, 1, 1,
-                options, &unaligned)) {
+  std::array<CaseResult, 4> results;
+  if (!run_case("aligned_native_u64", AccessKind::kWord, MemoryWidth::k64,
+                MemoryByteOrder::kNative, 8, 0, options, &results[0]) ||
+      !run_case("unaligned_big_u64", AccessKind::kWord, MemoryWidth::k64,
+                MemoryByteOrder::kBigEndian, 1, 1, options, &results[1]) ||
+      !run_case("aligned_native_f64", AccessKind::kFloat, MemoryWidth::k64,
+                MemoryByteOrder::kNative, 8, 0, options, &results[2]) ||
+      !run_case("unaligned_big_f32", AccessKind::kFloat, MemoryWidth::k32,
+                MemoryByteOrder::kBigEndian, 1, 1, options, &results[3])) {
     return EXIT_FAILURE;
   }
 
@@ -277,8 +305,8 @@ int main(int argc, char** argv) {
 
   std::cout << std::fixed << std::setprecision(3)
             << "{\n"
-            << "  \"schema\": \"unijit.bounded-memory-benchmark.v1\",\n"
-            << "  \"benchmark\": \"bounded_word_store_load\",\n"
+            << "  \"schema\": \"unijit.bounded-memory-benchmark.v2\",\n"
+            << "  \"benchmark\": \"bounded_scalar_store_load\",\n"
             << "  \"os\": \"" << operating_system() << "\",\n"
             << "  \"architecture\": \"" << architecture() << "\",\n"
             << "  \"warmup_iterations\": " << options.warmup << ",\n"
@@ -286,8 +314,9 @@ int main(int argc, char** argv) {
             << ",\n"
             << "  \"samples\": " << options.samples << ",\n"
             << "  \"cases\": [\n";
-  print_case(aligned, true);
-  print_case(unaligned, false);
+  for (std::size_t index = 0; index < results.size(); ++index) {
+    print_case(results[index], index + 1 != results.size());
+  }
   std::cout << "  ]\n}\n";
   return EXIT_SUCCESS;
 }
