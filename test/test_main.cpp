@@ -284,6 +284,15 @@ Word sum_runtime_helper(const Word* arguments, std::size_t count) {
   return result;
 }
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+Word vector_clobber_runtime_helper(const Word* arguments, std::size_t count) {
+#if defined(__aarch64__) && (defined(__GNUC__) || defined(__clang__))
+  __asm__ volatile("movi v0.16b, #0xa5" ::: "v0");
+#endif
+  return sum_runtime_helper(arguments, count);
+}
+#endif
+
 Word float_runtime_helper(const Word* arguments, std::size_t count) {
   ++runtime_call_count;
   if (count != 2) {
@@ -6377,6 +6386,21 @@ void test_control_flow_vector_register_allocation() {
       });
   expect(liveness.status.ok() && !captures_vector,
          "CFG runtime-exit capture must omit non-reference vector payloads");
+#if defined(__aarch64__) || defined(_M_ARM64)
+  const std::array<Word, 1> arguments = {11};
+  const auto interpreted = unijit::ir::ControlFlowInterpreter::evaluate(
+      function, arguments.data(), arguments.size());
+  unijit::jit::CompilationOptions baseline;
+  baseline.optimization_level = unijit::jit::OptimizationLevel::kBaseline;
+  const auto compilation = Compiler::compile(function, baseline);
+  const auto native = compilation.ok()
+                          ? compilation.function->invoke(arguments.data(),
+                                                         arguments.size())
+                          : unijit::ir::EvaluationResult{};
+  expect(interpreted.ok() && compilation.ok() && native.ok() &&
+             native.value == interpreted.value,
+         "AArch64 mixed Float64/vector CFG cycles must execute in parallel");
+#endif
 }
 
 void test_control_flow_float64_lhs_register_reuse() {
@@ -6585,6 +6609,15 @@ void test_vector128_straight_line_ir() {
   }
 
   const auto compilation = Compiler::compile(function);
+#if defined(__aarch64__) || defined(_M_ARM64)
+  const auto native = compilation.ok()
+                          ? compilation.function->invoke(arguments.data(),
+                                                         arguments.size())
+                          : unijit::ir::EvaluationResult{};
+  expect(compilation.ok() && native.ok() &&
+             native.value == interpreted.value,
+         "AArch64 native SIMD must match the straight-line interpreter");
+#else
   expect(!compilation.ok() &&
              compilation.status.code() ==
                  unijit::StatusCode::kCodeGenerationFailed &&
@@ -6592,6 +6625,7 @@ void test_vector128_straight_line_ir() {
                  std::string::npos,
          "native compilation must fail closed until vector allocation and "
          "lowering are delivered");
+#endif
 
   FunctionBuilder folding_builder(0);
   const Value folded_lhs = folding_builder.vector_splat(
@@ -6628,11 +6662,21 @@ void test_vector128_straight_line_ir() {
       unijit::jit::OptimizationLevel::kBaseline;
   const auto baseline_compilation =
       Compiler::compile(folding_function, baseline_options);
+#if defined(__aarch64__) || defined(_M_ARM64)
+  const auto baseline_native =
+      baseline_compilation.ok()
+          ? baseline_compilation.function->invoke(nullptr, 0)
+          : unijit::ir::EvaluationResult{};
+  expect(baseline_compilation.ok() && baseline_native.ok() &&
+             baseline_native.value == 4,
+         "AArch64 baseline compilation must execute explicit vector nodes");
+#else
   expect(!baseline_compilation.ok() &&
              baseline_compilation.status.code() ==
                  unijit::StatusCode::kCodeGenerationFailed,
          "baseline compilation must still fail closed when vector nodes reach "
          "native allocation");
+#endif
 }
 
 void test_vector128_control_flow_ir() {
@@ -6678,11 +6722,21 @@ void test_vector128_control_flow_ir() {
            "optimized CFG SIMD must remain bit-exact");
   }
   const auto dynamic_compilation = Compiler::compile(function);
+#if defined(__aarch64__) || defined(_M_ARM64)
+  const auto native = dynamic_compilation.ok()
+                          ? dynamic_compilation.function->invoke(
+                                arguments.data(), arguments.size())
+                          : unijit::ir::EvaluationResult{};
+  expect(dynamic_compilation.ok() && native.ok() &&
+             native.value == interpreted.value,
+         "AArch64 native CFG SIMD must preserve whole-vector edge values");
+#else
   expect(!dynamic_compilation.ok() &&
              dynamic_compilation.status.code() ==
                  unijit::StatusCode::kCodeGenerationFailed,
          "CFG compilation must fail closed while a dynamic vector operation "
          "survives optimization");
+#endif
 
 
   ControlFlowBuilder folding_builder(0);
@@ -6718,6 +6772,337 @@ void test_vector128_control_flow_ir() {
     expect(native.ok() && native.value == 123,
            "fully folded CFG SIMD must execute as canonical scalar code");
   }
+}
+
+void test_aarch64_native_vector_operation_surface() {
+#if defined(__aarch64__) || defined(_M_ARM64)
+  using unijit::ir::ControlFlowBuilder;
+  using unijit::ir::ControlFlowFunction;
+  using unijit::ir::ControlFlowInterpreter;
+  using unijit::ir::ValueType;
+  using unijit::ir::Vector128;
+  using unijit::ir::VectorBinaryOperation;
+  using unijit::ir::VectorComparison;
+  using unijit::ir::VectorExtension;
+  using unijit::ir::VectorHalf;
+  using unijit::ir::VectorUnaryOperation;
+
+  unijit::jit::CompilationOptions baseline;
+  baseline.optimization_level = unijit::jit::OptimizationLevel::kBaseline;
+  const auto straight_matches = [&](const Function& function,
+                                    const std::vector<Word>& arguments,
+                                    const std::string& label) {
+    const auto interpreted = Interpreter::evaluate(
+        function, arguments.empty() ? nullptr : arguments.data(),
+        arguments.size());
+    const auto compilation = Compiler::compile(function, baseline);
+    const auto native =
+        compilation.ok()
+            ? compilation.function->invoke(
+                  arguments.empty() ? nullptr : arguments.data(),
+                  arguments.size())
+            : unijit::ir::EvaluationResult{};
+    expect(unijit::ir::verify(function).ok() && interpreted.ok() &&
+               compilation.ok() && native.ok() &&
+               native.value == interpreted.value,
+           "AArch64 native SIMD mismatch: " + label);
+    return compilation.ok() ? compilation.function->stats().spill_slots : 0;
+  };
+  const auto control_matches = [&](const ControlFlowFunction& function,
+                                   const std::vector<Word>& arguments,
+                                   const std::string& label) {
+    const auto interpreted = ControlFlowInterpreter::evaluate(
+        function, arguments.empty() ? nullptr : arguments.data(),
+        arguments.size());
+    const auto compilation = Compiler::compile(function, baseline);
+    const auto native =
+        compilation.ok()
+            ? compilation.function->invoke(
+                  arguments.empty() ? nullptr : arguments.data(),
+                  arguments.size())
+            : unijit::ir::EvaluationResult{};
+    expect(unijit::ir::verify(function).ok() && interpreted.ok() &&
+               compilation.ok() && native.ok() &&
+               native.value == interpreted.value,
+           "AArch64 native CFG SIMD mismatch: " + label);
+    return compilation.ok() ? compilation.function->stats().spill_slots : 0;
+  };
+
+  constexpr std::array<ValueType, 4> integer_types = {
+      ValueType::kI8x16, ValueType::kI16x8, ValueType::kI32x4,
+      ValueType::kI64x2};
+  constexpr std::array<VectorBinaryOperation, 6> integer_operations = {
+      VectorBinaryOperation::kAdd,        VectorBinaryOperation::kSubtract,
+      VectorBinaryOperation::kMultiply,   VectorBinaryOperation::kBitwiseAnd,
+      VectorBinaryOperation::kBitwiseOr, VectorBinaryOperation::kBitwiseXor};
+  for (const ValueType type : integer_types) {
+    for (const VectorBinaryOperation operation : integer_operations) {
+      FunctionBuilder builder(2);
+      const Value lhs = builder.vector_splat(type, builder.parameter(0));
+      const Value rhs = builder.vector_splat(type, builder.parameter(1));
+      const Value result = builder.vector_binary(operation, lhs, rhs);
+      expect(builder.set_return(builder.vector_extract_lane(
+                 result, unijit::ir::vector_lane_count(type) - 1, false)).ok(),
+             "integer SIMD surface fixture must return one lane");
+      straight_matches(std::move(builder).build(),
+                       {static_cast<Word>(INT64_C(0x8070605040302010)),
+                        static_cast<Word>(INT64_C(0x1020304050607080))},
+                       "integer binary");
+    }
+
+    FunctionBuilder unary_builder(1);
+    const Value source =
+        unary_builder.vector_splat(type, unary_builder.parameter(0));
+    const Value inverted = unary_builder.vector_unary(
+        VectorUnaryOperation::kBitwiseNot, source);
+    expect(unary_builder
+               .set_return(unary_builder.vector_extract_lane(
+                   inverted, unijit::ir::vector_lane_count(type) - 1, false))
+               .ok(),
+           "integer SIMD unary fixture must return one lane");
+    straight_matches(std::move(unary_builder).build(), {INT64_C(0x12345678)},
+                     "bitwise not");
+  }
+
+  constexpr std::array<ValueType, 2> float_types = {ValueType::kF32x4,
+                                                    ValueType::kF64x2};
+  constexpr std::array<VectorBinaryOperation, 7> float_operations = {
+      VectorBinaryOperation::kAdd,        VectorBinaryOperation::kSubtract,
+      VectorBinaryOperation::kMultiply,   VectorBinaryOperation::kDivide,
+      VectorBinaryOperation::kBitwiseAnd, VectorBinaryOperation::kBitwiseOr,
+      VectorBinaryOperation::kBitwiseXor};
+  for (const ValueType type : float_types) {
+    const Word lhs_bits =
+        type == ValueType::kF32x4 ? INT64_C(0x3fc00000)
+                                  : unijit::ir::pack_float64(1.5);
+    const Word rhs_bits =
+        type == ValueType::kF32x4 ? INT64_C(0x40000000)
+                                  : unijit::ir::pack_float64(2.0);
+    for (const VectorBinaryOperation operation : float_operations) {
+      FunctionBuilder builder(2);
+      const Value lhs = builder.vector_splat(type, builder.parameter(0));
+      const Value rhs = builder.vector_splat(type, builder.parameter(1));
+      const Value result = builder.vector_binary(operation, lhs, rhs);
+      expect(builder.set_return(builder.vector_extract_lane(result, 1)).ok(),
+             "floating SIMD surface fixture must return one lane");
+      straight_matches(std::move(builder).build(), {lhs_bits, rhs_bits},
+                       "floating binary");
+    }
+  }
+
+  constexpr std::array<VectorComparison, 5> integer_comparisons = {
+      VectorComparison::kEqual, VectorComparison::kSignedLessThan,
+      VectorComparison::kSignedLessEqual, VectorComparison::kUnsignedLessThan,
+      VectorComparison::kUnsignedLessEqual};
+  for (const ValueType type : integer_types) {
+    for (const VectorComparison comparison : integer_comparisons) {
+      FunctionBuilder builder(2);
+      const Value lhs = builder.vector_splat(type, builder.parameter(0));
+      const Value rhs = builder.vector_splat(type, builder.parameter(1));
+      const Value mask = builder.vector_compare(comparison, lhs, rhs);
+      expect(builder.set_return(builder.vector_lane_sign_mask(mask)).ok(),
+             "integer SIMD comparison fixture must return its mask");
+      straight_matches(std::move(builder).build(), {-1, 1},
+                       "integer comparison");
+    }
+  }
+
+  constexpr std::array<VectorComparison, 3> float_comparisons = {
+      VectorComparison::kOrderedFloatEqual,
+      VectorComparison::kOrderedFloatLessThan,
+      VectorComparison::kOrderedFloatLessEqual};
+  for (const ValueType type : float_types) {
+    const Word one = type == ValueType::kF32x4
+                         ? INT64_C(0x3f800000)
+                         : unijit::ir::pack_float64(1.0);
+    const Word two = type == ValueType::kF32x4
+                         ? INT64_C(0x40000000)
+                         : unijit::ir::pack_float64(2.0);
+    const Word nan = type == ValueType::kF32x4
+                         ? INT64_C(0x7fc01234)
+                         : static_cast<Word>(UINT64_C(0x7ff8000000001234));
+    for (const VectorComparison comparison : float_comparisons) {
+      for (const std::array<Word, 2> arguments :
+           {std::array<Word, 2>{one, two}, std::array<Word, 2>{nan, nan}}) {
+        FunctionBuilder builder(2);
+        const Value lhs = builder.vector_splat(type, builder.parameter(0));
+        const Value rhs = builder.vector_splat(type, builder.parameter(1));
+        const Value mask = builder.vector_compare(comparison, lhs, rhs);
+        expect(builder.set_return(builder.vector_lane_sign_mask(mask)).ok(),
+               "floating SIMD comparison fixture must return its mask");
+        straight_matches(std::move(builder).build(),
+                         {arguments[0], arguments[1]},
+                         "floating comparison");
+      }
+    }
+  }
+
+  for (const ValueType type :
+       {ValueType::kI8x16, ValueType::kI16x8, ValueType::kI32x4,
+        ValueType::kI64x2, ValueType::kF32x4, ValueType::kF64x2}) {
+    FunctionBuilder builder(2);
+    const std::size_t lane = unijit::ir::vector_lane_count(type) - 1;
+    const Value base = builder.vector_splat(type, builder.parameter(0));
+    const Value inserted =
+        builder.vector_insert_lane(base, lane, builder.parameter(1));
+    expect(builder.set_return(builder.vector_extract_lane(
+               inserted, lane, unijit::ir::is_integer_vector_type(type))).ok(),
+           "SIMD lane fixture must return its inserted lane");
+    straight_matches(std::move(builder).build(), {7, -3}, "lane insert/extract");
+  }
+
+  {
+    FunctionBuilder builder(2);
+    Value source =
+        builder.vector_splat(ValueType::kI32x4, builder.parameter(0));
+    source = builder.vector_insert_lane(source, 0, builder.parameter(1));
+    const Value shuffled = builder.vector_shuffle(source, {3, 2, 1, 0});
+    expect(builder.set_return(builder.vector_extract_lane(shuffled, 3, true)).ok(),
+           "SIMD shuffle fixture must return the reversed lane");
+    straight_matches(std::move(builder).build(), {5, -9}, "shuffle");
+  }
+
+  constexpr std::array<std::pair<ValueType, ValueType>, 3> widen_types = {{
+      {ValueType::kI8x16, ValueType::kI16x8},
+      {ValueType::kI16x8, ValueType::kI32x4},
+      {ValueType::kI32x4, ValueType::kI64x2},
+  }};
+  for (const auto& types : widen_types) {
+    for (const VectorExtension extension :
+         {VectorExtension::kZero, VectorExtension::kSign}) {
+      for (const VectorHalf half : {VectorHalf::kLow, VectorHalf::kHigh}) {
+        FunctionBuilder builder(2);
+        Value source =
+            builder.vector_splat(types.first, builder.parameter(0));
+        const std::size_t source_lane =
+            half == VectorHalf::kLow
+                ? 0
+                : unijit::ir::vector_lane_count(types.first) / 2;
+        source =
+            builder.vector_insert_lane(source, source_lane, builder.parameter(1));
+        const Value widened =
+            builder.vector_widen(source, types.second, extension, half);
+        expect(builder.set_return(
+                   builder.vector_extract_lane(widened, 0, extension ==
+                                                                VectorExtension::kSign))
+                   .ok(),
+               "SIMD widen fixture must return its selected lane");
+        straight_matches(std::move(builder).build(), {1, -2}, "widen");
+      }
+    }
+  }
+
+  {
+    Vector128 bits;
+    bits = unijit::ir::vector_insert_lane_bits(
+        bits, ValueType::kI64x2, 0,
+        static_cast<Word>(UINT64_C(0x8877665544332211)));
+    bits = unijit::ir::vector_insert_lane_bits(
+        bits, ValueType::kI64x2, 1,
+        static_cast<Word>(UINT64_C(0x1122334455667788)));
+    FunctionBuilder builder(0);
+    const Value constant = builder.vector_constant(ValueType::kI64x2, bits);
+    expect(builder.set_return(builder.vector_extract_lane(constant, 1)).ok(),
+           "SIMD constant fixture must return its high half");
+    straight_matches(std::move(builder).build(), {}, "constant materialization");
+  }
+
+  {
+    FunctionBuilder builder(2);
+    const Value vector =
+        builder.vector_splat(ValueType::kI64x2, builder.parameter(0));
+    const Value called =
+        builder.call(vector_clobber_runtime_helper, {builder.parameter(1)});
+    const Value doubled = builder.vector_binary(
+        VectorBinaryOperation::kAdd, vector, vector);
+    const Value lane = builder.vector_extract_lane(doubled, 1, true);
+    expect(builder.set_return(builder.add(lane, called)).ok(),
+           "SIMD call-preservation fixture must return a scalar");
+    straight_matches(std::move(builder).build(), {9, 4}, "call preservation");
+  }
+
+  {
+    constexpr std::size_t kPressure = 24;
+    FunctionBuilder builder(kPressure);
+    Vector128 mask_bits;
+    mask_bits.bytes.fill(UINT8_MAX);
+    const Value mask =
+        builder.vector_constant(ValueType::kMask32x4, mask_bits);
+    const Value zero = builder.vector_zero(ValueType::kI32x4);
+    std::vector<Value> values;
+    values.reserve(kPressure);
+    for (std::size_t index = 0; index < kPressure; ++index) {
+      const Value splat =
+          builder.vector_splat(ValueType::kI32x4, builder.parameter(index));
+      values.push_back(builder.vector_select(mask, splat, zero));
+    }
+    while (values.size() > 1) {
+      std::vector<Value> reduced;
+      for (std::size_t index = 0; index < values.size(); index += 2) {
+        reduced.push_back(
+            index + 1 < values.size()
+                ? builder.vector_binary(VectorBinaryOperation::kAdd,
+                                        values[index], values[index + 1])
+                : values[index]);
+      }
+      values = std::move(reduced);
+    }
+    expect(builder.set_return(builder.vector_extract_lane(values.front(), 0)).ok(),
+           "SIMD spill-pressure fixture must return its reduction");
+    std::vector<Word> arguments(kPressure);
+    for (std::size_t index = 0; index < arguments.size(); ++index) {
+      arguments[index] = static_cast<Word>(index + 1);
+    }
+    const std::size_t spill_slots = straight_matches(
+        std::move(builder).build(), arguments,
+        "register spills and spilled select");
+    expect(spill_slots > 0,
+           "AArch64 SIMD pressure must exercise aligned vector spills");
+  }
+
+  {
+    constexpr std::size_t kPressure = 24;
+    ControlFlowBuilder builder(kPressure);
+    std::vector<Value> arguments;
+    std::vector<ValueType> parameter_types(kPressure, ValueType::kI16x8);
+    for (std::size_t index = 0; index < kPressure; ++index) {
+      arguments.push_back(
+          builder.vector_splat(ValueType::kI16x8, builder.parameter(index)));
+    }
+    const unijit::ir::Block merge = builder.create_block(parameter_types);
+    expect(builder.jump(merge, arguments).ok(),
+           "SIMD CFG pressure fixture must create a whole-vector edge");
+    expect(builder.set_insertion_block(merge).ok(),
+           "SIMD CFG pressure merge must exist");
+    std::vector<Value> values;
+    for (std::size_t index = 0; index < kPressure; ++index) {
+      values.push_back(builder.block_parameter(merge, index));
+    }
+    while (values.size() > 1) {
+      std::vector<Value> reduced;
+      for (std::size_t index = 0; index < values.size(); index += 2) {
+        reduced.push_back(
+            index + 1 < values.size()
+                ? builder.vector_binary(VectorBinaryOperation::kAdd,
+                                        values[index], values[index + 1])
+                : values[index]);
+      }
+      values = std::move(reduced);
+    }
+    expect(builder.set_return(
+               builder.vector_extract_lane(values.front(), 7, true)).ok(),
+           "SIMD CFG pressure fixture must return its reduction");
+    std::vector<Word> scalar_arguments(kPressure);
+    for (std::size_t index = 0; index < scalar_arguments.size(); ++index) {
+      scalar_arguments[index] = static_cast<Word>(index + 1);
+    }
+    const std::size_t spill_slots = control_matches(
+        std::move(builder).build(), scalar_arguments,
+        "spilled parallel edge copy");
+    expect(spill_slots > 0,
+           "AArch64 CFG SIMD pressure must exercise stack edge copies");
+  }
+#endif
 }
 
 void test_vector128_verifier_and_limits() {
@@ -6950,6 +7335,7 @@ int main() {
   test_vector128_strict_semantics();
   test_vector128_straight_line_ir();
   test_vector128_control_flow_ir();
+  test_aarch64_native_vector_operation_surface();
   test_vector128_verifier_and_limits();
   test_control_flow_compact_spill_frame();
   test_control_flow_execution_budget();
