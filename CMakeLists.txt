@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 
 project(
   UniJIT
-  VERSION 0.2.2
+  VERSION 0.2.3
   DESCRIPTION "A unified high-performance JIT runtime"
   LANGUAGES C CXX)
 
