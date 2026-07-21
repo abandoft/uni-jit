@@ -33,6 +33,13 @@ CompilationResult translation_error(std::size_t pc, const char* message) {
   return {{StatusCode::kInvalidArgument, message, pc}, nullptr};
 }
 
+jit::CompilationOptions lua_compilation_options(
+    jit::OptimizationLevel level) noexcept {
+  jit::CompilationOptions options{level};
+  options.measure_safepoint_polls = false;
+  return options;
+}
+
 bool valid_register(const std::vector<Value>& registers, int index) {
   return index >= 0 && static_cast<std::size_t>(index) < registers.size() &&
          registers[static_cast<std::size_t>(index)].valid();
@@ -298,7 +305,7 @@ CompilationResult compile_float64_prototype(
                                "Lua function has no supported return");
     }
     return Compiler::compile(std::move(builder).build(),
-                             jit::CompilationOptions{optimization_level});
+                             lua_compilation_options(optimization_level));
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate Lua Float64 translation state"},

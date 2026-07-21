@@ -50,6 +50,13 @@ using unijit::jit::Compiler;
 constexpr char kCompiledFunctionMetatable[] = "unijit.lua55.compiled";
 constexpr std::size_t kMaximumLuaParameters = 255;
 
+unijit::jit::CompilationOptions lua_compilation_options(
+    unijit::jit::OptimizationLevel level) noexcept {
+  unijit::jit::CompilationOptions options{level};
+  options.measure_safepoint_polls = false;
+  return options;
+}
+
 static_assert(sizeof(lua_Integer) == sizeof(Word),
               "Lua and UniJIT integers must have the same width");
 static_assert(sizeof(lua_Number) == sizeof(double),
@@ -945,7 +952,7 @@ compile_straight_prototype(const Proto &prototype,
     }
     return Compiler::compile(
         std::move(builder).build(),
-        unijit::jit::CompilationOptions{optimization_level});
+        lua_compilation_options(optimization_level));
   } catch (const std::bad_alloc &) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate Lua frontend translation state"},
@@ -1750,7 +1757,10 @@ CompilationResult compile_numeric_for_prototype(
         return translation_error(static_cast<std::size_t>(prototype.sizecode),
                                  "guarded Lua numeric loop has no return");
       }
-      return Compiler::compile(std::move(builder).build());
+      return Compiler::compile(
+          std::move(builder).build(),
+          lua_compilation_options(
+              unijit::jit::OptimizationLevel::kOptimized));
     }
 
     if (has_parameter_step) {
@@ -2025,7 +2035,10 @@ CompilationResult compile_numeric_for_prototype(
         return translation_error(static_cast<std::size_t>(prototype.sizecode),
                                  "Lua numeric loop has no supported return");
       }
-      return Compiler::compile(std::move(builder).build());
+      return Compiler::compile(
+          std::move(builder).build(),
+          lua_compilation_options(
+              unijit::jit::OptimizationLevel::kOptimized));
     }
 
     Word loop_unroll_factor = 1;
@@ -2352,7 +2365,10 @@ CompilationResult compile_numeric_for_prototype(
       return translation_error(static_cast<std::size_t>(prototype.sizecode),
                                "Lua numeric loop has no supported return");
     }
-    return Compiler::compile(std::move(builder).build());
+    return Compiler::compile(
+        std::move(builder).build(),
+        lua_compilation_options(
+            unijit::jit::OptimizationLevel::kOptimized));
   } catch (const std::bad_alloc &) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate Lua numeric-loop translation state"},
