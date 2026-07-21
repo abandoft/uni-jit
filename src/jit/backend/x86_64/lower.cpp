@@ -454,7 +454,8 @@ StackMapRecord make_stack_map_record(
 }
 
 LoweringResult lower_impl(const ir::Function& function,
-                          const StackMapRequirements& requirements) {
+                          const StackMapRequirements& requirements,
+                          bool measure_safepoint_polls) {
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
   return {{StatusCode::kUnsupportedArchitecture,
            "the x86-64 encoder requires a little-endian target"},
@@ -738,11 +739,15 @@ LoweringResult lower_impl(const ir::Function& function,
       case ir::Opcode::kSafepoint: {
         assembler.load(kScratch0, kRsp, context_slot * sizeof(ir::Word));
         const std::size_t no_context = assembler.branch_zero(kScratch0);
-        assembler.load(kScratch1, kScratch0,
-                       runtime::ExecutionContext::safepoint_polls_offset());
-        assembler.increment(kScratch1);
-        assembler.store(kScratch1, kScratch0,
-                        runtime::ExecutionContext::safepoint_polls_offset());
+        if (measure_safepoint_polls) {
+          assembler.load(
+              kScratch1, kScratch0,
+              runtime::ExecutionContext::safepoint_polls_offset());
+          assembler.increment(kScratch1);
+          assembler.store(
+              kScratch1, kScratch0,
+              runtime::ExecutionContext::safepoint_polls_offset());
+        }
         assembler.load(
             kScratch0, kScratch0,
             runtime::ExecutionContext::interrupt_requested_offset());
@@ -1059,7 +1064,8 @@ void copy_edge_arguments(Assembler* assembler,
 
 LoweringResult lower_control_flow_impl(
     const ir::ControlFlowFunction& function,
-    const StackMapRequirements& requirements) {
+    const StackMapRequirements& requirements,
+    bool measure_safepoint_polls) {
 #if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
   return {{StatusCode::kUnsupportedArchitecture,
            "the x86-64 encoder requires a little-endian target"},
@@ -1308,12 +1314,15 @@ LoweringResult lower_control_flow_impl(
         case ir::ControlOpcode::kSafepoint: {
           assembler.load(kScratch0, kRsp, context_slot * sizeof(ir::Word));
           const std::size_t no_context = assembler.branch_zero(kScratch0);
-          assembler.load(kScratch1, kScratch0,
-                         runtime::ExecutionContext::safepoint_polls_offset());
-          assembler.increment(kScratch1);
-          assembler.store(
-              kScratch1, kScratch0,
-              runtime::ExecutionContext::safepoint_polls_offset());
+          if (measure_safepoint_polls) {
+            assembler.load(
+                kScratch1, kScratch0,
+                runtime::ExecutionContext::safepoint_polls_offset());
+            assembler.increment(kScratch1);
+            assembler.store(
+                kScratch1, kScratch0,
+                runtime::ExecutionContext::safepoint_polls_offset());
+          }
           assembler.load(
               kScratch0, kScratch0,
               runtime::ExecutionContext::interrupt_requested_offset());
@@ -1487,9 +1496,10 @@ LoweringResult lower_control_flow_impl(
 }  // namespace
 
 LoweringResult lower(const ir::Function& function,
-                     const StackMapRequirements& requirements) {
+                     const StackMapRequirements& requirements,
+                     bool measure_safepoint_polls) {
   try {
-    return lower_impl(function, requirements);
+    return lower_impl(function, requirements, measure_safepoint_polls);
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate x86-64 lowering state"},
@@ -1499,9 +1509,11 @@ LoweringResult lower(const ir::Function& function,
 }
 
 LoweringResult lower(const ir::ControlFlowFunction& function,
-                     const StackMapRequirements& requirements) {
+                     const StackMapRequirements& requirements,
+                     bool measure_safepoint_polls) {
   try {
-    return lower_control_flow_impl(function, requirements);
+    return lower_control_flow_impl(function, requirements,
+                                   measure_safepoint_polls);
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate x86-64 CFG lowering state"},

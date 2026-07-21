@@ -55,6 +55,7 @@ struct CompilationOptions final {
 
   OptimizationLevel optimization_level{OptimizationLevel::kOptimized};
   CompilationLimits limits;
+  bool measure_safepoint_polls{true};
 };
 
 class CompiledFunction final {

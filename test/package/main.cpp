@@ -209,8 +209,9 @@ int main() {
            .ok()) {
     return 38;
   }
+  const auto safepoint_function = std::move(safepoint_builder).build();
   auto safepoint_compilation = unijit::jit::Compiler::compile(
-      std::move(safepoint_builder).build());
+      safepoint_function);
   if (!safepoint_compilation.ok()) {
     return 39;
   }
@@ -220,6 +221,20 @@ int main() {
   if (!safepoint_result.ok() || safepoint_result.value != 42 ||
       safepoint_context.safepoint_polls() != 1) {
     return 40;
+  }
+  unijit::jit::CompilationOptions unmeasured_options;
+  unmeasured_options.measure_safepoint_polls = false;
+  auto unmeasured_safepoint = unijit::jit::Compiler::compile(
+      safepoint_function, unmeasured_options);
+  if (!unmeasured_safepoint.ok()) {
+    return 41;
+  }
+  const auto unmeasured_result = unmeasured_safepoint.function->invoke(
+      nullptr, 0, &safepoint_context);
+  if (!unmeasured_result.ok() ||
+      unmeasured_result.value != 42 ||
+      safepoint_context.safepoint_polls() != 0) {
+    return 41;
   }
   unijit::runtime::OsrFrame osr_frame(31, 7);
   unijit::runtime::OsrEntryPlan osr_plan(31, 7);

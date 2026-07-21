@@ -623,6 +623,22 @@ void test_safepoint_ir_and_interpreter() {
     expect(compilation.function->native_entry()(nullptr, nullptr) == 73,
            "a null execution context must bypass safepoint polling");
   }
+
+  unijit::jit::CompilationOptions unmeasured_options;
+  unmeasured_options.measure_safepoint_polls = false;
+  auto unmeasured_compilation =
+      Compiler::compile(function, unmeasured_options);
+  expect(unmeasured_compilation.ok(),
+         "native safepoint telemetry must be optional");
+  if (unmeasured_compilation.ok()) {
+    const auto unmeasured =
+        unmeasured_compilation.function->invoke(nullptr, 0, &context);
+    expect(unmeasured.ok() && unmeasured.value == 73 &&
+               context.safepoint_polls() == 0 && compilation.ok() &&
+               unmeasured_compilation.function->stats().code_size <
+                   compilation.function->stats().code_size,
+           "disabled safepoint telemetry must add no execution counts");
+  }
 }
 
 void test_differential_arithmetic() {
@@ -3132,6 +3148,22 @@ void test_control_flow_safepoint() {
            "CFG invocation must provision a local safepoint context");
     expect(compilation.function->native_entry()(args.data(), nullptr) == 10,
            "null execution contexts must bypass CFG safepoints");
+  }
+
+  unijit::jit::CompilationOptions unmeasured_options;
+  unmeasured_options.measure_safepoint_polls = false;
+  auto unmeasured_compilation =
+      Compiler::compile(function, unmeasured_options);
+  expect(unmeasured_compilation.ok(),
+         "CFG safepoint telemetry must be optional");
+  if (unmeasured_compilation.ok()) {
+    const auto unmeasured = unmeasured_compilation.function->invoke(
+        args.data(), args.size(), &context);
+    expect(unmeasured.ok() && unmeasured.value == 10 &&
+               context.safepoint_polls() == 0 && compilation.ok() &&
+               unmeasured_compilation.function->stats().code_size <
+                   compilation.function->stats().code_size,
+           "disabled CFG safepoint telemetry must add no loop counts");
   }
 }
 

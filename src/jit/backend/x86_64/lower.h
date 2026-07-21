@@ -30,9 +30,11 @@ struct LoweringResult final {
 };
 
 LoweringResult lower(const ir::Function& function,
-                     const StackMapRequirements& requirements);
+                     const StackMapRequirements& requirements,
+                     bool measure_safepoint_polls);
 LoweringResult lower(const ir::ControlFlowFunction& function,
-                     const StackMapRequirements& requirements);
+                     const StackMapRequirements& requirements,
+                     bool measure_safepoint_polls);
 
 }  // namespace unijit::jit::detail::x86_64
 
