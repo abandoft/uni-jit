@@ -92,7 +92,11 @@ execution with a false success result, not a runtime exit.
 
 - x86-64 uses aligned loads/stores under the TSO model, `LOCK` read-modify-write
   forms, `CMPXCHG`, and only the fences required by the declared order. A
-  sequentially consistent store cannot silently become a plain store.
+  sequentially consistent store cannot silently become a plain store. This
+  mapping is implemented for both straight-line and CFG IR: exchange and
+  sequentially consistent stores use `XCHG`, fetch-add uses `LOCK XADD`,
+  compare-exchange uses `LOCK CMPXCHG`, bitwise fetch operations use a
+  `LOCK CMPXCHG` retry loop, and a sequentially consistent fence uses `MFENCE`.
 - AArch64 uses acquire/release load-store forms and LSE read-modify-write
   instructions only when the immutable target profile authorizes LSE.
   Otherwise it uses bounded LL/SC attempts followed by a progress-preserving
@@ -106,6 +110,11 @@ Runtime fallback is a disclosed `helper` lowering decision. Helpers use the
 same resolved region address, width, order, and return-value contract; they do
 not receive an unchecked frontend pointer. Lock freedom is therefore a target
 capability, while semantic availability and progress remain deterministic.
+
+The current delivery boundary enables atomic capability preflight only for
+x86-64. AArch64 and RISC-V 64 remain `unsupported` before code emission until
+their mappings and target-feature contracts are complete; no release claim
+combines the x86-64 slice with those pending backends.
 
 ## Qualification gates
 
@@ -121,3 +130,12 @@ cases, contended fetch-add and compare-exchange stress, deterministic replay,
 ThreadSanitizer coverage of runtime integration, and real AArch64, Ubuntu and
 Windows x86-64, and RISC-V 64 execution. No release claims atomics from encoder
 unit tests alone.
+
+The completed x86-64 slice has baseline and optimized native parity for both IR
+forms, all four widths and every valid order, compare-exchange match and
+mismatch, diagnosed read-only/out-of-range/misaligned failures with stack maps,
+and contended multi-thread fetch-add. It passes the complete core suite with
+GCC and Clang plus ASan/UBSan on a real Ubuntu x86-64 host. Cross-architecture
+litmus tests, Windows x64 execution, installed-package coverage, and the two
+remaining native backends are still release gates for the overall atomic
+feature block.
