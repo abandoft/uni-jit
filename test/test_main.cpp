@@ -1986,6 +1986,94 @@ void test_control_flow_optimization_pipeline() {
          "CFG compiler must reject an unknown optimization level");
 }
 
+void test_control_flow_branch_and_value_canonicalization() {
+  unijit::ir::ControlFlowBuilder builder(1);
+  const unijit::ir::Block selected = builder.create_block(0);
+  const unijit::ir::Block discarded = builder.create_block(0);
+  const unijit::ir::Block merge = builder.create_block(1);
+  const Value condition =
+      builder.less_than(builder.constant(0), builder.constant(1));
+  expect(builder.branch(condition, selected, {}, discarded, {}).ok(),
+         "constant-branch fixture must select two valid successors");
+
+  expect(builder.set_insertion_block(selected).ok(),
+         "selected constant branch must exist");
+  const Value first =
+      builder.add(builder.parameter(0), builder.constant(5));
+  const Value duplicate =
+      builder.add(builder.parameter(0), builder.constant(5));
+  expect(builder.jump(merge, {builder.add(first, duplicate)}).ok(),
+         "selected constant branch must reach its merge");
+
+  expect(builder.set_insertion_block(discarded).ok(),
+         "discarded constant branch must exist before optimization");
+  const Value unreachable_call = builder.call(
+      sum_runtime_helper, {builder.constant(100), builder.constant(200)});
+  expect(unreachable_call.valid() && builder.jump(merge, {unreachable_call}).ok(),
+         "discarded branch must retain a structurally reachable effect");
+
+  expect(builder.set_insertion_block(merge).ok() &&
+             builder.set_return(builder.block_parameter(merge, 0)).ok(),
+         "constant-branch merge must return its selected value");
+  const unijit::ir::ControlFlowFunction function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "constant-branch canonicalization fixture must verify");
+
+  const auto optimization = unijit::ir::Optimizer::run(function);
+  expect(optimization.ok() && optimization.function.blocks().size() == 3 &&
+             optimization.stats.branches_folded == 1 &&
+             optimization.stats.common_subexpressions == 2 &&
+             optimization.stats.output_nodes < optimization.stats.input_nodes,
+         "CFG optimizer must prune constant branches and reuse local pure expressions");
+  if (!optimization.ok()) {
+    return;
+  }
+
+  const std::array<Word, 1> arguments = {7};
+  runtime_call_count = 0;
+  const auto interpreted = unijit::ir::ControlFlowInterpreter::evaluate(
+      optimization.function, arguments.data(), arguments.size());
+  auto compilation = Compiler::compile(function);
+  const auto native =
+      compilation.ok()
+          ? compilation.function->invoke(arguments.data(), arguments.size())
+          : unijit::ir::EvaluationResult{};
+  expect(interpreted.ok() && native.ok() && interpreted.value == 24 &&
+             native.value == 24 && runtime_call_count == 0,
+         "canonical CFG execution must preserve the selected result and remove unreachable effects");
+
+  constexpr std::size_t kDiscardedGuardSite = 719;
+  unijit::ir::ControlFlowBuilder guard_builder(
+      std::vector<unijit::ir::ValueType>{unijit::ir::ValueType::kFloat64});
+  const unijit::ir::Block guard_selected = guard_builder.create_block(0);
+  const unijit::ir::Block guard_discarded = guard_builder.create_block(0);
+  expect(guard_builder
+             .branch(guard_builder.constant(1), guard_selected, {},
+                     guard_discarded, {})
+             .ok() &&
+             guard_builder.set_insertion_block(guard_selected).ok() &&
+             guard_builder.set_return(guard_builder.parameter(0)).ok() &&
+             guard_builder.set_insertion_block(guard_discarded).ok() &&
+             guard_builder
+                 .guard_float64_nonzero(guard_builder.parameter(0),
+                                        kDiscardedGuardSite)
+                 .valid() &&
+             guard_builder.set_return(guard_builder.parameter(0)).ok(),
+         "discarded-guard fixture must retain a valid pre-optimization exit");
+  const auto guard_function = std::move(guard_builder).build();
+  auto guard_baseline = Compiler::compile(
+      guard_function, unijit::jit::CompilationOptions{
+                          unijit::jit::OptimizationLevel::kBaseline});
+  auto guard_optimized = Compiler::compile(guard_function);
+  expect(guard_baseline.ok() && guard_optimized.ok() &&
+             guard_baseline.function->requires_context() &&
+             guard_baseline.function->deoptimization_record(
+                 kDiscardedGuardSite) != nullptr &&
+             !guard_optimized.function->requires_context() &&
+             guard_optimized.function->deoptimization_table().empty(),
+         "constant-branch pruning must remove unreachable guard metadata only from the optimized tier");
+}
+
 void test_optimization_exit_state_mapping() {
   FunctionBuilder builder(2);
   const Value dead = builder.add(builder.parameter(0), builder.constant(91));
@@ -3892,6 +3980,7 @@ int main() {
   test_argument_validation();
   test_optimization_pipeline();
   test_control_flow_optimization_pipeline();
+  test_control_flow_branch_and_value_canonicalization();
   test_optimization_exit_state_mapping();
   test_float64_constant_folding();
   test_control_flow_runtime_helper_ir();
