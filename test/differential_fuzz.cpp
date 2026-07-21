@@ -274,13 +274,28 @@ bool fuzz_cfg_function(std::mt19937_64* random, const Options& options,
   for (std::size_t index = 0; index < state_count; ++index) {
     state.push_back(builder.block_parameter(loop, index + 1));
   }
-  const Value branch_condition =
-      float64
-          ? builder.float64_less_than(
-                state[0], builder.float64_constant(random_constant_double(random)))
-          : builder.less_than(
-                state[0],
-                builder.constant(static_cast<Word>((*random)() % 257ULL)));
+  Value branch_condition;
+  if (float64) {
+    const Value comparison =
+        builder.float64_constant(random_constant_double(random));
+    switch ((*random)() % 4ULL) {
+      case 0:
+        branch_condition = builder.float64_less_than(state[0], comparison);
+        break;
+      case 1:
+        branch_condition = builder.float64_less_equal(state[0], comparison);
+        break;
+      case 2:
+        branch_condition = builder.float64_equal(state[0], comparison);
+        break;
+      default:
+        branch_condition = builder.float64_not_equal(state[0], comparison);
+        break;
+    }
+  } else {
+    branch_condition = builder.less_than(
+        state[0], builder.constant(static_cast<Word>((*random)() % 257ULL)));
+  }
   if (!builder.branch(branch_condition, true_arm, {}, false_arm, {}).ok()) {
     std::cerr << "unable to branch generated CFG loop\n";
     return false;

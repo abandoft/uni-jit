@@ -1,4 +1,5 @@
 #include <array>
+#include <limits>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -144,6 +145,34 @@ int main() {
   if (!result.ok() || result.value != 42) {
     return 5;
   }
+  unijit::ir::FunctionBuilder comparison_builder(
+      std::vector<unijit::ir::ValueType>(
+          2, unijit::ir::ValueType::kFloat64));
+  const auto comparison_equal = comparison_builder.float64_equal(
+      comparison_builder.parameter(0), comparison_builder.parameter(1));
+  const auto comparison_not_equal = comparison_builder.float64_not_equal(
+      comparison_builder.parameter(0), comparison_builder.parameter(1));
+  if (!comparison_builder
+           .set_return(comparison_builder.add(
+               comparison_builder.multiply(comparison_equal,
+                                           comparison_builder.constant(10)),
+               comparison_not_equal))
+           .ok()) {
+    return 42;
+  }
+  auto comparison_compilation = unijit::jit::Compiler::compile(
+      std::move(comparison_builder).build());
+  const std::array<unijit::ir::Word, 2> signed_zeroes = {
+      unijit::ir::pack_float64(0.0), unijit::ir::pack_float64(-0.0)};
+  const auto comparison_result =
+      comparison_compilation.ok()
+          ? comparison_compilation.function->invoke(signed_zeroes.data(),
+                                                     signed_zeroes.size())
+          : unijit::ir::EvaluationResult{};
+  if (!comparison_compilation.ok() || !comparison_result.ok() ||
+      comparison_result.value != 10) {
+    return 43;
+  }
   unijit::jit::CompilationLimits package_limits;
   package_limits.maximum_ir_nodes = 2;
   const auto limited_compilation = unijit::jit::Compiler::compile(
@@ -201,6 +230,29 @@ int main() {
       cfg_result.value != unijit::ir::pack_float64(10.0) ||
       package_cfg_call_count != 1) {
     return 37;
+  }
+  unijit::ir::ControlFlowBuilder cfg_comparison_builder(
+      {unijit::ir::ValueType::kFloat64,
+       unijit::ir::ValueType::kFloat64});
+  if (!cfg_comparison_builder
+           .set_return(cfg_comparison_builder.float64_not_equal(
+               cfg_comparison_builder.parameter(0),
+               cfg_comparison_builder.parameter(1)))
+           .ok()) {
+    return 44;
+  }
+  auto cfg_comparison = unijit::jit::Compiler::compile(
+      std::move(cfg_comparison_builder).build());
+  const std::array<unijit::ir::Word, 2> unordered = {
+      unijit::ir::pack_float64(std::numeric_limits<double>::quiet_NaN()),
+      unijit::ir::pack_float64(0.0)};
+  const auto cfg_comparison_result =
+      cfg_comparison.ok()
+          ? cfg_comparison.function->invoke(unordered.data(), unordered.size())
+          : unijit::ir::EvaluationResult{};
+  if (!cfg_comparison.ok() || !cfg_comparison_result.ok() ||
+      cfg_comparison_result.value != 1) {
+    return 45;
   }
   unijit::ir::FunctionBuilder safepoint_builder(0);
   if (!safepoint_builder.safepoint(23).valid() ||
