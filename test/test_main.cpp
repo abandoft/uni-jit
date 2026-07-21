@@ -978,6 +978,453 @@ void test_bounded_memory_control_flow_interpreter() {
   }
 }
 
+void test_bounded_atomic_semantics() {
+  using unijit::ir::AtomicAccessDescriptor;
+  using unijit::ir::AtomicCompareExchangeStrength;
+  using unijit::ir::AtomicMemoryOrder;
+  using unijit::ir::MemoryByteOrder;
+  using unijit::ir::MemoryWidth;
+  using unijit::jit::LoweringStrategy;
+  using unijit::runtime::ExecutionContext;
+  using unijit::runtime::MemoryRegion;
+
+  const auto access = [](MemoryWidth width, AtomicMemoryOrder order) {
+    AtomicAccessDescriptor descriptor;
+    descriptor.memory.width = width;
+    descriptor.memory.alignment =
+        static_cast<std::uint8_t>(unijit::ir::memory_width_bytes(width));
+    descriptor.order = order;
+    return descriptor;
+  };
+  const auto read_word = [](const std::uint64_t &storage) {
+    std::uint64_t result = 0;
+    std::memcpy(&result, &storage, sizeof(result));
+    return result;
+  };
+
+  alignas(8) std::uint64_t cell = 0;
+  MemoryRegion region{&cell, sizeof(cell), true};
+  ExecutionContext context;
+  expect(context.bind_memory_regions(&region, 1).ok(),
+         "atomic fixture must bind naturally aligned storage");
+
+  FunctionBuilder builder(0, 1);
+  const Value offset = builder.constant(0);
+  builder.atomic_store(offset, builder.constant(0xf0),
+                       access(MemoryWidth::k64, AtomicMemoryOrder::kRelease),
+                       200);
+  builder.atomic_load(
+      offset, access(MemoryWidth::k64, AtomicMemoryOrder::kAcquire), 201);
+  builder.atomic_exchange(
+      offset, builder.constant(0x0f),
+      access(MemoryWidth::k64, AtomicMemoryOrder::kSequentiallyConsistent),
+      202);
+  builder.atomic_fetch_add(
+      offset, builder.constant(1),
+      access(MemoryWidth::k64, AtomicMemoryOrder::kRelaxed), 203);
+  builder.atomic_fetch_and(
+      offset, builder.constant(0x1f),
+      access(MemoryWidth::k64, AtomicMemoryOrder::kAcquireRelease), 204);
+  builder.atomic_fetch_or(offset, builder.constant(0x80),
+                          access(MemoryWidth::k64, AtomicMemoryOrder::kRelaxed),
+                          205);
+  builder.atomic_fetch_xor(
+      offset, builder.constant(0xff),
+      access(MemoryWidth::k64, AtomicMemoryOrder::kSequentiallyConsistent),
+      206);
+  AtomicAccessDescriptor compare_access =
+      access(MemoryWidth::k64, AtomicMemoryOrder::kAcquireRelease);
+  compare_access.failure_order = AtomicMemoryOrder::kAcquire;
+  compare_access.strength = AtomicCompareExchangeStrength::kWeak;
+  const auto compared = builder.atomic_compare_exchange(
+      offset, builder.constant(0x6f), builder.constant(0x1234), compare_access,
+      207);
+  builder.atomic_fence(AtomicMemoryOrder::kSequentiallyConsistent);
+  expect(builder.set_return(compared.success).ok(),
+         "atomic operation surface fixture must return CAS success");
+  const Function function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok() &&
+             function.atomic_accesses().size() == 8 &&
+             function.memory_accesses().empty(),
+         "atomic operations must use a verified independent descriptor table");
+  const auto result = Interpreter::evaluate(function, {}, &context);
+  expect(result.ok() && result.value == 1 && read_word(cell) == 0x1234,
+         "atomic store/load/exchange/fetch/CAS/fence semantics must compose");
+
+  cell = 0;
+  const auto optimized = unijit::ir::Optimizer::run(function);
+  const auto optimized_result =
+      optimized.ok() ? Interpreter::evaluate(optimized.function, {}, &context)
+                     : unijit::ir::EvaluationResult{optimized.status, 0};
+  expect(optimized.ok() && optimized.function.atomic_accesses().size() == 8 &&
+             optimized_result.ok() && optimized_result.value == 1 &&
+             read_word(cell) == 0x1234,
+         "optimization must retain ordered atomic effects and descriptors");
+
+  const auto capability = unijit::jit::preflight_capabilities(
+      function, unijit::jit::baseline_target_profile());
+  const auto compilation = Compiler::compile(function);
+  expect(!capability.ok() && capability.requires_execution_context &&
+             capability.overall_strategy == LoweringStrategy::kUnsupported &&
+             capability.operation_count(LoweringStrategy::kUnsupported) >= 9 &&
+             !compilation.ok() &&
+             compilation.status.code() ==
+                 unijit::StatusCode::kCodeGenerationFailed,
+         "atomic IR must fail closed until native lowering is enabled");
+
+  const std::array<MemoryWidth, 4> widths = {
+      MemoryWidth::k8, MemoryWidth::k16, MemoryWidth::k32, MemoryWidth::k64};
+  for (const MemoryWidth width : widths) {
+    const std::size_t bytes = unijit::ir::memory_width_bytes(width);
+    const std::uint64_t mask = bytes == sizeof(std::uint64_t)
+                                   ? UINT64_MAX
+                                   : (UINT64_C(1) << (bytes * 8U)) - 1U;
+    const std::uint64_t initial = UINT64_C(0xfedcba9876543210);
+    const std::uint64_t replacement = UINT64_C(0x0123456789abcdef);
+    cell = initial;
+    FunctionBuilder width_builder(0, 1);
+    const Value observed = width_builder.atomic_exchange(
+        width_builder.constant(0),
+        width_builder.constant(static_cast<Word>(replacement)),
+        access(width, AtomicMemoryOrder::kRelaxed), 208 + bytes);
+    expect(width_builder.set_return(observed).ok(),
+           "atomic width fixture must return the observed value");
+    const auto width_result =
+        Interpreter::evaluate(std::move(width_builder).build(), {}, &context);
+    expect(width_result.ok() &&
+               static_cast<std::uint64_t>(width_result.value) ==
+                   (initial & mask) &&
+               (read_word(cell) & mask) == (replacement & mask) &&
+               (read_word(cell) & ~mask) == (initial & ~mask),
+           "8/16/32/64-bit atomics must zero-extend observations and update "
+           "exactly one cell");
+  }
+
+  cell = UINT64_C(0x11223344aabbccdd);
+  FunctionBuilder failed_compare_builder(0, 1);
+  AtomicAccessDescriptor failed_compare_access =
+      access(MemoryWidth::k32, AtomicMemoryOrder::kAcquireRelease);
+  failed_compare_access.failure_order = AtomicMemoryOrder::kAcquire;
+  failed_compare_access.strength = AtomicCompareExchangeStrength::kWeak;
+  const auto failed_compare = failed_compare_builder.atomic_compare_exchange(
+      failed_compare_builder.constant(0),
+      failed_compare_builder.constant(
+          static_cast<Word>(UINT64_C(0xffff0000aabbccde))),
+      failed_compare_builder.constant(0x55), failed_compare_access, 220);
+  expect(failed_compare_builder.set_return(failed_compare.observed).ok(),
+         "failed CAS fixture must expose its observed value");
+  const Function failed_compare_function =
+      std::move(failed_compare_builder).build();
+  const auto failed_compare_result =
+      Interpreter::evaluate(failed_compare_function, {}, &context);
+  expect(failed_compare_result.ok() &&
+             static_cast<std::uint64_t>(failed_compare_result.value) ==
+                 UINT64_C(0xaabbccdd) &&
+             read_word(cell) == UINT64_C(0x11223344aabbccdd),
+         "failed narrow CAS must zero-extend observed bits without writing");
+  const auto failed_compare_optimized =
+      unijit::ir::Optimizer::run(failed_compare_function);
+  const auto failed_compare_optimized_again =
+      failed_compare_optimized.ok()
+          ? unijit::ir::Optimizer::run(failed_compare_optimized.function)
+          : unijit::ir::OptimizationResult{};
+  expect(failed_compare_optimized.ok() && failed_compare_optimized_again.ok() &&
+             failed_compare_optimized.function.nodes().size() ==
+                 failed_compare_optimized_again.function.nodes().size() &&
+             failed_compare_optimized_again.function.atomic_accesses().size() ==
+                 1,
+         "narrow CAS normalization must reach a stable optimized form");
+
+  FunctionBuilder failure_builder(1, 1);
+  const Value failed_store = failure_builder.atomic_store(
+      failure_builder.parameter(0), failure_builder.constant(0),
+      access(MemoryWidth::k64, AtomicMemoryOrder::kRelease), 221);
+  expect(failure_builder.set_return(failed_store).ok(),
+         "atomic failure fixture must return its store result");
+  const Function failure_function = std::move(failure_builder).build();
+  const std::uint64_t sentinel = UINT64_C(0x8877665544332211);
+  cell = sentinel;
+  MemoryRegion read_only{&cell, sizeof(cell), false};
+  expect(context.bind_memory_regions(&read_only, 1).ok(),
+         "read-only atomic fixture must bind");
+  const auto read_only_result =
+      Interpreter::evaluate(failure_function, std::vector<Word>{0}, &context);
+  expect(!read_only_result.ok() && read_word(cell) == sentinel &&
+             context.exit_site() == 221,
+         "read-only atomic rejection must occur before any write");
+  expect(context.bind_memory_regions(&region, 1).ok(),
+         "writable atomic fixture must be restorable");
+  const auto misaligned_result =
+      Interpreter::evaluate(failure_function, std::vector<Word>{1}, &context);
+  expect(!misaligned_result.ok() && read_word(cell) == sentinel &&
+             context.exit_site() == 221,
+         "misaligned atomic rejection must occur before any write");
+  const auto out_of_range_result =
+      Interpreter::evaluate(failure_function, std::vector<Word>{8}, &context);
+  expect(!out_of_range_result.ok() && read_word(cell) == sentinel &&
+             context.exit_site() == 221,
+         "out-of-range atomic rejection must occur before any write");
+
+  {
+    FunctionBuilder invalid(0, 1);
+    AtomicAccessDescriptor descriptor =
+        access(MemoryWidth::k32, AtomicMemoryOrder::kRelease);
+    const Value value =
+        invalid.atomic_load(invalid.constant(0), descriptor, 230);
+    expect(invalid.set_return(value).ok() &&
+               !unijit::ir::verify(std::move(invalid).build()).ok(),
+           "atomic loads must reject release-only ordering");
+  }
+  {
+    FunctionBuilder invalid(0, 1);
+    AtomicAccessDescriptor descriptor =
+        access(MemoryWidth::k32, AtomicMemoryOrder::kRelaxed);
+    descriptor.memory.byte_order = MemoryByteOrder::kBigEndian;
+    const Value value =
+        invalid.atomic_load(invalid.constant(0), descriptor, 231);
+    expect(invalid.set_return(value).ok() &&
+               !unijit::ir::verify(std::move(invalid).build()).ok(),
+           "atomics must reject byte-swapped memory descriptors");
+  }
+  {
+    FunctionBuilder invalid(0, 1);
+    AtomicAccessDescriptor descriptor =
+        access(MemoryWidth::k32, AtomicMemoryOrder::kRelaxed);
+    descriptor.memory.alignment = 2;
+    const Value value =
+        invalid.atomic_load(invalid.constant(0), descriptor, 232);
+    expect(invalid.set_return(value).ok() &&
+               !unijit::ir::verify(std::move(invalid).build()).ok(),
+           "atomics must require natural alignment in verified IR");
+  }
+  {
+    FunctionBuilder invalid(0);
+    const Value fence = invalid.atomic_fence(AtomicMemoryOrder::kRelaxed);
+    expect(invalid.set_return(fence).ok() &&
+               !unijit::ir::verify(std::move(invalid).build()).ok(),
+           "relaxed atomic fences must be rejected as meaningless");
+  }
+  {
+    FunctionBuilder invalid(0, 1);
+    AtomicAccessDescriptor descriptor =
+        access(MemoryWidth::k32, AtomicMemoryOrder::kAcquire);
+    const Value value = invalid.atomic_store(
+        invalid.constant(0), invalid.constant(1), descriptor, 234);
+    expect(invalid.set_return(value).ok() &&
+               !unijit::ir::verify(std::move(invalid).build()).ok(),
+           "atomic stores must reject acquire-only ordering");
+  }
+  {
+    FunctionBuilder invalid(0, 1);
+    AtomicAccessDescriptor descriptor =
+        access(MemoryWidth::k32, AtomicMemoryOrder::kRelease);
+    descriptor.failure_order = AtomicMemoryOrder::kAcquire;
+    const auto value = invalid.atomic_compare_exchange(
+        invalid.constant(0), invalid.constant(0), invalid.constant(1),
+        descriptor, 235);
+    expect(invalid.set_return(value.observed).ok() &&
+               !unijit::ir::verify(std::move(invalid).build()).ok(),
+           "CAS failure order must not exceed its success order");
+  }
+  {
+    FunctionBuilder invalid(0, 1);
+    AtomicAccessDescriptor descriptor =
+        access(MemoryWidth::k32, AtomicMemoryOrder::kRelaxed);
+    descriptor.failure_order = AtomicMemoryOrder::kAcquire;
+    const Value value = invalid.atomic_fetch_add(
+        invalid.constant(0), invalid.constant(1), descriptor, 236);
+    expect(invalid.set_return(value).ok() &&
+               !unijit::ir::verify(std::move(invalid).build()).ok(),
+           "non-CAS atomics must reject compare-exchange-only metadata");
+  }
+  {
+    FunctionBuilder duplicate(0, 1);
+    const Value loaded = duplicate.atomic_load(
+        duplicate.constant(0),
+        access(MemoryWidth::k64, AtomicMemoryOrder::kAcquire), 233);
+    const Value guarded = duplicate.guard_word_nonzero(loaded, 233);
+    expect(duplicate.set_return(guarded).ok() &&
+               !unijit::ir::verify(std::move(duplicate).build()).ok(),
+           "atomic accesses must share the global runtime-exit site space");
+  }
+
+  const std::array<AtomicMemoryOrder, 5> all_orders = {
+      AtomicMemoryOrder::kRelaxed, AtomicMemoryOrder::kAcquire,
+      AtomicMemoryOrder::kRelease, AtomicMemoryOrder::kAcquireRelease,
+      AtomicMemoryOrder::kSequentiallyConsistent};
+  for (const AtomicMemoryOrder order : all_orders) {
+    FunctionBuilder valid(0, 1);
+    AtomicAccessDescriptor descriptor = access(MemoryWidth::k64, order);
+    descriptor.failure_order = AtomicMemoryOrder::kRelaxed;
+    const auto value =
+        valid.atomic_compare_exchange(valid.constant(0), valid.constant(0),
+                                      valid.constant(1), descriptor, 237);
+    expect(valid.set_return(value.success).ok() &&
+               unijit::ir::verify(std::move(valid).build()).ok(),
+           "every declared RMW success order must verify");
+  }
+  const std::array<AtomicMemoryOrder, 3> load_orders = {
+      AtomicMemoryOrder::kRelaxed, AtomicMemoryOrder::kAcquire,
+      AtomicMemoryOrder::kSequentiallyConsistent};
+  for (const AtomicMemoryOrder order : load_orders) {
+    FunctionBuilder valid(0, 1);
+    const Value value = valid.atomic_load(valid.constant(0),
+                                          access(MemoryWidth::k64, order), 238);
+    expect(valid.set_return(value).ok() &&
+               unijit::ir::verify(std::move(valid).build()).ok(),
+           "every declared atomic load order must verify");
+  }
+  const std::array<AtomicMemoryOrder, 3> store_orders = {
+      AtomicMemoryOrder::kRelaxed, AtomicMemoryOrder::kRelease,
+      AtomicMemoryOrder::kSequentiallyConsistent};
+  for (const AtomicMemoryOrder order : store_orders) {
+    FunctionBuilder valid(0, 1);
+    const Value value =
+        valid.atomic_store(valid.constant(0), valid.constant(1),
+                           access(MemoryWidth::k64, order), 239);
+    expect(valid.set_return(value).ok() &&
+               unijit::ir::verify(std::move(valid).build()).ok(),
+           "every declared atomic store order must verify");
+  }
+  const std::array<AtomicMemoryOrder, 4> fence_orders = {
+      AtomicMemoryOrder::kAcquire, AtomicMemoryOrder::kRelease,
+      AtomicMemoryOrder::kAcquireRelease,
+      AtomicMemoryOrder::kSequentiallyConsistent};
+  for (const AtomicMemoryOrder order : fence_orders) {
+    FunctionBuilder valid(0);
+    const Value value = valid.atomic_fence(order);
+    expect(valid.set_return(value).ok() &&
+               unijit::ir::verify(std::move(valid).build()).ok(),
+           "every declared atomic fence order must verify");
+  }
+
+  FunctionBuilder limited_builder(0, 1);
+  const Value limited_offset = limited_builder.constant(0);
+  limited_builder.atomic_load(
+      limited_offset, access(MemoryWidth::k64, AtomicMemoryOrder::kRelaxed),
+      240);
+  const Value limited_result = limited_builder.atomic_load(
+      limited_offset, access(MemoryWidth::k64, AtomicMemoryOrder::kRelaxed),
+      241);
+  expect(limited_builder.set_return(limited_result).ok(),
+         "atomic resource-limit fixture must return a value");
+  unijit::jit::CompilationOptions limited_options;
+  limited_options.limits.maximum_atomic_accesses = 1;
+  const auto limited_compilation =
+      Compiler::compile(std::move(limited_builder).build(), limited_options);
+  expect(!limited_compilation.ok() &&
+             limited_compilation.status.code() ==
+                 unijit::StatusCode::kResourceExhausted,
+         "atomic descriptors must obey an independent compilation limit");
+
+  FunctionBuilder increment_builder(0, 1);
+  const Value increment = increment_builder.atomic_fetch_add(
+      increment_builder.constant(0), increment_builder.constant(1),
+      access(MemoryWidth::k64, AtomicMemoryOrder::kSequentiallyConsistent),
+      250);
+  expect(increment_builder.set_return(increment).ok(),
+         "concurrent atomic fixture must return the observed counter");
+  const Function increment_function = std::move(increment_builder).build();
+  cell = 0;
+  constexpr std::size_t kThreadCount = 4;
+  constexpr std::size_t kIncrementsPerThread = 500;
+  std::atomic<bool> concurrent_failed{false};
+  std::vector<std::thread> threads;
+  threads.reserve(kThreadCount);
+  for (std::size_t thread_index = 0; thread_index < kThreadCount;
+       ++thread_index) {
+    threads.emplace_back([&] {
+      MemoryRegion thread_region{&cell, sizeof(cell), true};
+      ExecutionContext thread_context;
+      if (!thread_context.bind_memory_regions(&thread_region, 1).ok()) {
+        concurrent_failed.store(true, std::memory_order_relaxed);
+        return;
+      }
+      for (std::size_t iteration = 0; iteration < kIncrementsPerThread;
+           ++iteration) {
+        if (!Interpreter::evaluate(increment_function, {}, &thread_context)
+                 .ok()) {
+          concurrent_failed.store(true, std::memory_order_relaxed);
+          return;
+        }
+      }
+    });
+  }
+  for (std::thread &thread : threads) {
+    thread.join();
+  }
+  expect(!concurrent_failed.load(std::memory_order_relaxed) &&
+             read_word(cell) == kThreadCount * kIncrementsPerThread,
+         "interpreter atomics must serialize concurrent read-modify-write "
+         "operations without lost updates");
+}
+
+void test_bounded_atomic_control_flow() {
+  using unijit::ir::AtomicAccessDescriptor;
+  using unijit::ir::AtomicMemoryOrder;
+  using unijit::ir::ControlFlowBuilder;
+  using unijit::ir::MemoryWidth;
+  using unijit::runtime::ExecutionContext;
+  using unijit::runtime::MemoryRegion;
+
+  const auto access = [](AtomicMemoryOrder order) {
+    AtomicAccessDescriptor descriptor;
+    descriptor.memory.width = MemoryWidth::k64;
+    descriptor.memory.alignment = 8;
+    descriptor.order = order;
+    return descriptor;
+  };
+
+  alignas(8) std::uint64_t cell = 3;
+  MemoryRegion region{&cell, sizeof(cell), true};
+  ExecutionContext context;
+  expect(context.bind_memory_regions(&region, 1).ok(),
+         "CFG atomic fixture must bind its region");
+
+  ControlFlowBuilder builder(1, 1);
+  const Value observed =
+      builder.atomic_exchange(builder.parameter(0), builder.constant(5),
+                              access(AtomicMemoryOrder::kAcquireRelease), 260);
+  builder.atomic_fence(AtomicMemoryOrder::kAcquireRelease);
+  const auto continuation = builder.create_block(1);
+  expect(builder.jump(continuation, {observed}).ok() &&
+             builder.set_insertion_block(continuation).ok(),
+         "CFG atomic fixture must create its continuation edge");
+  const Value fetched = builder.atomic_fetch_add(
+      builder.parameter(0), builder.constant(2),
+      access(AtomicMemoryOrder::kSequentiallyConsistent), 261);
+  const Value result =
+      builder.add(builder.block_parameter(continuation, 0), fetched);
+  expect(builder.set_return(result).ok(),
+         "CFG atomic fixture must return its observed values");
+  const auto function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok() &&
+             function.atomic_accesses().size() == 2,
+         "CFG atomic descriptors and dominance must verify");
+  const auto evaluated = unijit::ir::ControlFlowInterpreter::evaluate(
+      function, std::vector<Word>{0}, 10, &context);
+  expect(evaluated.ok() && evaluated.value == 8 && cell == 7,
+         "CFG atomic effects must survive a typed block edge");
+
+  cell = 3;
+  const auto optimized = unijit::ir::Optimizer::run(function);
+  const auto optimized_result =
+      optimized.ok()
+          ? unijit::ir::ControlFlowInterpreter::evaluate(
+                optimized.function, std::vector<Word>{0}, 10, &context)
+          : unijit::ir::EvaluationResult{optimized.status, 0};
+  expect(optimized.ok() && optimized.function.atomic_accesses().size() == 2 &&
+             optimized_result.ok() && optimized_result.value == 8 && cell == 7,
+         "CFG optimization must retain atomics, fences, and edge operands");
+
+  const auto capability = unijit::jit::preflight_capabilities(
+      function, unijit::jit::baseline_target_profile());
+  expect(!capability.ok() && capability.requires_execution_context &&
+             capability.overall_strategy ==
+                 unijit::jit::LoweringStrategy::kUnsupported,
+         "CFG atomic preflight must fail closed before backend lowering");
+}
+
 void test_native_bounded_memory_matrix() {
   using unijit::ir::MemoryAccessDescriptor;
   using unijit::ir::MemoryByteOrder;
@@ -7823,6 +8270,8 @@ int main() {
   test_lowering_capability_preflight();
   test_bounded_memory_interpreter();
   test_bounded_memory_control_flow_interpreter();
+  test_bounded_atomic_semantics();
+  test_bounded_atomic_control_flow();
   test_native_bounded_memory_matrix();
   test_bounded_vector_memory_matrix();
   test_bounded_vector_memory_failures();
