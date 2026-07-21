@@ -31,13 +31,13 @@ struct Vector128 final {
 
   std::array<std::uint8_t, kByteSize> bytes{};
 
-  friend constexpr bool operator==(const Vector128& lhs,
-                                   const Vector128& rhs) noexcept {
+  friend bool operator==(const Vector128& lhs,
+                         const Vector128& rhs) noexcept {
     return lhs.bytes == rhs.bytes;
   }
 
-  friend constexpr bool operator!=(const Vector128& lhs,
-                                   const Vector128& rhs) noexcept {
+  friend bool operator!=(const Vector128& lhs,
+                         const Vector128& rhs) noexcept {
     return !(lhs == rhs);
   }
 };
