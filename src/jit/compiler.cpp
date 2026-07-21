@@ -79,6 +79,59 @@ bool is_object(ir::ControlOpcode opcode) noexcept {
          opcode == ir::ControlOpcode::kStoreObject;
 }
 
+bool is_vector(ir::Opcode opcode) noexcept {
+  return opcode == ir::Opcode::kVectorConstant ||
+         opcode == ir::Opcode::kVectorSplat ||
+         opcode == ir::Opcode::kVectorExtractLane ||
+         opcode == ir::Opcode::kVectorInsertLane ||
+         opcode == ir::Opcode::kVectorUnary ||
+         opcode == ir::Opcode::kVectorBinary ||
+         opcode == ir::Opcode::kVectorCompare ||
+         opcode == ir::Opcode::kVectorSelect ||
+         opcode == ir::Opcode::kVectorLaneSignMask ||
+         opcode == ir::Opcode::kVectorShuffle ||
+         opcode == ir::Opcode::kVectorWiden;
+}
+
+bool is_vector(ir::ControlOpcode opcode) noexcept {
+  return opcode == ir::ControlOpcode::kVectorConstant ||
+         opcode == ir::ControlOpcode::kVectorSplat ||
+         opcode == ir::ControlOpcode::kVectorExtractLane ||
+         opcode == ir::ControlOpcode::kVectorInsertLane ||
+         opcode == ir::ControlOpcode::kVectorUnary ||
+         opcode == ir::ControlOpcode::kVectorBinary ||
+         opcode == ir::ControlOpcode::kVectorCompare ||
+         opcode == ir::ControlOpcode::kVectorSelect ||
+         opcode == ir::ControlOpcode::kVectorLaneSignMask ||
+         opcode == ir::ControlOpcode::kVectorShuffle ||
+         opcode == ir::ControlOpcode::kVectorWiden;
+}
+
+Status validate_native_operation_set(const ir::Function& function) {
+  for (std::size_t index = 0; index < function.nodes().size(); ++index) {
+    if (is_vector(function.nodes()[index].opcode)) {
+      return {StatusCode::kCodeGenerationFailed,
+              "strict SIMD IR is verified but native vector lowering is not "
+              "yet available",
+              index};
+    }
+  }
+  return Status::ok_status();
+}
+
+Status validate_native_operation_set(
+    const ir::ControlFlowFunction& function) {
+  for (std::size_t index = 0; index < function.nodes().size(); ++index) {
+    if (is_vector(function.nodes()[index].opcode)) {
+      return {StatusCode::kCodeGenerationFailed,
+              "strict CFG SIMD IR is verified but native vector lowering is "
+              "not yet available",
+              index};
+    }
+  }
+  return Status::ok_status();
+}
+
 bool has_guard_site(const ir::Function& function, std::size_t site) noexcept {
   return std::any_of(function.nodes().begin(), function.nodes().end(),
                      [site](const ir::Node& node) {
@@ -751,6 +804,9 @@ Status validate_compilation_limits(const CompilationLimits& limits) {
       limits.maximum_ir_arguments == 0 ||
       limits.maximum_memory_regions == 0 ||
       limits.maximum_memory_accesses == 0 ||
+      limits.maximum_vector_constants == 0 ||
+      limits.maximum_vector_shuffles == 0 ||
+      limits.maximum_vector_selects == 0 ||
       limits.maximum_frame_slots == 0 ||
       limits.maximum_trusted_objects == 0 ||
       limits.maximum_stack_maps == 0 ||
@@ -873,6 +929,23 @@ Status validate_function_limits(
             "compilation exceeds the memory access limit",
             function.memory_accesses().size()};
   }
+  if (function.vector_constants().size() >
+      limits.maximum_vector_constants) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the vector constant limit",
+            function.vector_constants().size()};
+  }
+  if (function.vector_shuffles().size() > limits.maximum_vector_shuffles) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the vector shuffle limit",
+            function.vector_shuffles().size()};
+  }
+  if (function.vector_select_arguments().size() >
+      limits.maximum_vector_selects) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the vector select limit",
+            function.vector_select_arguments().size()};
+  }
   if (function.frame_slots().size() > limits.maximum_frame_slots) {
     return {StatusCode::kResourceExhausted,
             "compilation exceeds the frame slot limit",
@@ -922,6 +995,23 @@ Status validate_function_limits(
     return {StatusCode::kResourceExhausted,
             "compilation exceeds the CFG memory access limit",
             function.memory_accesses().size()};
+  }
+  if (function.vector_constants().size() >
+      limits.maximum_vector_constants) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the CFG vector constant limit",
+            function.vector_constants().size()};
+  }
+  if (function.vector_shuffles().size() > limits.maximum_vector_shuffles) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the CFG vector shuffle limit",
+            function.vector_shuffles().size()};
+  }
+  if (function.vector_select_arguments().size() >
+      limits.maximum_vector_selects) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the CFG vector select limit",
+            function.vector_select_arguments().size()};
   }
   if (function.frame_slots().size() > limits.maximum_frame_slots) {
     return {StatusCode::kResourceExhausted,
@@ -1273,7 +1363,6 @@ CompilationResult Compiler::compile(
   if (!verification.ok()) {
     return {verification, nullptr};
   }
-
   const OptimizationExitStatePreparation exit_state =
       prepare_optimization_exit_states(function, deoptimization_table);
   if (!exit_state.status.ok()) {
@@ -1297,6 +1386,10 @@ CompilationResult Compiler::compile(
       return {{StatusCode::kInvalidArgument,
                "unknown compiler optimization level"},
               nullptr};
+  }
+  const Status operation_status = validate_native_operation_set(*lowered);
+  if (!operation_status.ok()) {
+    return {operation_status, nullptr};
   }
 
   DeoptimizationPreparation deoptimization =
@@ -1473,7 +1566,6 @@ CompilationResult Compiler::compile(
   if (!verification.ok()) {
     return {verification, nullptr};
   }
-
   const OptimizationExitStatePreparation exit_state =
       prepare_optimization_exit_states(function, deoptimization_table);
   if (!exit_state.status.ok()) {
@@ -1497,6 +1589,10 @@ CompilationResult Compiler::compile(
       return {{StatusCode::kInvalidArgument,
                "unknown compiler optimization level"},
               nullptr};
+  }
+  const Status operation_status = validate_native_operation_set(*lowered);
+  if (!operation_status.ok()) {
+    return {operation_status, nullptr};
   }
 
   DeoptimizationPreparation deoptimization =
