@@ -53,6 +53,30 @@ The current minimum profiles remain AArch64 with FP64, x86-64 with SSE2, and
 RV64IMD. Optional profiles are monotonic: code compiled for a wider profile is
 stored and invalidated independently from baseline code.
 
+## Scalar and vector register foundation
+
+The scalar Float64 allocator and the future vector allocator share physical
+SIMD/FP files, but they remain distinct typed allocation classes at the IR and
+MIR boundaries. A backend register description records allocatable,
+caller-clobbered, callee-preserved, argument, result, and scratch roles instead
+of assuming that instruction support alone makes the full register file safe.
+
+The AArch64 scalar backend already exposes caller-clobbered `v0`–`v7` and
+`v16`–`v29` to CFG allocation, reserves `v30`/`v31` as lowering scratch, and
+does not allocate callee-preserved `v8`–`v15` until prologue/epilogue save
+selection is implemented. Live Float64 values are saved around runtime-helper
+calls, so widening this pool does not weaken the helper ABI. x86-64 currently
+uses the common volatile XMM floor that is valid on both System V and Windows;
+using XMM6–XMM15 requires target-specific nonvolatile save tracking. RV64 uses
+its existing caller-clobbered floating-point pool. These scalar decisions are
+prerequisites for SIMD but do not count as vector-IR delivery.
+
+Qualification must force more simultaneously live scalar/vector values than
+each target's volatile pool, cross CFG edges and helper calls, and verify both
+register and stack paths. Performance records report target profile and native
+code size so a wider allocator cannot be accepted solely from a source-level
+benchmark improvement.
+
 ## Typed memory contract
 
 Memory IR is a prerequisite for vectors, atomics, inline caches, and efficient

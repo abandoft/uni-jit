@@ -27,8 +27,9 @@ constexpr int kFloatScratch0 = 30;
 constexpr int kFloatScratch1 = 31;
 constexpr int kStackPointer = 31;
 constexpr std::array<int, 6> kAllocationRegisters = {10, 11, 12, 13, 14, 15};
-constexpr std::array<int, 6> kFloatAllocationRegisters = {16, 17, 18,
-                                                          19, 20, 21};
+constexpr std::array<int, 22> kFloatAllocationRegisters = {
+    0,  1,  2,  3,  4,  5,  6,  7,  16, 17, 18,
+    19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29};
 constexpr std::size_t kMaximumStackSize = 4080;
 constexpr std::size_t kMaximumAddressableParameters = 4096;
 
