@@ -123,6 +123,10 @@ Value FunctionBuilder::bitwise_xor(Value lhs, Value rhs) {
   return append_binary(Opcode::kBitwiseXor, lhs, rhs);
 }
 
+Value FunctionBuilder::shift_left(Value value, Value amount) {
+  return append_binary(Opcode::kShiftLeft, value, amount);
+}
+
 Value FunctionBuilder::negate(Value value) {
   if (function_.nodes_.size() >= Value::kInvalidId) {
     return {};

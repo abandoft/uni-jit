@@ -186,6 +186,49 @@ class Assembler final {
                      reg(destination));
   }
 
+  Status shift_left(int destination, int value, int amount) {
+    move_register(kScratch0, value);
+    move_register(kScratch1, amount);
+
+    compare_immediate(kScratch1, 0);
+    const std::size_t negative = branch_condition(0xBU);
+    compare_immediate(kScratch1, 64);
+    const std::size_t positive_overshift = branch_condition(0x2U);
+    buffer_.emit_u32(0x9AC02000U | (reg(kScratch1) << 16U) |
+                     (reg(kScratch0) << 5U) | reg(kScratch0));
+    const std::size_t positive_done = branch();
+
+    const std::size_t negative_path = size();
+    negate(kScratch1, kScratch1);
+    compare_immediate(kScratch1, 64);
+    const std::size_t negative_overshift = branch_condition(0x2U);
+    buffer_.emit_u32(0x9AC02400U | (reg(kScratch1) << 16U) |
+                     (reg(kScratch0) << 5U) | reg(kScratch0));
+    const std::size_t negative_done = branch();
+
+    const std::size_t zero = size();
+    move_immediate(kScratch0, 0);
+    const std::size_t done = size();
+
+    Status status = patch_condition_branch(negative, negative_path, 0xBU);
+    if (status.ok()) {
+      status = patch_condition_branch(positive_overshift, zero, 0x2U);
+    }
+    if (status.ok()) {
+      status = patch_branch(positive_done, done, false);
+    }
+    if (status.ok()) {
+      status = patch_condition_branch(negative_overshift, zero, 0x2U);
+    }
+    if (status.ok()) {
+      status = patch_branch(negative_done, done, false);
+    }
+    if (status.ok() && destination != kScratch0) {
+      move_register(destination, kScratch0);
+    }
+    return status;
+  }
+
   void address(int destination, int base, std::size_t byte_offset) {
     buffer_.emit_u32(0x91000000U |
                      (static_cast<std::uint32_t>(byte_offset) << 10U) |
@@ -220,6 +263,40 @@ class Assembler final {
     const std::size_t offset = buffer_.size();
     buffer_.emit_u32(0xB4000000U | reg(source));
     return offset;
+  }
+
+  void compare_immediate(int source, std::uint32_t immediate) {
+    buffer_.emit_u32(0xF100001FU | ((immediate & 0xFFFU) << 10U) |
+                     (reg(source) << 5U));
+  }
+
+  std::size_t branch_condition(std::uint32_t condition) {
+    const std::size_t offset = buffer_.size();
+    buffer_.emit_u32(0x54000000U | (condition & 0xFU));
+    return offset;
+  }
+
+  Status patch_condition_branch(std::size_t offset, std::size_t target,
+                                std::uint32_t condition) {
+    const std::int64_t delta =
+        static_cast<std::int64_t>(target) - static_cast<std::int64_t>(offset);
+    if ((delta & 3) != 0) {
+      return {StatusCode::kCodeGenerationFailed,
+              "AArch64 conditional branch target is not instruction aligned"};
+    }
+    const std::int64_t words = delta / 4;
+    constexpr std::int64_t kMinimum = -(std::int64_t{1} << 18);
+    constexpr std::int64_t kMaximum = (std::int64_t{1} << 18) - 1;
+    if (words < kMinimum || words > kMaximum) {
+      return {StatusCode::kResourceExhausted,
+              "AArch64 conditional branch exceeds its encoding range"};
+    }
+    buffer_.patch_u32(
+        offset,
+        0x54000000U |
+            ((static_cast<std::uint32_t>(words) & 0x7FFFFU) << 5U) |
+            (condition & 0xFU));
+    return Status::ok_status();
   }
 
   Status patch_branch(std::size_t offset, std::size_t target,
@@ -577,7 +654,8 @@ LoweringResult lower_impl(const ir::Function& function,
       case ir::Opcode::kMultiply:
       case ir::Opcode::kBitwiseAnd:
       case ir::Opcode::kBitwiseOr:
-      case ir::Opcode::kBitwiseXor: {
+      case ir::Opcode::kBitwiseXor:
+      case ir::Opcode::kShiftLeft: {
         const int lhs = load_operand(
             &assembler, allocation.locations[node.lhs.id()], kScratch0);
         const int rhs = load_operand(
@@ -595,6 +673,11 @@ LoweringResult lower_impl(const ir::Function& function,
           assembler.bitwise_and(target, lhs, rhs);
         } else if (node.opcode == ir::Opcode::kBitwiseOr) {
           assembler.bitwise_or(target, lhs, rhs);
+        } else if (node.opcode == ir::Opcode::kShiftLeft) {
+          const Status shift_status = assembler.shift_left(target, lhs, rhs);
+          if (!shift_status.ok()) {
+            return {shift_status, {}, 0};
+          }
         } else {
           assembler.bitwise_xor(target, lhs, rhs);
         }
@@ -1528,6 +1611,7 @@ LoweringResult lower_control_flow_impl(
         case ir::ControlOpcode::kBitwiseAnd:
         case ir::ControlOpcode::kBitwiseOr:
         case ir::ControlOpcode::kBitwiseXor:
+        case ir::ControlOpcode::kShiftLeft:
         case ir::ControlOpcode::kLessThan:
         case ir::ControlOpcode::kLessEqual:
           const int lhs = load_control_word(
@@ -1546,6 +1630,12 @@ LoweringResult lower_control_flow_impl(
             assembler.bitwise_or(word_destination, lhs, rhs);
           } else if (node.opcode == ir::ControlOpcode::kBitwiseXor) {
             assembler.bitwise_xor(word_destination, lhs, rhs);
+          } else if (node.opcode == ir::ControlOpcode::kShiftLeft) {
+            const Status shift_status =
+                assembler.shift_left(word_destination, lhs, rhs);
+            if (!shift_status.ok()) {
+              return {shift_status, {}, 0};
+            }
           } else {
             assembler.compare(word_destination, lhs, rhs,
                               node.opcode == ir::ControlOpcode::kLessEqual);

@@ -50,6 +50,7 @@ enum class Opcode : std::uint8_t {
   kBitwiseAnd,
   kBitwiseOr,
   kBitwiseXor,
+  kShiftLeft,
   kNegate,
   kBitwiseNot,
   kFloatAdd,
@@ -135,6 +136,9 @@ class FunctionBuilder final {
   Value bitwise_and(Value lhs, Value rhs);
   Value bitwise_or(Value lhs, Value rhs);
   Value bitwise_xor(Value lhs, Value rhs);
+  // Shifts left for nonnegative amounts and logically right for negative
+  // amounts. Magnitudes of 64 or more produce zero.
+  Value shift_left(Value value, Value amount);
   Value negate(Value value);
   Value bitwise_not(Value value);
   Value float64_add(Value lhs, Value rhs);

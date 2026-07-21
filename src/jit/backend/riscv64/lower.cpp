@@ -23,6 +23,7 @@ constexpr int kContextArgument = 11;
 constexpr int kArgumentBase = 5;
 constexpr int kScratch0 = 6;
 constexpr int kScratch1 = 7;
+constexpr int kScratch2 = 29;
 constexpr int kFloatScratch0 = 0;
 constexpr int kFloatScratch1 = 1;
 constexpr std::array<int, 8> kAllocationRegisters = {11, 12, 13, 14,
@@ -157,6 +158,49 @@ class Assembler final {
     emit_r(0x00, rhs, lhs, 4, destination, 0x33);
   }
 
+  Status shift_left(int destination, int value, int amount) {
+    move_register(kScratch0, value);
+    move_register(kScratch1, amount);
+
+    const std::size_t negative = branch_negative(kScratch1);
+    set_unsigned_less_than_immediate(kScratch2, kScratch1, 64);
+    const std::size_t positive_overshift = branch_zero(kScratch2);
+    shift_variable(kScratch0, kScratch0, kScratch1, false);
+    const std::size_t positive_done = branch();
+
+    const std::size_t negative_path = size();
+    negate(kScratch1, kScratch1);
+    set_unsigned_less_than_immediate(kScratch2, kScratch1, 64);
+    const std::size_t negative_overshift = branch_zero(kScratch2);
+    shift_variable(kScratch0, kScratch0, kScratch1, true);
+    const std::size_t negative_done = branch();
+
+    const std::size_t zero = size();
+    move_register(kScratch0, kZero);
+    const std::size_t done = size();
+
+    Status status = patch_conditional_branch(negative, negative_path, kZero,
+                                             kScratch1, 4);
+    if (status.ok()) {
+      status = patch_conditional_branch(positive_overshift, zero, kZero,
+                                        kScratch2, 0);
+    }
+    if (status.ok()) {
+      status = patch_branch(positive_done, done, false);
+    }
+    if (status.ok()) {
+      status = patch_conditional_branch(negative_overshift, zero, kZero,
+                                        kScratch2, 0);
+    }
+    if (status.ok()) {
+      status = patch_branch(negative_done, done, false);
+    }
+    if (status.ok() && destination != kScratch0) {
+      move_register(destination, kScratch0);
+    }
+    return status;
+  }
+
   void compare(int destination, int lhs, int rhs, bool or_equal) {
     if (or_equal) {
       emit_r(0x00, lhs, rhs, 2, destination, 0x33);
@@ -190,6 +234,30 @@ class Assembler final {
     const std::size_t offset = buffer_.size();
     emit_b(0, kZero, source, 0, 0x63);
     return offset;
+  }
+
+  std::size_t branch_negative(int source) {
+    const std::size_t offset = buffer_.size();
+    emit_b(0, kZero, source, 4, 0x63);
+    return offset;
+  }
+
+  Status patch_conditional_branch(std::size_t offset, std::size_t target,
+                                  int rhs, int lhs, int function) {
+    const std::int64_t delta =
+        static_cast<std::int64_t>(target) - static_cast<std::int64_t>(offset);
+    if ((delta & 1) != 0) {
+      return {StatusCode::kCodeGenerationFailed,
+              "RISC-V branch target is not halfword aligned"};
+    }
+    if (delta < -4096 || delta > 4094) {
+      return {StatusCode::kResourceExhausted,
+              "RISC-V conditional branch exceeds its encoding range"};
+    }
+    buffer_.patch_u32(
+        offset, encode_b(static_cast<std::int32_t>(delta), rhs, lhs,
+                         function, 0x63));
+    return Status::ok_status();
   }
 
   Status patch_branch(std::size_t offset, std::size_t target,
@@ -282,6 +350,15 @@ class Assembler final {
   }
 
  private:
+  void set_unsigned_less_than_immediate(int destination, int source,
+                                        std::int32_t immediate) {
+    emit_i(immediate, source, 3, destination, 0x13);
+  }
+
+  void shift_variable(int destination, int value, int amount, bool right) {
+    emit_r(0x00, amount, value, right ? 5 : 1, destination, 0x33);
+  }
+
   static std::uint32_t encode_i(std::int32_t immediate, int source,
                                 int function, int destination, int opcode) {
     return ((static_cast<std::uint32_t>(immediate) & 0xFFFU) << 20U) |
@@ -618,7 +695,8 @@ LoweringResult lower_impl(const ir::Function& function,
       case ir::Opcode::kMultiply:
       case ir::Opcode::kBitwiseAnd:
       case ir::Opcode::kBitwiseOr:
-      case ir::Opcode::kBitwiseXor: {
+      case ir::Opcode::kBitwiseXor:
+      case ir::Opcode::kShiftLeft: {
         const int lhs = load_operand(
             &assembler, allocation.locations[node.lhs.id()], kScratch0);
         const int rhs = load_operand(
@@ -636,6 +714,11 @@ LoweringResult lower_impl(const ir::Function& function,
           assembler.bitwise_and(target, lhs, rhs);
         } else if (node.opcode == ir::Opcode::kBitwiseOr) {
           assembler.bitwise_or(target, lhs, rhs);
+        } else if (node.opcode == ir::Opcode::kShiftLeft) {
+          const Status shift_status = assembler.shift_left(target, lhs, rhs);
+          if (!shift_status.ok()) {
+            return {shift_status, {}, 0};
+          }
         } else {
           assembler.bitwise_xor(target, lhs, rhs);
         }
@@ -1575,6 +1658,7 @@ LoweringResult lower_control_flow_impl(
         case ir::ControlOpcode::kBitwiseAnd:
         case ir::ControlOpcode::kBitwiseOr:
         case ir::ControlOpcode::kBitwiseXor:
+        case ir::ControlOpcode::kShiftLeft:
         case ir::ControlOpcode::kLessThan:
         case ir::ControlOpcode::kLessEqual:
           const int lhs = load_control_word(
@@ -1593,6 +1677,12 @@ LoweringResult lower_control_flow_impl(
             assembler.bitwise_or(word_destination, lhs, rhs);
           } else if (node.opcode == ir::ControlOpcode::kBitwiseXor) {
             assembler.bitwise_xor(word_destination, lhs, rhs);
+          } else if (node.opcode == ir::ControlOpcode::kShiftLeft) {
+            const Status shift_status =
+                assembler.shift_left(word_destination, lhs, rhs);
+            if (!shift_status.ok()) {
+              return {shift_status, {}, 0};
+            }
           } else {
             assembler.compare(word_destination, lhs, rhs,
                               node.opcode == ir::ControlOpcode::kLessEqual);

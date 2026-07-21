@@ -51,6 +51,13 @@ Word fold_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
   if (opcode == Opcode::kBitwiseOr) {
     return from_bits(lhs_bits | rhs_bits);
   }
+  if (opcode == Opcode::kShiftLeft) {
+    if (rhs < 0) {
+      const std::uint64_t magnitude = UINT64_C(0) - rhs_bits;
+      return magnitude >= 64U ? 0 : from_bits(lhs_bits >> magnitude);
+    }
+    return rhs_bits >= 64U ? 0 : from_bits(lhs_bits << rhs_bits);
+  }
   return from_bits(lhs_bits ^ rhs_bits);
 }
 
@@ -85,6 +92,7 @@ bool is_binary(Opcode opcode) noexcept {
   return opcode == Opcode::kAdd || opcode == Opcode::kSubtract ||
          opcode == Opcode::kMultiply || opcode == Opcode::kBitwiseAnd ||
          opcode == Opcode::kBitwiseOr || opcode == Opcode::kBitwiseXor ||
+         opcode == Opcode::kShiftLeft ||
          opcode == Opcode::kFloatAdd ||
          opcode == Opcode::kFloatSubtract ||
          opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide ||
@@ -141,6 +149,7 @@ bool is_control_binary(ControlOpcode opcode) noexcept {
     case ControlOpcode::kBitwiseAnd:
     case ControlOpcode::kBitwiseOr:
     case ControlOpcode::kBitwiseXor:
+    case ControlOpcode::kShiftLeft:
     case ControlOpcode::kFloatAdd:
     case ControlOpcode::kFloatSubtract:
     case ControlOpcode::kFloatMultiply:
@@ -249,6 +258,14 @@ Word fold_control_binary(ControlOpcode opcode, Word lhs, Word rhs) noexcept {
   if (opcode == ControlOpcode::kBitwiseXor) {
     return from_bits(to_bits(lhs) ^ to_bits(rhs));
   }
+  if (opcode == ControlOpcode::kShiftLeft) {
+    const std::uint64_t rhs_bits = to_bits(rhs);
+    if (rhs < 0) {
+      const std::uint64_t magnitude = UINT64_C(0) - rhs_bits;
+      return magnitude >= 64U ? 0 : from_bits(to_bits(lhs) >> magnitude);
+    }
+    return rhs_bits >= 64U ? 0 : from_bits(to_bits(lhs) << rhs_bits);
+  }
   if (opcode == ControlOpcode::kLessThan) {
     return lhs < rhs ? 1 : 0;
   }
@@ -270,6 +287,8 @@ Value emit_control_binary(ControlFlowBuilder* builder,
       return builder->bitwise_or(lhs, rhs);
     case ControlOpcode::kBitwiseXor:
       return builder->bitwise_xor(lhs, rhs);
+    case ControlOpcode::kShiftLeft:
+      return builder->shift_left(lhs, rhs);
     case ControlOpcode::kFloatAdd:
       return builder->float64_add(lhs, rhs);
     case ControlOpcode::kFloatSubtract:
@@ -599,6 +618,12 @@ PassResult transform_once(
       } else if (known_constant[lhs_id] && constant_value[lhs_id] == 0) {
         replacement = rhs_id;
       }
+    } else if (node.opcode == Opcode::kShiftLeft) {
+      if (known_constant[lhs_id] && constant_value[lhs_id] == 0) {
+        replacement = lhs_id;
+      } else if (known_constant[rhs_id] && constant_value[rhs_id] == 0) {
+        replacement = lhs_id;
+      }
     }
 
     if (replacement != node_count) {
@@ -620,6 +645,8 @@ PassResult transform_once(
       mapped[index] = builder.bitwise_and(mapped[lhs_id], mapped[rhs_id]);
     } else if (node.opcode == Opcode::kBitwiseOr) {
       mapped[index] = builder.bitwise_or(mapped[lhs_id], mapped[rhs_id]);
+    } else if (node.opcode == Opcode::kShiftLeft) {
+      mapped[index] = builder.shift_left(mapped[lhs_id], mapped[rhs_id]);
     } else {
       mapped[index] = builder.bitwise_xor(mapped[lhs_id], mapped[rhs_id]);
     }
@@ -1231,6 +1258,13 @@ ControlFlowOptimizationResult Optimizer::run(
           } else if (known_constant[lhs_id] &&
                      constant_value[lhs_id] == 0) {
             replacement[index] = rhs_id;
+          }
+        } else if (node.opcode == ControlOpcode::kShiftLeft) {
+          if (known_constant[lhs_id] && constant_value[lhs_id] == 0) {
+            replacement[index] = lhs_id;
+          } else if (known_constant[rhs_id] &&
+                     constant_value[rhs_id] == 0) {
+            replacement[index] = lhs_id;
           }
         }
         if (replacement[index] != node_count) {

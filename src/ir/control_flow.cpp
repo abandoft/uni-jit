@@ -29,6 +29,7 @@ bool is_binary(ControlOpcode opcode) {
   case ControlOpcode::kBitwiseAnd:
   case ControlOpcode::kBitwiseOr:
   case ControlOpcode::kBitwiseXor:
+  case ControlOpcode::kShiftLeft:
   case ControlOpcode::kFloatAdd:
   case ControlOpcode::kFloatSubtract:
   case ControlOpcode::kFloatMultiply:
@@ -448,6 +449,16 @@ Word evaluate_node(ControlOpcode opcode, Word lhs, Word rhs) noexcept {
   if (opcode == ControlOpcode::kBitwiseXor) {
     return from_bits(to_bits(lhs) ^ to_bits(rhs));
   }
+  if (opcode == ControlOpcode::kShiftLeft) {
+    const std::uint64_t amount_bits = to_bits(rhs);
+    if (rhs < 0) {
+      const std::uint64_t magnitude = UINT64_C(0) - amount_bits;
+      return magnitude >= 64U ? 0
+                              : from_bits(to_bits(lhs) >> magnitude);
+    }
+    return amount_bits >= 64U ? 0
+                              : from_bits(to_bits(lhs) << amount_bits);
+  }
   if (opcode == ControlOpcode::kNegate) {
     return from_bits(UINT64_C(0) - to_bits(lhs));
   }
@@ -623,6 +634,10 @@ Value ControlFlowBuilder::bitwise_or(Value lhs, Value rhs) {
 
 Value ControlFlowBuilder::bitwise_xor(Value lhs, Value rhs) {
   return append_binary(ControlOpcode::kBitwiseXor, lhs, rhs);
+}
+
+Value ControlFlowBuilder::shift_left(Value value, Value amount) {
+  return append_binary(ControlOpcode::kShiftLeft, value, amount);
 }
 
 Value ControlFlowBuilder::negate(Value value) {

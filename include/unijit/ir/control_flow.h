@@ -45,6 +45,7 @@ enum class ControlOpcode : std::uint8_t {
   kBitwiseAnd,
   kBitwiseOr,
   kBitwiseXor,
+  kShiftLeft,
   kNegate,
   kBitwiseNot,
   kFloatAdd,
@@ -161,6 +162,9 @@ public:
   Value bitwise_and(Value lhs, Value rhs);
   Value bitwise_or(Value lhs, Value rhs);
   Value bitwise_xor(Value lhs, Value rhs);
+  // Uses the same signed bidirectional, overshift-to-zero contract as the
+  // straight-line builder.
+  Value shift_left(Value value, Value amount);
   Value negate(Value value);
   Value bitwise_not(Value value);
   Value float64_add(Value lhs, Value rhs);

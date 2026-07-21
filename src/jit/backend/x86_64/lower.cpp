@@ -264,6 +264,50 @@ class Assembler final {
     bitwise_binary(destination, lhs, rhs, 0x31U);
   }
 
+  Status shift_left(int destination, int value, int amount) {
+    move_register(kScratch0, value);
+    move_register(kScratch1, amount);
+    move_register(kR11, kRcx);
+
+    const std::size_t negative = branch_negative(kScratch1);
+    const std::size_t positive_overshift =
+        branch_unsigned_greater_equal(kScratch1, 64);
+    move_register(kRcx, kScratch1);
+    shift_variable(kScratch0, false);
+    const std::size_t positive_done = branch();
+
+    const std::size_t negative_path = size();
+    negate(kScratch1, kScratch1);
+    const std::size_t negative_overshift =
+        branch_unsigned_greater_equal(kScratch1, 64);
+    move_register(kRcx, kScratch1);
+    shift_variable(kScratch0, true);
+    const std::size_t negative_done = branch();
+
+    const std::size_t zero = size();
+    move_immediate(kScratch0, 0);
+    const std::size_t done = size();
+
+    Status status = patch_branch(negative, negative_path);
+    if (status.ok()) {
+      status = patch_branch(positive_overshift, zero);
+    }
+    if (status.ok()) {
+      status = patch_branch(positive_done, done);
+    }
+    if (status.ok()) {
+      status = patch_branch(negative_overshift, zero);
+    }
+    if (status.ok()) {
+      status = patch_branch(negative_done, done);
+    }
+    move_register(kRcx, kR11);
+    if (status.ok() && destination != kScratch0) {
+      move_register(destination, kScratch0);
+    }
+    return status;
+  }
+
   void compare(int destination, int lhs, int rhs, bool or_equal) {
     emit_rex(rhs, lhs);
     buffer_.emit_u8(0x39U);
@@ -320,6 +364,30 @@ class Assembler final {
     return displacement;
   }
 
+  std::size_t branch_negative(int source) {
+    emit_rex(source, source);
+    buffer_.emit_u8(0x85U);
+    emit_modrm(3, source, source);
+    buffer_.emit_u8(0x0FU);
+    buffer_.emit_u8(0x88U);
+    const std::size_t displacement = buffer_.size();
+    buffer_.emit_u32(0);
+    return displacement;
+  }
+
+  std::size_t branch_unsigned_greater_equal(int source,
+                                             std::uint8_t immediate) {
+    emit_rex(0, source);
+    buffer_.emit_u8(0x83U);
+    emit_modrm(3, 7, source);
+    buffer_.emit_u8(immediate);
+    buffer_.emit_u8(0x0FU);
+    buffer_.emit_u8(0x83U);
+    const std::size_t displacement = buffer_.size();
+    buffer_.emit_u32(0);
+    return displacement;
+  }
+
   Status patch_branch(std::size_t displacement, std::size_t target) {
     const std::int64_t delta = static_cast<std::int64_t>(target) -
                                static_cast<std::int64_t>(displacement + 4U);
@@ -355,6 +423,12 @@ class Assembler final {
   }
 
  private:
+  void shift_variable(int destination, bool right) {
+    emit_rex(0, destination);
+    buffer_.emit_u8(0xD3U);
+    emit_modrm(3, right ? 5 : 4, destination);
+  }
+
   void prepare_binary(int destination, int lhs) {
     if (destination != lhs) {
       move_register(destination, lhs);
@@ -663,7 +737,8 @@ LoweringResult lower_impl(const ir::Function& function,
       case ir::Opcode::kMultiply:
       case ir::Opcode::kBitwiseAnd:
       case ir::Opcode::kBitwiseOr:
-      case ir::Opcode::kBitwiseXor: {
+      case ir::Opcode::kBitwiseXor:
+      case ir::Opcode::kShiftLeft: {
         const int lhs = load_operand(
             &assembler, allocation.locations[node.lhs.id()], kScratch0);
         const int rhs = load_operand(
@@ -681,6 +756,11 @@ LoweringResult lower_impl(const ir::Function& function,
           assembler.bitwise_and(target, lhs, rhs);
         } else if (node.opcode == ir::Opcode::kBitwiseOr) {
           assembler.bitwise_or(target, lhs, rhs);
+        } else if (node.opcode == ir::Opcode::kShiftLeft) {
+          const Status shift_status = assembler.shift_left(target, lhs, rhs);
+          if (!shift_status.ok()) {
+            return {shift_status, {}, 0};
+          }
         } else {
           assembler.bitwise_xor(target, lhs, rhs);
         }
@@ -1568,6 +1648,7 @@ LoweringResult lower_control_flow_impl(
         case ir::ControlOpcode::kBitwiseAnd:
         case ir::ControlOpcode::kBitwiseOr:
         case ir::ControlOpcode::kBitwiseXor:
+        case ir::ControlOpcode::kShiftLeft:
         case ir::ControlOpcode::kLessThan:
         case ir::ControlOpcode::kLessEqual:
           const int lhs = load_control_word(
@@ -1586,6 +1667,12 @@ LoweringResult lower_control_flow_impl(
             assembler.bitwise_or(word_destination, lhs, rhs);
           } else if (node.opcode == ir::ControlOpcode::kBitwiseXor) {
             assembler.bitwise_xor(word_destination, lhs, rhs);
+          } else if (node.opcode == ir::ControlOpcode::kShiftLeft) {
+            const Status shift_status =
+                assembler.shift_left(word_destination, lhs, rhs);
+            if (!shift_status.ok()) {
+              return {shift_status, {}, 0};
+            }
           } else {
             assembler.compare(word_destination, lhs, rhs,
                               node.opcode == ir::ControlOpcode::kLessEqual);

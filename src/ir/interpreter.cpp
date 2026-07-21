@@ -21,6 +21,17 @@ Word from_bits(std::uint64_t bits) noexcept {
   return value;
 }
 
+Word shift_left(Word value, Word amount) noexcept {
+  const std::uint64_t amount_bits = to_bits(amount);
+  if (amount < 0) {
+    const std::uint64_t magnitude = UINT64_C(0) - amount_bits;
+    return magnitude >= 64U ? 0
+                            : from_bits(to_bits(value) >> magnitude);
+  }
+  return amount_bits >= 64U ? 0
+                            : from_bits(to_bits(value) << amount_bits);
+}
+
 Word evaluate_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
   const std::uint64_t lhs_bits = to_bits(lhs);
   const std::uint64_t rhs_bits = to_bits(rhs);
@@ -37,6 +48,8 @@ Word evaluate_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
       return from_bits(lhs_bits | rhs_bits);
     case Opcode::kBitwiseXor:
       return from_bits(lhs_bits ^ rhs_bits);
+    case Opcode::kShiftLeft:
+      return shift_left(lhs, rhs);
     case Opcode::kNegate:
       return from_bits(UINT64_C(0) - lhs_bits);
     case Opcode::kBitwiseNot:
@@ -150,6 +163,7 @@ EvaluationResult Interpreter::evaluate(const Function& function,
         case Opcode::kBitwiseAnd:
         case Opcode::kBitwiseOr:
         case Opcode::kBitwiseXor:
+        case Opcode::kShiftLeft:
         case Opcode::kNegate:
         case Opcode::kBitwiseNot:
         case Opcode::kFloatAdd:
