@@ -56,6 +56,9 @@ void visit_control_operands(const ir::ControlFlowFunction& function,
       visitor(node.lhs);
       visitor(node.rhs);
       break;
+    case ir::ControlOpcode::kStoreFrame:
+      visitor(node.lhs);
+      break;
     case ir::ControlOpcode::kCall:
       for (std::size_t index = 0; index < node.argument_count; ++index) {
         visitor(function.call_arguments()[
@@ -66,6 +69,7 @@ void visit_control_operands(const ir::ControlFlowFunction& function,
     case ir::ControlOpcode::kBlockParameter:
     case ir::ControlOpcode::kConstant:
     case ir::ControlOpcode::kSafepoint:
+    case ir::ControlOpcode::kLoadFrame:
       break;
   }
 }
@@ -127,6 +131,8 @@ RegisterAllocation allocate_impl(const ir::Function& function,
                node.opcode == ir::Opcode::kStoreFloat) {
       note_use(&last_use, node.lhs, index);
       note_use(&last_use, node.rhs, index);
+    } else if (node.opcode == ir::Opcode::kStoreFrame) {
+      note_use(&last_use, node.lhs, index);
     } else if (node.opcode == ir::Opcode::kCall) {
       for (std::size_t argument_index = 0;
            argument_index < node.argument_count; ++argument_index) {
@@ -301,6 +307,9 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
           note_local_use(node.lhs);
           note_local_use(node.rhs);
           break;
+        case ir::ControlOpcode::kStoreFrame:
+          note_local_use(node.lhs);
+          break;
         case ir::ControlOpcode::kCall:
           for (std::size_t argument_index = 0;
                argument_index < node.argument_count; ++argument_index) {
@@ -313,6 +322,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kBlockParameter:
         case ir::ControlOpcode::kConstant:
         case ir::ControlOpcode::kSafepoint:
+        case ir::ControlOpcode::kLoadFrame:
           break;
       }
       if (node.opcode == ir::ControlOpcode::kSafepoint ||
@@ -495,6 +505,9 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
           note_nonlocal_use(block_index, node.lhs);
           note_nonlocal_use(block_index, node.rhs);
           break;
+        case ir::ControlOpcode::kStoreFrame:
+          note_nonlocal_use(block_index, node.lhs);
+          break;
         case ir::ControlOpcode::kCall:
           for (std::size_t argument_index = 0;
                argument_index < node.argument_count; ++argument_index) {
@@ -508,6 +521,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kParameter:
         case ir::ControlOpcode::kBlockParameter:
         case ir::ControlOpcode::kConstant:
+        case ir::ControlOpcode::kLoadFrame:
         case ir::ControlOpcode::kSafepoint:
           break;
       }

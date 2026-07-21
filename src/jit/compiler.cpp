@@ -717,6 +717,7 @@ Status validate_compilation_limits(const CompilationLimits& limits) {
       limits.maximum_ir_arguments == 0 ||
       limits.maximum_memory_regions == 0 ||
       limits.maximum_memory_accesses == 0 ||
+      limits.maximum_frame_slots == 0 ||
       limits.maximum_stack_maps == 0 ||
       limits.maximum_metadata_values == 0 ||
       limits.maximum_code_bytes == 0) {
@@ -837,6 +838,11 @@ Status validate_function_limits(
             "compilation exceeds the memory access limit",
             function.memory_accesses().size()};
   }
+  if (function.frame_slots().size() > limits.maximum_frame_slots) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the frame slot limit",
+            function.frame_slots().size()};
+  }
   return validate_requested_metadata(deoptimization_table, assumptions,
                                      function.parameter_count(), limits);
 }
@@ -875,6 +881,11 @@ Status validate_function_limits(
     return {StatusCode::kResourceExhausted,
             "compilation exceeds the CFG memory access limit",
             function.memory_accesses().size()};
+  }
+  if (function.frame_slots().size() > limits.maximum_frame_slots) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the CFG frame slot limit",
+            function.frame_slots().size()};
   }
   std::size_t arguments = function.call_arguments().size();
   if (arguments > limits.maximum_ir_arguments) {
@@ -1288,7 +1299,8 @@ CompilationResult Compiler::compile(
 
     CompilationStats stats{lowering.code.size(),
                            implementation->memory.mapping_size(),
-                           lowering.spill_slots, function.nodes().size(),
+                           lowering.spill_slots, function.frame_slots().size(),
+                           function.nodes().size(),
                            lowered->nodes().size(), lowering.stack_maps.size(),
                            stack_map_value_count(lowering.stack_maps)};
     const bool requires_context = !assumptions.empty() || std::any_of(
@@ -1483,7 +1495,8 @@ CompilationResult Compiler::compile(
 
     CompilationStats stats{lowering.code.size(),
                            implementation->memory.mapping_size(),
-                           lowering.spill_slots, function.nodes().size(),
+                           lowering.spill_slots, function.frame_slots().size(),
+                           function.nodes().size(),
                            lowered->nodes().size(), lowering.stack_maps.size(),
                            stack_map_value_count(lowering.stack_maps)};
   const bool requires_context = !assumptions.empty() || std::any_of(

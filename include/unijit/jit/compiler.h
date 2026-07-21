@@ -26,6 +26,7 @@ struct CompilationStats final {
   std::size_t code_size{0};
   std::size_t executable_mapping_size{0};
   std::size_t spill_slots{0};
+  std::size_t frame_slots{0};
   std::size_t input_ir_nodes{0};
   std::size_t optimized_ir_nodes{0};
   std::size_t stack_map_count{0};
@@ -44,6 +45,7 @@ struct CompilationLimits final {
   std::size_t maximum_ir_arguments{256U * 1024U};
   std::size_t maximum_memory_regions{64};
   std::size_t maximum_memory_accesses{64U * 1024U};
+  std::size_t maximum_frame_slots{256};
   std::size_t maximum_stack_maps{4096};
   std::size_t maximum_metadata_values{256U * 1024U};
   std::size_t maximum_code_bytes{16U * 1024U * 1024U};
