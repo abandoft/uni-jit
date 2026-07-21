@@ -15,6 +15,8 @@ enum class AtomicFallbackOperation : std::uint64_t {
   kFetchAnd,
   kFetchOr,
   kFetchXor,
+  kLoad,
+  kStore,
 };
 
 ir::Word execute_atomic_fallback(const ir::Word* arguments,

@@ -43,6 +43,7 @@ elseif(UNIJIT_SYSTEM_PROCESSOR MATCHES "^(amd64|x86_64)$")
   target_compile_definitions(unijit PRIVATE UNIJIT_TARGET_X86_64=1)
 elseif(UNIJIT_SYSTEM_PROCESSOR MATCHES "^(riscv64|riscv64gc)$")
   target_sources(unijit PRIVATE
+    jit/atomic_fallback.cpp
     jit/backend/riscv64/lower.cpp)
   target_compile_definitions(unijit PRIVATE UNIJIT_TARGET_RISCV64=1)
 endif()
