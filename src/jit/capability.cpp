@@ -134,28 +134,68 @@ bool is_atomic(ir::ControlOpcode opcode) noexcept {
   return is_atomic_access(opcode) || opcode == ir::ControlOpcode::kAtomicFence;
 }
 
+bool is_atomic_read_modify_write(ir::Opcode opcode) noexcept {
+  return opcode == ir::Opcode::kAtomicExchange ||
+         opcode == ir::Opcode::kAtomicCompareExchange ||
+         opcode == ir::Opcode::kAtomicFetchAdd ||
+         opcode == ir::Opcode::kAtomicFetchAnd ||
+         opcode == ir::Opcode::kAtomicFetchOr ||
+         opcode == ir::Opcode::kAtomicFetchXor;
+}
+
+bool is_atomic_read_modify_write(ir::ControlOpcode opcode) noexcept {
+  return opcode == ir::ControlOpcode::kAtomicExchange ||
+         opcode == ir::ControlOpcode::kAtomicCompareExchange ||
+         opcode == ir::ControlOpcode::kAtomicFetchAdd ||
+         opcode == ir::ControlOpcode::kAtomicFetchAnd ||
+         opcode == ir::ControlOpcode::kAtomicFetchOr ||
+         opcode == ir::ControlOpcode::kAtomicFetchXor;
+}
+
 LoweringStrategy atomic_strategy(const TargetProfile& target,
                                  ir::Opcode opcode) noexcept {
-  if (target.architecture != TargetArchitecture::kX86_64) {
-    return LoweringStrategy::kUnsupported;
+  if (target.architecture == TargetArchitecture::kAArch64) {
+    return is_atomic_read_modify_write(opcode) &&
+                   !has_target_feature(target, TargetFeature::kAarch64Lse)
+               ? LoweringStrategy::kHelper
+               : LoweringStrategy::kNative;
   }
-  return opcode == ir::Opcode::kAtomicFetchAnd ||
-                 opcode == ir::Opcode::kAtomicFetchOr ||
-                 opcode == ir::Opcode::kAtomicFetchXor
-             ? LoweringStrategy::kLegalized
-             : LoweringStrategy::kNative;
+  if (target.architecture == TargetArchitecture::kX86_64) {
+    return opcode == ir::Opcode::kAtomicFetchAnd ||
+                   opcode == ir::Opcode::kAtomicFetchOr ||
+                   opcode == ir::Opcode::kAtomicFetchXor
+               ? LoweringStrategy::kLegalized
+               : LoweringStrategy::kNative;
+  }
+  return LoweringStrategy::kUnsupported;
 }
 
 LoweringStrategy atomic_strategy(const TargetProfile& target,
                                  ir::ControlOpcode opcode) noexcept {
-  if (target.architecture != TargetArchitecture::kX86_64) {
-    return LoweringStrategy::kUnsupported;
+  if (target.architecture == TargetArchitecture::kAArch64) {
+    return is_atomic_read_modify_write(opcode) &&
+                   !has_target_feature(target, TargetFeature::kAarch64Lse)
+               ? LoweringStrategy::kHelper
+               : LoweringStrategy::kNative;
   }
-  return opcode == ir::ControlOpcode::kAtomicFetchAnd ||
-                 opcode == ir::ControlOpcode::kAtomicFetchOr ||
-                 opcode == ir::ControlOpcode::kAtomicFetchXor
-             ? LoweringStrategy::kLegalized
-             : LoweringStrategy::kNative;
+  if (target.architecture == TargetArchitecture::kX86_64) {
+    return opcode == ir::ControlOpcode::kAtomicFetchAnd ||
+                   opcode == ir::ControlOpcode::kAtomicFetchOr ||
+                   opcode == ir::ControlOpcode::kAtomicFetchXor
+               ? LoweringStrategy::kLegalized
+               : LoweringStrategy::kNative;
+  }
+  return LoweringStrategy::kUnsupported;
+}
+
+template <typename OpcodeType>
+std::uint64_t atomic_required_features(const TargetProfile& target,
+                                       OpcodeType opcode) noexcept {
+  return target.architecture == TargetArchitecture::kAArch64 &&
+                 is_atomic_read_modify_write(opcode) &&
+                 has_target_feature(target, TargetFeature::kAarch64Lse)
+             ? target_feature_bit(TargetFeature::kAarch64Lse)
+             : 0;
 }
 
 bool requires_context(ir::Opcode opcode) noexcept {
@@ -419,11 +459,13 @@ CapabilityReport analyze_verified(const FunctionType &function,
         report.requires_execution_context || requires_context(node.opcode);
     if (is_atomic(node.opcode)) {
       const LoweringStrategy strategy = atomic_strategy(target, node.opcode);
+      const std::uint64_t required =
+          atomic_required_features(target, node.opcode);
       if (strategy == LoweringStrategy::kUnsupported && !found_unsupported) {
         found_unsupported = true;
         first_unsupported = index;
       }
-      note_operation(&report, strategy, 0);
+      note_operation(&report, strategy, required);
       continue;
     }
     const NormalizedVectorOpcode vector_opcode = normalize(node.opcode);

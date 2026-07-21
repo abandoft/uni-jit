@@ -1373,7 +1373,8 @@ CompilationResult Compiler::compile(
 #if defined(UNIJIT_TARGET_AARCH64)
   detail::aarch64::LoweringResult lowering = detail::aarch64::lower(
       *lowered, stack_map_requirements.requirements,
-      options.measure_safepoint_polls);
+      options.measure_safepoint_polls,
+      has_target_feature(options.target_profile, TargetFeature::kAarch64Lse));
 #elif defined(UNIJIT_TARGET_X86_64)
   detail::x86_64::LoweringResult lowering = detail::x86_64::lower(
       *lowered, stack_map_requirements.requirements,
@@ -1574,7 +1575,8 @@ CompilationResult Compiler::compile(
 #if defined(UNIJIT_TARGET_AARCH64)
   detail::aarch64::LoweringResult lowering = detail::aarch64::lower(
       *lowered, stack_map_requirements.requirements,
-      options.measure_safepoint_polls);
+      options.measure_safepoint_polls,
+      has_target_feature(options.target_profile, TargetFeature::kAarch64Lse));
 #elif defined(UNIJIT_TARGET_X86_64)
   detail::x86_64::LoweringResult lowering = detail::x86_64::lower(
       *lowered, stack_map_requirements.requirements,
