@@ -133,13 +133,16 @@ benchmark improvement.
 ## Typed memory contract
 
 Memory IR is a prerequisite for vectors, atomics, inline caches, and efficient
-runtime object access. The delivered scalar slice covers signed and unsigned
+runtime object access. The delivered bounded slice covers signed and unsigned
 8-, 16-, 32-, and 64-bit Word loads and matching stores, Float32 and Float64
-storage through the Float64 SSA type, and standalone 16/32/64-bit Word byte
-reversal in straight-line and CFG IR. It includes the interpreter oracle,
-optimizer preservation, resource limits, live-value stack-map reconstruction,
-diagnosed exits, and AArch64, x86-64, and RISC-V 64 native lowering.
+storage through the Float64 SSA type, complete 128-bit transfers for every data
+vector shape, and standalone 16/32/64-bit Word byte reversal in straight-line
+and CFG IR. It includes the interpreter oracle, optimizer preservation,
+resource limits, live-value stack maps, diagnosed exits, and AArch64, x86-64,
+and RISC-V 64 native or bounded scalar lowering.
 [`TYPED_MEMORY.md`](TYPED_MEMORY.md) is the normative delivered contract.
+The vector transfer extension is specified in
+[`PORTABLE_SIMD.md`](PORTABLE_SIMD.md).
 Trusted runtime-object layouts are now a separate delivered provenance mode;
 their fixed primitive fields, semantic identity, managed preflight, and direct
 lowering are specified in [`TRUSTED_OBJECTS.md`](TRUSTED_OBJECTS.md).
@@ -169,6 +172,12 @@ Unaligned scalar loads and stores have byte-exact semantics and never rely on C
 or C++ undefined behavior. A backend may use one native unaligned instruction
 when its target contract permits it; otherwise it emits aligned pieces and
 combines them. Unaligned atomics are never synthesized and are rejected.
+
+Vector transfers preflight the complete 16-byte range, write permission, and
+absolute alignment before changing memory. They preserve lane order while
+applying byte order independently within each typed lane, reject mask-vector
+loads and stores, and keep RISC-V fallback sequences finite and independent of
+RVV. Partial stores are not an observable failure mode.
 
 Standalone byte reversal is exposed as one width-verified pure IR operation.
 It reverses the low 16, 32, or 64 bits and zero-extends a narrow result. The
@@ -398,8 +407,9 @@ byte-identical packages for identical inputs and target profiles.
    corpus, target-scoped fail-closed boundary, shared SIMD allocation, aligned
    spill plans, call liveness, mixed-bank edge-cycle planning, complete
    AArch64 lowering, complete x86-64 SSE2 lowering, and bounded stack-only
-   RV64IMD scalar lowering for the current explicit surface are delivered;
-   vector memory and feature preflight/telemetry remain.
+   RV64IMD scalar lowering plus bounded aligned/unaligned vector memory for the
+   current explicit surface are delivered; profile-specific feature
+   preflight/telemetry and optional RVV lowering remain.
 3. Retain explicit SIMD and complete-loop performance gates on real AArch64,
    Ubuntu/Windows x86-64, and RISC-V 64 hosts. This gate is delivered with
    vector/scalar/interpreter parity, target lowering identity, fixed workload

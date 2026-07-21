@@ -22,11 +22,13 @@ result bit-for-bit with the matching reference interpreter. Each corpus covers:
   mandatory safepoints;
 - strict 128-bit SIMD across every integer and floating data shape, mask
   logic, selection, lane insertion/extraction, immutable shuffles, lane-sign
-  masks, and integer widening, comparing straight-line and whole-vector-edge
-  CFG interpreters with both optimized forms and constant folding. On AArch64,
-  x86-64, and RISC-V 64 the same generated programs additionally compare
-  baseline and optimized native execution with the reference interpreters;
-  the RISC-V path verifies bounded RV64IMD scalarization without assuming RVV.
+  masks, integer widening, and randomly selected aligned or unaligned
+  native/little/big-endian bounded vector-memory round trips, comparing
+  straight-line and whole-vector-edge CFG interpreters with both optimized
+  forms and constant folding. On AArch64, x86-64, and RISC-V 64 the same
+  generated programs additionally compare baseline and optimized native
+  execution and final region bytes with the reference interpreters; the
+  RISC-V path verifies bounded RV64IMD scalarization without assuming RVV.
 
 Mismatch diagnostics contain the tier, seed, program index, input index,
 statuses, and exact result bits. A hosted failure can therefore be replayed
@@ -221,19 +223,25 @@ frontend suites, while the separate Windows MSVC ASan lane covers Lua's
 
 ## Bounded memory qualification
 
-Core unit tests execute bounded Word, Float32, and Float64 memory through
-straight-line and CFG interpreters and native code. They cover region binding, read-only rejection,
-unsigned overflow-free bounds, null contexts, absolute alignment, diagnosed
-exit site/value capture, stack maps, optimizer effect preservation, and a
-matrix of 8/16/32/64-bit native/little/big-endian accesses with signed and
-unsigned loads. Floating coverage checks binary32 rounding into the Float64 SSA
-type, binary64 bit preservation, signed zero, native and explicit byte order,
-and rejection of invalid widths or store value types. The same matrix forces
-both naturally aligned target fast paths and deliberately unaligned byte-exact
-paths and checks the final bytes against the reference interpreter. Diagnosed
-memory exits additionally reconstruct simultaneously live Word and Float64
-values from stable stack-map slots. Pure byte-swap tests cover 16/32/64-bit
-interpreter, optimizer, straight-line native, and CFG native paths.
+Core unit tests execute bounded Word, Float32, Float64, and 128-bit data-vector
+memory through straight-line and CFG interpreters and native code. They cover
+region binding, read-only rejection, unsigned overflow-free bounds, null
+contexts, absolute alignment, diagnosed exit site/value capture, stack maps,
+optimizer effect preservation, and a matrix of native/little/big-endian
+accesses. Scalar coverage includes signed and unsigned 8/16/32/64-bit loads,
+binary32 rounding into the Float64 SSA type, binary64 bit preservation, signed
+zero, and invalid width or store-type rejection. Vector coverage crosses all
+six data shapes with aligned and deliberately unaligned 16-byte transfers,
+applies byte order independently per lane, retains store results and complete
+CFG edge values, and rejects masks, scalar 128-bit accesses, wrong widths, and
+overstated alignment. Read-only, misaligned, and out-of-range vector stores
+must fail before changing any byte. The deterministic differential corpus and
+installed-package consumer repeat the public vector-memory path, while native
+qualification covers AArch64, x86-64 System V/Windows, and RISC-V 64.
+Diagnosed scalar memory exits additionally reconstruct simultaneously live
+Word and Float64 values from stable stack-map slots. Pure byte-swap tests cover
+16/32/64-bit interpreter, optimizer, straight-line native, and CFG native
+paths.
 
 `unijit_bounded_memory_benchmark` retains aligned native-order u64 and Float64
 records plus unaligned big-endian u64 and Float32 records. Each sample is

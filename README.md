@@ -13,10 +13,11 @@ Native Word and Float64 backends currently target AArch64, x86-64, and
 RISC-V 64. The complete current explicit strict 128-bit SIMD surface has
 native AArch64 Advanced SIMD/NEON and x86-64 SSE2 lowering, plus bounded
 RV64IMD scalar lowering that does not require or claim RVV. Bounded Word
-memory supports byte-exact 8/16/32/64-bit loads and
-stores, explicit byte order, alignment and permission checks, diagnosed exits,
-and native lowering on all three backends. A retained complete-CFG-loop SIMD
-gate requires speedup over both equivalent scalar generated code and the
+and Float memory supports byte-exact scalar loads and stores, while bounded
+128-bit memory transfers cover all six data-vector types. Both use explicit
+byte order, alignment and permission checks, diagnosed exits, and native or
+bounded scalar lowering on all three backends. A retained complete-CFG-loop
+SIMD gate requires speedup over both equivalent scalar generated code and the
 reference interpreter on every product architecture.
 See [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) for the design and delivery
 gates, [doc/PORTABILITY.md](doc/PORTABILITY.md) for verified platforms, and
@@ -49,8 +50,8 @@ atomics, immutable patch cells, fast and tail calls, bounded frame locals,
 target profiles, and validated serialization/AOT.
 [doc/PORTABLE_SIMD.md](doc/PORTABLE_SIMD.md) defines the delivered strict
 128-bit semantic core, lane and mask rules, verifier and optimizer guarantees,
-three-backend lowering, qualification, and remaining vector-memory,
-telemetry, and performance gates.
+bounded vector memory, three-backend lowering, qualification, and remaining
+capability-telemetry and optional RVV gates.
 [doc/TARGET_PROFILES.md](doc/TARGET_PROFILES.md) defines host feature discovery,
 portable baselines, immutable compilation identity, and profile-scoped caches.
 [doc/TYPED_MEMORY.md](doc/TYPED_MEMORY.md) defines bounded regions, Word and

@@ -100,6 +100,39 @@ unreferenced entries are invalid IR. The verifier additionally proves:
 selection operands to 65,536 entries each by default. These checks run before
 expensive optimization or native allocation.
 
+## Bounded vector memory
+
+Straight-line and CFG IR expose explicit 128-bit vector loads and stores for
+the six data-vector types. Mask-vector memory is deliberately rejected:
+untrusted bytes are not allowed to introduce noncanonical mask lanes. Every
+descriptor must use `MemoryWidth::k128`, disable scalar sign extension, name a
+declared execution-context region, and declare a power-of-two alignment from 1
+through 16 bytes.
+
+Lane zero remains at the lowest address. Native and explicit little-endian
+transfers preserve the in-memory byte order used by the logical vector
+representation on the supported little-endian product targets. Explicit
+big-endian order reverses bytes independently inside each typed lane; it never
+reverses lane order or the complete 128-bit payload. This rule applies equally
+to integer and raw IEEE floating lane bits.
+
+The complete 16-byte bounds, write permission, and absolute address alignment
+are checked before a store changes any byte. A failed transfer records its
+declared site and original unsigned byte offset through the existing diagnosed
+exit path. Volatile descriptors retain byte-observable interpreter accesses,
+stores return their original vector value, and the optimizer preserves load
+and store ordering as memory effects. Vector payloads remain intentionally
+absent from scalar exit capture even though each vector memory site owns a
+stack map for the scalar state that is recoverable there.
+
+AArch64 uses full-width `LDR`/`STR Q` transfers and per-lane byte reversal for
+explicit big endian. x86-64 uses unaligned-safe SSE2 `MOVDQU` transfers and a
+bounded aligned stack/GPR legalization for big-endian lanes. RISC-V 64 retains
+its stack-only vector representation and emits a finite per-lane RV64IMD byte
+sequence when byte order or alignment prevents a naturally aligned scalar
+lane access. None of these paths uses a runtime helper, heap allocation,
+unchecked partial store, or RVV state.
+
 ## Interpretation and optimization
 
 Both reference interpreters maintain scalar and 128-bit value stores. CFG
@@ -194,11 +227,9 @@ Ubuntu GCC/Clang and Windows MSVC x86-64, hosted macOS x86-64, and real Bianbu
 RISC-V 64 all pass; per-host JSON records are retained by the platform
 workflow, and RISC-V explicitly reports `scalarized` rather than `native`.
 
-The P0 feature remains incomplete until all of the following are delivered:
+The remaining profile-specific SIMD work is:
 
-1. bounded aligned and unaligned vector loads/stores using the existing memory
-   provenance and diagnosed-exit model;
-2. target-profile-scoped `native`/`legalized`/`scalarized`/`unsupported`
+1. target-profile-scoped `native`/`legalized`/`scalarized`/`unsupported`
    preflight and compilation telemetry;
-3. optional RVV lowering selected only by an explicit compatible target
+2. optional RVV lowering selected only by an explicit compatible target
    profile and proven against the same scalar oracle and real-host matrix.

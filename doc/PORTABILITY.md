@@ -155,6 +155,20 @@ The record measures the complete generated loop and compares semantically
 equivalent work; it is not an isolated-instruction throughput claim. Hosted
 artifacts retain the raw benchmark and machine-readable gate documents.
 
+At commit `fc89c39`, bounded 128-bit vector memory passed warnings-as-errors
+native qualification on Darwin AArch64, Darwin x86-64 through Rosetta, hosted
+Ubuntu GCC/Clang and Windows MSVC x86-64, a separate real Ubuntu GCC 13.3
+x86-64 machine, and the real Bianbu GCC 14.2 RISC-V 64 machine. The shared
+matrix covers all six data-vector shapes, aligned native-order and deliberately
+unaligned little/big-endian transfers, per-lane byte order, store results,
+whole-vector CFG edges, optimizer effect retention, and exact final bytes.
+Read-only, misaligned, and out-of-range stores fail before modifying any byte.
+The committed 128-program differential corpus randomly varies vector-memory
+alignment and byte order in both IR forms and compares baseline/optimized
+native results and region bytes with both interpreters. The installed-package
+consumer executes the public big-endian I32x4 round trip on each product
+architecture, and Linux plus local AArch64 ASan/UBSan qualification passes.
+
 The native test suite checks full-width constants, all bootstrap arithmetic
 operations, forced register spilling, invocation validation, and 5,000 seeded
 random comparisons against the interpreter oracle. It also checks helper calls
