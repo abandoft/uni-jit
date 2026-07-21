@@ -848,8 +848,11 @@ int main() {
            .ok()) {
     return 72;
   }
+  const auto vector_memory_function = std::move(vector_memory_builder).build();
+  const auto vector_memory_preflight = unijit::jit::preflight_capabilities(
+      vector_memory_function, unijit::jit::baseline_target_profile());
   auto vector_memory_compilation =
-      unijit::jit::Compiler::compile(std::move(vector_memory_builder).build());
+      unijit::jit::Compiler::compile(vector_memory_function);
   alignas(16) std::array<std::uint8_t, 32> vector_memory_bytes{};
   vector_memory_bytes.fill(0xCC);
   unijit::runtime::MemoryRegion vector_memory_region{
@@ -866,7 +869,12 @@ int main() {
           : unijit::ir::EvaluationResult{};
   const auto vector_memory_expected = unijit::ir::vector_extract_lane_bits(
       vector_memory_bits, unijit::ir::ValueType::kI32x4, 2, false);
-  if (!vector_memory_compilation.ok() || !vector_memory_result.ok() ||
+  if (!vector_memory_preflight.ok() || !vector_memory_compilation.ok() ||
+      !vector_memory_result.ok() ||
+      vector_memory_compilation.function->capabilities().target_key() !=
+          vector_memory_preflight.target_key() ||
+      vector_memory_compilation.function->capabilities().overall_strategy !=
+          vector_memory_preflight.overall_strategy ||
       vector_memory_result.value != vector_memory_expected ||
       vector_memory_bytes[3] != 4 || vector_memory_bytes[4] != 3 ||
       vector_memory_bytes[5] != 2 || vector_memory_bytes[6] != 1 ||

@@ -453,6 +453,277 @@ void test_target_profiles() {
          "profile-scoped code caches must retain and execute matching code");
 }
 
+void test_lowering_capability_preflight() {
+  using unijit::ir::ControlFlowBuilder;
+  using unijit::ir::MemoryAccessDescriptor;
+  using unijit::ir::MemoryByteOrder;
+  using unijit::ir::MemoryWidth;
+  using unijit::ir::ValueType;
+  using unijit::ir::VectorBinaryOperation;
+  using unijit::ir::VectorComparison;
+  using unijit::ir::VectorExtension;
+  using unijit::ir::VectorHalf;
+  using unijit::jit::CapabilityReport;
+  using unijit::jit::LoweringResource;
+  using unijit::jit::LoweringStrategy;
+  using unijit::jit::TargetAbi;
+  using unijit::jit::TargetArchitecture;
+  using unijit::jit::TargetEndianness;
+  using unijit::jit::TargetFeature;
+  using unijit::jit::TargetProfile;
+  using unijit::jit::VectorOperationClass;
+
+  const auto make_profile = [](TargetArchitecture architecture) {
+    TargetProfile profile;
+    profile.architecture = architecture;
+    profile.endianness = TargetEndianness::kLittle;
+    profile.maximum_vector_bits = 128;
+    if (architecture == TargetArchitecture::kAArch64) {
+      profile.abi = TargetAbi::kAapcs64;
+      profile.features = unijit::jit::target_feature_bit(TargetFeature::kFp64) |
+                         unijit::jit::target_feature_bit(TargetFeature::kNeon);
+    } else if (architecture == TargetArchitecture::kX86_64) {
+      profile.abi = TargetAbi::kSystemV;
+      profile.features = unijit::jit::target_feature_bit(TargetFeature::kFp64) |
+                         unijit::jit::target_feature_bit(TargetFeature::kSse2);
+    } else {
+      profile.abi = TargetAbi::kRiscVElf;
+      profile.features =
+          unijit::jit::target_feature_bit(TargetFeature::kFp64) |
+          unijit::jit::target_feature_bit(
+              TargetFeature::kRiscVIntegerMultiply) |
+          unijit::jit::target_feature_bit(TargetFeature::kRiscVFloat64);
+    }
+    return profile;
+  };
+  const TargetProfile aarch64 = make_profile(TargetArchitecture::kAArch64);
+  const TargetProfile x86_64 = make_profile(TargetArchitecture::kX86_64);
+  const TargetProfile riscv64 = make_profile(TargetArchitecture::kRiscV64);
+
+  MemoryAccessDescriptor memory;
+  memory.width = MemoryWidth::k128;
+  memory.alignment = 1;
+  memory.byte_order = MemoryByteOrder::kBigEndian;
+  FunctionBuilder builder(2, 1);
+  const Value input =
+      builder.vector_splat(ValueType::kI64x2, builder.parameter(0));
+  const Value inserted =
+      builder.vector_insert_lane(input, 1, builder.parameter(1));
+  const Value multiplied =
+      builder.vector_binary(VectorBinaryOperation::kMultiply, inserted, input);
+  builder.store_vector(builder.constant(3), multiplied, memory, 3300);
+  const Value loaded =
+      builder.load_vector(builder.constant(3), ValueType::kI64x2, memory, 3301);
+  const Value compared =
+      builder.vector_compare(VectorComparison::kSignedLessThan, loaded, input);
+  const Value selected = builder.vector_select(compared, loaded, multiplied);
+  const Value shuffled = builder.vector_shuffle(selected, {1, 0});
+  const Value signs = builder.vector_lane_sign_mask(shuffled);
+  const Value narrow =
+      builder.vector_splat(ValueType::kI32x4, builder.parameter(1));
+  const Value widened = builder.vector_widen(
+      narrow, ValueType::kI64x2, VectorExtension::kSign, VectorHalf::kLow);
+  const Value result =
+      builder.add(builder.vector_extract_lane(shuffled, 0),
+                  builder.add(signs, builder.vector_extract_lane(widened, 0)));
+  expect(builder.set_return(result).ok(),
+         "capability fixture must return a scalar vector projection");
+  const Function function = std::move(builder).build();
+
+  const CapabilityReport aarch_report =
+      unijit::jit::preflight_capabilities(function, aarch64);
+  const CapabilityReport x86_report =
+      unijit::jit::preflight_capabilities(function, x86_64);
+  const CapabilityReport riscv_report =
+      unijit::jit::preflight_capabilities(function, riscv64);
+  const auto *aarch_memory =
+      aarch_report.vector_operation(VectorOperationClass::kMemory);
+  const auto *aarch_integer =
+      aarch_report.vector_operation(VectorOperationClass::kIntegerArithmetic);
+  const auto *aarch_sign =
+      aarch_report.vector_operation(VectorOperationClass::kLaneSignMask);
+  const auto *x86_lane =
+      x86_report.vector_operation(VectorOperationClass::kLaneMovement);
+  const auto *x86_comparison =
+      x86_report.vector_operation(VectorOperationClass::kComparison);
+  const auto *riscv_shuffle =
+      riscv_report.vector_operation(VectorOperationClass::kShuffle);
+  expect(
+      aarch_report.ok() && x86_report.ok() && riscv_report.ok() &&
+          aarch_report.overall_strategy == LoweringStrategy::kLegalized &&
+          x86_report.overall_strategy == LoweringStrategy::kLegalized &&
+          riscv_report.overall_strategy == LoweringStrategy::kScalarized &&
+          aarch_report.vector_bits == 128 && x86_report.vector_bits == 128 &&
+          riscv_report.vector_bits == 128 &&
+          aarch_report.requires_execution_context &&
+          x86_report.requires_execution_context &&
+          riscv_report.requires_execution_context && aarch_memory != nullptr &&
+          aarch_memory->strategy == LoweringStrategy::kLegalized &&
+          aarch_integer != nullptr &&
+          aarch_integer->strategy == LoweringStrategy::kLegalized &&
+          aarch_sign != nullptr &&
+          aarch_sign->strategy == LoweringStrategy::kLegalized &&
+          (aarch_sign->resource_mask &
+           unijit::jit::lowering_resource_bit(
+               LoweringResource::kVectorRegister)) != 0 &&
+          x86_lane != nullptr &&
+          x86_lane->strategy == LoweringStrategy::kLegalized &&
+          x86_comparison != nullptr &&
+          x86_comparison->strategy == LoweringStrategy::kLegalized &&
+          riscv_shuffle != nullptr &&
+          riscv_shuffle->strategy == LoweringStrategy::kScalarized &&
+          (riscv_shuffle->resource_mask &
+           unijit::jit::lowering_resource_bit(
+               LoweringResource::kAlignedVectorStack)) != 0 &&
+          aarch_report.target_key() ==
+              unijit::jit::target_profile_key(aarch64) &&
+          x86_report.target_key() == unijit::jit::target_profile_key(x86_64) &&
+          riscv_report.target_key() == unijit::jit::target_profile_key(riscv64),
+      "cross-target preflight must classify native, legalized, and "
+      "scalarized vector operation classes without emitting code");
+  expect(aarch_report.operation_count(LoweringStrategy::kLegalized) >= 2 &&
+             x86_report.operation_count(LoweringStrategy::kLegalized) >= 4 &&
+             riscv_report.operation_count(LoweringStrategy::kScalarized) >=
+                 10 &&
+             std::string(unijit::jit::lowering_strategy_name(
+                 LoweringStrategy::kScalarized)) == "scalarized" &&
+             std::string(unijit::jit::vector_operation_class_name(
+                 VectorOperationClass::kLaneMovement)) == "lane-movement",
+         "capability telemetry must expose stable strategy names and counts");
+
+  const TargetProfile baseline = unijit::jit::baseline_target_profile();
+  const CapabilityReport baseline_report =
+      unijit::jit::preflight_capabilities(function, baseline);
+  unijit::jit::CompilationOptions baseline_options;
+  baseline_options.optimization_level =
+      unijit::jit::OptimizationLevel::kBaseline;
+  auto compilation = Compiler::compile(function, baseline_options);
+  const CapabilityReport *compiled_report =
+      compilation.ok() ? &compilation.function->capabilities() : nullptr;
+  expect(baseline_report.ok() && compilation.ok() &&
+             compiled_report != nullptr && compiled_report->ok() &&
+             compiled_report->target_key() == baseline_report.target_key() &&
+             compiled_report->overall_strategy ==
+                 baseline_report.overall_strategy &&
+             compiled_report->operation_counts ==
+                 baseline_report.operation_counts &&
+             compiled_report->requires_execution_context ==
+                 compilation.function->requires_context(),
+         "compilation must recheck and publish the exact post-optimization "
+         "capability decision");
+
+  FunctionBuilder folded_builder(0);
+  const Value folded_vector = folded_builder.vector_splat(
+      ValueType::kI32x4, folded_builder.constant(19));
+  expect(folded_builder
+             .set_return(folded_builder.vector_extract_lane(folded_vector, 2))
+             .ok(),
+         "optimized capability fixture must return a folded vector lane");
+  const Function folded_function = std::move(folded_builder).build();
+  const CapabilityReport folded_preflight =
+      unijit::jit::preflight_capabilities(folded_function, baseline);
+  unijit::jit::CompilationOptions optimized_options;
+  optimized_options.optimization_level =
+      unijit::jit::OptimizationLevel::kOptimized;
+  const auto folded_compilation =
+      Compiler::compile(folded_function, optimized_options);
+  expect(folded_preflight.ok() && folded_preflight.vector_bits == 128 &&
+             folded_compilation.ok() &&
+             folded_compilation.function->capabilities().vector_bits == 0 &&
+             folded_compilation.function->capabilities().overall_strategy ==
+                 LoweringStrategy::kNative &&
+             folded_compilation.function->stats().optimized_ir_nodes == 1,
+         "compiled capability telemetry must describe optimized IR instead "
+         "of eliminated source operations");
+
+  unijit::jit::CodeCache cache;
+  auto publication =
+      cache.publish("capability", 1, std::move(compilation.function));
+  expect(publication.ok() && publication.handle.capabilities() != nullptr &&
+             publication.handle.capabilities()->target_key() ==
+                 baseline_report.target_key(),
+         "cache leases must retain immutable lowering telemetry");
+
+  FunctionBuilder helper_builder(1);
+  const Value helper_result =
+      helper_builder.call(sum_runtime_helper, {helper_builder.parameter(0)});
+  expect(helper_builder.set_return(helper_result).ok(),
+         "helper capability fixture must return its call result");
+  const CapabilityReport helper_report = unijit::jit::preflight_capabilities(
+      std::move(helper_builder).build(), baseline);
+  expect(helper_report.ok() &&
+             helper_report.overall_strategy == LoweringStrategy::kHelper &&
+             helper_report.operation_count(LoweringStrategy::kHelper) == 1,
+         "preflight must report explicit runtime-helper lowering");
+
+  FunctionBuilder float_builder(std::vector<ValueType>(2, ValueType::kFloat64));
+  const Value float_comparison = float_builder.float64_less_than(
+      float_builder.parameter(0), float_builder.parameter(1));
+  expect(float_builder.set_return(float_comparison).ok(),
+         "floating capability fixture must return its comparison");
+  const CapabilityReport float_report = unijit::jit::preflight_capabilities(
+      std::move(float_builder).build(), riscv64);
+  expect(float_report.ok() &&
+             (float_report.required_features &
+              unijit::jit::target_feature_bit(TargetFeature::kFp64)) != 0 &&
+             (float_report.required_features &
+              unijit::jit::target_feature_bit(TargetFeature::kRiscVFloat64)) !=
+                 0,
+         "capability telemetry must retain FP64 dependencies for comparisons "
+         "whose result type is Word");
+
+  FunctionBuilder safepoint_builder(0);
+  safepoint_builder.safepoint(3302);
+  expect(safepoint_builder.set_return(safepoint_builder.constant(7)).ok(),
+         "safepoint capability fixture must return a scalar");
+  const Function safepoint_function = std::move(safepoint_builder).build();
+  const CapabilityReport safepoint_report =
+      unijit::jit::preflight_capabilities(safepoint_function, baseline);
+  const auto safepoint_compilation = Compiler::compile(safepoint_function);
+  expect(safepoint_report.ok() && safepoint_report.requires_execution_context &&
+             safepoint_compilation.ok() &&
+             safepoint_compilation.function->requires_context(),
+         "straight-line safepoints must report and receive a managed context");
+
+  ControlFlowBuilder control_builder(1, 1);
+  const Value control_vector = control_builder.vector_splat(
+      ValueType::kI32x4, control_builder.parameter(0));
+  control_builder.store_vector(control_builder.constant(3), control_vector,
+                               memory, 3310);
+  const Value control_loaded = control_builder.load_vector(
+      control_builder.constant(3), ValueType::kI32x4, memory, 3311);
+  expect(control_builder
+             .set_return(control_builder.vector_extract_lane(control_loaded, 0))
+             .ok(),
+         "CFG capability fixture must return a vector lane");
+  const auto control_function = std::move(control_builder).build();
+  const CapabilityReport control_report =
+      unijit::jit::preflight_capabilities(control_function, riscv64);
+  expect(control_report.ok() &&
+             control_report.overall_strategy == LoweringStrategy::kScalarized &&
+             control_report.requires_execution_context,
+         "CFG preflight must use the same cross-target vector classifier");
+
+  TargetProfile malformed = baseline;
+  malformed.endianness = TargetEndianness::kBig;
+  const CapabilityReport malformed_report =
+      unijit::jit::preflight_capabilities(function, malformed);
+  expect(!malformed_report.ok() &&
+             malformed_report.overall_strategy ==
+                 LoweringStrategy::kUnsupported &&
+             malformed_report.status.code() ==
+                 unijit::StatusCode::kInvalidArgument,
+         "preflight must fail closed for malformed target profiles");
+
+  const CapabilityReport invalid_ir_report =
+      unijit::jit::preflight_capabilities(Function{}, baseline);
+  expect(!invalid_ir_report.ok() &&
+             invalid_ir_report.overall_strategy ==
+                 LoweringStrategy::kUnsupported &&
+             invalid_ir_report.status.code() == unijit::StatusCode::kInvalidIr,
+         "preflight must fail closed before classifying malformed IR");
+}
+
 void test_bounded_memory_interpreter() {
   using unijit::ir::MemoryAccessDescriptor;
   using unijit::ir::MemoryByteOrder;
@@ -7549,6 +7820,7 @@ void test_control_flow_builder_rejects_edge_arity() {
 
 int main() {
   test_target_profiles();
+  test_lowering_capability_preflight();
   test_bounded_memory_interpreter();
   test_bounded_memory_control_flow_interpreter();
   test_native_bounded_memory_matrix();
