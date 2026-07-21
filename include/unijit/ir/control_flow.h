@@ -74,6 +74,8 @@ enum class ControlOpcode : std::uint8_t {
   kStoreFloat,
   kLoadFrame,
   kStoreFrame,
+  kLoadObject,
+  kStoreObject,
 };
 
 struct ControlNode final {
@@ -86,6 +88,7 @@ struct ControlNode final {
   std::uint32_t argument_count{0};
   std::uint32_t memory_access{MemoryAccessDescriptor::kInvalidIndex};
   std::uint32_t frame_slot{FrameSlot::kInvalidId};
+  std::uint32_t trusted_object{TrustedObjectSlot::kInvalidId};
 };
 
 struct ControlEdge final {
@@ -149,6 +152,9 @@ public:
   const std::vector<FrameSlotDescriptor> &frame_slots() const noexcept {
     return frame_slots_;
   }
+  const std::vector<TrustedObjectDescriptor> &trusted_objects() const noexcept {
+    return trusted_objects_;
+  }
   const std::vector<BasicBlock> &blocks() const noexcept { return blocks_; }
 
 private:
@@ -162,6 +168,7 @@ private:
   std::size_t memory_region_count_{0};
   std::vector<MemoryAccessDescriptor> memory_accesses_;
   std::vector<FrameSlotDescriptor> frame_slots_;
+  std::vector<TrustedObjectDescriptor> trusted_objects_;
   std::vector<BasicBlock> blocks_;
 };
 
@@ -227,6 +234,12 @@ public:
   FrameSlot create_frame_slot(ValueType type, bool sensitive = false);
   Value load_frame(FrameSlot slot);
   Value store_frame(FrameSlot slot, Value value);
+  TrustedObjectSlot create_trusted_object(std::uint64_t layout_identity,
+                                          std::size_t byte_size);
+  Value load_object(TrustedObjectSlot object, std::size_t byte_offset,
+                    ValueType type);
+  Value store_object(TrustedObjectSlot object, std::size_t byte_offset,
+                     Value value);
 
   Status set_return(Value value);
   Status jump(Block target, std::vector<Value> arguments);

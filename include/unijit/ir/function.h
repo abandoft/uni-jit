@@ -8,6 +8,7 @@
 
 #include "unijit/status.h"
 #include "unijit/ir/memory.h"
+#include "unijit/ir/object.h"
 
 namespace unijit::ir {
 
@@ -86,6 +87,8 @@ enum class Opcode : std::uint8_t {
   kStoreFloat,
   kLoadFrame,
   kStoreFrame,
+  kLoadObject,
+  kStoreObject,
 };
 
 enum class ValueType : std::uint8_t {
@@ -131,6 +134,7 @@ struct Node final {
   std::uint32_t argument_count{0};
   std::uint32_t memory_access{MemoryAccessDescriptor::kInvalidIndex};
   std::uint32_t frame_slot{FrameSlot::kInvalidId};
+  std::uint32_t trusted_object{TrustedObjectSlot::kInvalidId};
 };
 
 class Function final {
@@ -155,6 +159,9 @@ class Function final {
   const std::vector<FrameSlotDescriptor>& frame_slots() const noexcept {
     return frame_slots_;
   }
+  const std::vector<TrustedObjectDescriptor>& trusted_objects() const noexcept {
+    return trusted_objects_;
+  }
   Value return_value() const noexcept { return return_value_; }
   ValueType return_type() const noexcept {
     return return_value_.valid() && return_value_.id() < nodes_.size()
@@ -177,6 +184,7 @@ class Function final {
   std::size_t memory_region_count_{0};
   std::vector<MemoryAccessDescriptor> memory_accesses_;
   std::vector<FrameSlotDescriptor> frame_slots_;
+  std::vector<TrustedObjectDescriptor> trusted_objects_;
   Value return_value_;
 };
 
@@ -244,6 +252,14 @@ class FunctionBuilder final {
   FrameSlot create_frame_slot(ValueType type, bool sensitive = false);
   Value load_frame(FrameSlot slot);
   Value store_frame(FrameSlot slot, Value value);
+  // Trusted objects are invocation-bound, non-addressable primitive layouts.
+  // The delivered field floor is one naturally aligned Word or Float64 value.
+  TrustedObjectSlot create_trusted_object(std::uint64_t layout_identity,
+                                          std::size_t byte_size);
+  Value load_object(TrustedObjectSlot object, std::size_t byte_offset,
+                    ValueType type);
+  Value store_object(TrustedObjectSlot object, std::size_t byte_offset,
+                     Value value);
   Status set_return(Value value);
 
   Function build() && noexcept;

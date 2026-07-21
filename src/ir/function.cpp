@@ -460,6 +460,58 @@ Value FunctionBuilder::store_frame(FrameSlot slot, Value value) {
   return Value{id};
 }
 
+TrustedObjectSlot FunctionBuilder::create_trusted_object(
+    std::uint64_t layout_identity, std::size_t byte_size) {
+  if (function_.trusted_objects_.size() >= TrustedObjectSlot::kInvalidId) {
+    return {};
+  }
+  const auto id =
+      static_cast<std::uint32_t>(function_.trusted_objects_.size());
+  function_.trusted_objects_.push_back(
+      TrustedObjectDescriptor{layout_identity, byte_size});
+  return TrustedObjectSlot{id};
+}
+
+Value FunctionBuilder::load_object(TrustedObjectSlot object,
+                                   std::size_t byte_offset,
+                                   ValueType type) {
+  if (function_.nodes_.size() >= Value::kInvalidId ||
+      byte_offset > static_cast<std::size_t>(
+                        std::numeric_limits<Word>::max())) {
+    return {};
+  }
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  Node node;
+  node.opcode = Opcode::kLoadObject;
+  node.immediate = static_cast<Word>(byte_offset);
+  node.type = type;
+  node.trusted_object = object.id();
+  function_.nodes_.push_back(node);
+  return Value{id};
+}
+
+Value FunctionBuilder::store_object(TrustedObjectSlot object,
+                                    std::size_t byte_offset, Value value) {
+  if (function_.nodes_.size() >= Value::kInvalidId ||
+      byte_offset > static_cast<std::size_t>(
+                        std::numeric_limits<Word>::max())) {
+    return {};
+  }
+  const ValueType type =
+      value.valid() && value.id() < function_.nodes_.size()
+          ? function_.nodes_[value.id()].type
+          : ValueType::kWord;
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  Node node;
+  node.opcode = Opcode::kStoreObject;
+  node.lhs = value;
+  node.immediate = static_cast<Word>(byte_offset);
+  node.type = type;
+  node.trusted_object = object.id();
+  function_.nodes_.push_back(node);
+  return Value{id};
+}
+
 Status FunctionBuilder::set_return(Value value) {
   if (!value.valid() || value.id() >= function_.nodes_.size()) {
     return {StatusCode::kInvalidArgument, "return value is not in the function"};

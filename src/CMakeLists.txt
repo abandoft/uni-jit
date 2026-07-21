@@ -3,6 +3,7 @@ add_library(unijit
   ir/function.cpp
   ir/interpreter.cpp
   ir/memory_access.cpp
+  ir/object_access.cpp
   ir/optimizer.cpp
   ir/verifier.cpp
   jit/compilation_scheduler.cpp

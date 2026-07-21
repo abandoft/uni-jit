@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "ir/memory_access.h"
+#include "ir/object_access.h"
 
 namespace unijit::ir {
 namespace {
@@ -64,6 +65,8 @@ bool is_binary(ControlOpcode opcode) {
   case ControlOpcode::kStoreFloat:
   case ControlOpcode::kLoadFrame:
   case ControlOpcode::kStoreFrame:
+  case ControlOpcode::kLoadObject:
+  case ControlOpcode::kStoreObject:
     return false;
   }
   return false;
@@ -101,6 +104,11 @@ bool is_memory_store(ControlOpcode opcode) {
 bool is_frame(ControlOpcode opcode) {
   return opcode == ControlOpcode::kLoadFrame ||
          opcode == ControlOpcode::kStoreFrame;
+}
+
+bool is_object(ControlOpcode opcode) {
+  return opcode == ControlOpcode::kLoadObject ||
+         opcode == ControlOpcode::kStoreObject;
 }
 
 bool valid_value_type(ValueType type) {
@@ -152,6 +160,18 @@ Status verify_impl(const ControlFlowFunction &function) {
       return invalid_control_flow(0, "CFG frame slot has an invalid type");
     }
   }
+  if (function.trusted_objects().size() > TrustedObjectSlot::kInvalidId) {
+    return invalid_control_flow(
+        0, "trusted object count exceeds the CFG index range");
+  }
+  for (const TrustedObjectDescriptor &object : function.trusted_objects()) {
+    if (object.layout_identity == 0 || object.byte_size < sizeof(Word) ||
+        object.byte_size > TrustedObjectDescriptor::kMaximumByteSize ||
+        (object.byte_size % alignof(Word)) != 0) {
+      return invalid_control_flow(
+          0, "CFG trusted object descriptor is malformed");
+    }
+  }
 
   const std::size_t no_owner = blocks.size();
   std::vector<std::size_t> owner(nodes.size(), no_owner);
@@ -186,6 +206,11 @@ Status verify_impl(const ControlFlowFunction &function) {
       if (!is_frame(node.opcode) && node.frame_slot != FrameSlot::kInvalidId) {
         return invalid_control_flow(
             value.id(), "non-frame CFG node has a frame slot");
+      }
+      if (!is_object(node.opcode) &&
+          node.trusted_object != TrustedObjectSlot::kInvalidId) {
+        return invalid_control_flow(
+            value.id(), "non-object CFG node has a trusted object");
       }
       if (instruction_index < block.parameters.size()) {
         if (block.parameters[instruction_index] != value) {
@@ -433,6 +458,35 @@ Status verify_impl(const ControlFlowFunction &function) {
                    function.value_type(node.lhs) != slot_type) {
           return invalid_control_flow(value.id(),
                                       "CFG frame store value is malformed");
+        }
+        continue;
+      }
+      if (is_object(node.opcode)) {
+        if (node.trusted_object >= function.trusted_objects().size() ||
+            node.immediate < 0 ||
+            (static_cast<std::size_t>(node.immediate) % alignof(Word)) != 0 ||
+            node.rhs.valid() || node.argument_begin != 0 ||
+            node.argument_count != 0 || !valid_value_type(node.type)) {
+          return invalid_control_flow(
+              value.id(), "CFG trusted object operation is malformed");
+        }
+        const std::size_t offset =
+            static_cast<std::size_t>(node.immediate);
+        const std::size_t byte_size =
+            function.trusted_objects()[node.trusted_object].byte_size;
+        if (offset > byte_size || sizeof(Word) > byte_size - offset) {
+          return invalid_control_flow(
+              value.id(), "CFG trusted object field is outside its layout");
+        }
+        if (node.opcode == ControlOpcode::kLoadObject) {
+          if (node.lhs.valid()) {
+            return invalid_control_flow(
+                value.id(), "CFG trusted object load has a stored value");
+          }
+        } else if (!available(node.lhs, block_index, instruction_index) ||
+                   function.value_type(node.lhs) != node.type) {
+          return invalid_control_flow(
+              value.id(), "CFG trusted object store value is malformed");
         }
         continue;
       }
@@ -1084,6 +1138,52 @@ Value ControlFlowBuilder::store_frame(FrameSlot slot, Value value) {
   return append_node(node);
 }
 
+TrustedObjectSlot ControlFlowBuilder::create_trusted_object(
+    std::uint64_t layout_identity, std::size_t byte_size) {
+  if (function_.trusted_objects_.size() >= TrustedObjectSlot::kInvalidId) {
+    return {};
+  }
+  const auto id =
+      static_cast<std::uint32_t>(function_.trusted_objects_.size());
+  function_.trusted_objects_.push_back(
+      TrustedObjectDescriptor{layout_identity, byte_size});
+  return TrustedObjectSlot{id};
+}
+
+Value ControlFlowBuilder::load_object(TrustedObjectSlot object,
+                                      std::size_t byte_offset,
+                                      ValueType type) {
+  if (byte_offset >
+      static_cast<std::size_t>(std::numeric_limits<Word>::max())) {
+    return {};
+  }
+  ControlNode node;
+  node.opcode = ControlOpcode::kLoadObject;
+  node.immediate = static_cast<Word>(byte_offset);
+  node.type = type;
+  node.trusted_object = object.id();
+  return append_node(node);
+}
+
+Value ControlFlowBuilder::store_object(TrustedObjectSlot object,
+                                       std::size_t byte_offset, Value value) {
+  if (byte_offset >
+      static_cast<std::size_t>(std::numeric_limits<Word>::max())) {
+    return {};
+  }
+  const ValueType type =
+      value.valid() && value.id() < function_.nodes_.size()
+          ? function_.nodes_[value.id()].type
+          : ValueType::kWord;
+  ControlNode node;
+  node.opcode = ControlOpcode::kStoreObject;
+  node.lhs = value;
+  node.immediate = static_cast<Word>(byte_offset);
+  node.type = type;
+  node.trusted_object = object.id();
+  return append_node(node);
+}
+
 Status
 ControlFlowBuilder::validate_edge(Block target,
                                   const std::vector<Value> &arguments) const {
@@ -1207,6 +1307,19 @@ ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
   }
 
   try {
+    std::vector<bool> trusted_object_writable(
+        function.trusted_objects().size(), false);
+    for (const ControlNode &node : function.nodes()) {
+      if (node.opcode == ControlOpcode::kStoreObject &&
+          node.trusted_object < trusted_object_writable.size()) {
+        trusted_object_writable[node.trusted_object] = true;
+      }
+    }
+    const Status object_status = detail::validate_trusted_object_bindings(
+        function.trusted_objects(), trusted_object_writable, context);
+    if (!object_status.ok()) {
+      return {object_status, 0};
+    }
     std::vector<Word> values(function.nodes().size(), 0);
     std::vector<Word> frame_values(function.frame_slots().size(), 0);
     std::vector<Word> helper_arguments;
@@ -1309,6 +1422,25 @@ ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
         } else if (node.opcode == ControlOpcode::kStoreFrame) {
           values[value.id()] = values[node.lhs.id()];
           frame_values[node.frame_slot] = values[value.id()];
+        } else if (node.opcode == ControlOpcode::kLoadObject) {
+          const detail::ObjectAccessResult result =
+              detail::load_trusted_object(
+                  TrustedObjectSlot{node.trusted_object},
+                  static_cast<std::size_t>(node.immediate), context);
+          if (!result.ok()) {
+            return {result.status, 0};
+          }
+          values[value.id()] = result.value;
+        } else if (node.opcode == ControlOpcode::kStoreObject) {
+          const detail::ObjectAccessResult result =
+              detail::store_trusted_object(
+                  TrustedObjectSlot{node.trusted_object},
+                  static_cast<std::size_t>(node.immediate),
+                  values[node.lhs.id()], context);
+          if (!result.ok()) {
+            return {result.status, 0};
+          }
+          values[value.id()] = result.value;
         } else if (node.opcode == ControlOpcode::kByteSwap) {
           values[value.id()] = byte_swap_word(
               values[node.lhs.id()], static_cast<MemoryWidth>(node.immediate));

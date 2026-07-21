@@ -67,6 +67,10 @@ bool is_frame(Opcode opcode) {
   return opcode == Opcode::kLoadFrame || opcode == Opcode::kStoreFrame;
 }
 
+bool is_object(Opcode opcode) {
+  return opcode == Opcode::kLoadObject || opcode == Opcode::kStoreObject;
+}
+
 bool valid_value_type(ValueType type) {
   return type == ValueType::kWord || type == ValueType::kFloat64;
 }
@@ -110,6 +114,18 @@ Status verify(const Function& function) {
       return {StatusCode::kInvalidIr, "frame slot has an invalid value type"};
     }
   }
+  if (function.trusted_objects().size() > TrustedObjectSlot::kInvalidId) {
+    return {StatusCode::kInvalidIr,
+            "trusted object count exceeds the IR index range"};
+  }
+  for (const TrustedObjectDescriptor& object : function.trusted_objects()) {
+    if (object.layout_identity == 0 || object.byte_size < sizeof(Word) ||
+        object.byte_size > TrustedObjectDescriptor::kMaximumByteSize ||
+        (object.byte_size % alignof(Word)) != 0) {
+      return {StatusCode::kInvalidIr,
+              "trusted object descriptor is malformed"};
+    }
+  }
 
   std::size_t expected_call_argument = 0;
   std::size_t expected_memory_access = 0;
@@ -122,6 +138,10 @@ Status verify(const Function& function) {
     }
     if (!is_frame(node.opcode) && node.frame_slot != FrameSlot::kInvalidId) {
       return invalid_node(index, "non-frame node has a frame slot");
+    }
+    if (!is_object(node.opcode) &&
+        node.trusted_object != TrustedObjectSlot::kInvalidId) {
+      return invalid_node(index, "non-object node has a trusted object");
     }
     if (index < function.parameter_count()) {
       if (node.opcode != Opcode::kParameter ||
@@ -223,6 +243,33 @@ Status verify(const Function& function) {
       } else if (!node.lhs.valid() || node.lhs.id() >= index ||
                  nodes[node.lhs.id()].type != slot_type) {
         return invalid_node(index, "frame store value is malformed");
+      }
+      continue;
+    }
+    if (is_object(node.opcode)) {
+      if (node.trusted_object >= function.trusted_objects().size() ||
+          node.immediate < 0 ||
+          (static_cast<std::size_t>(node.immediate) % alignof(Word)) != 0 ||
+          node.rhs.valid() || node.argument_begin != 0 ||
+          node.argument_count != 0 || !valid_value_type(node.type)) {
+        return invalid_node(index, "trusted object operation is malformed");
+      }
+      const std::size_t offset = static_cast<std::size_t>(node.immediate);
+      const std::size_t byte_size =
+          function.trusted_objects()[node.trusted_object].byte_size;
+      if (offset > byte_size || sizeof(Word) > byte_size - offset) {
+        return invalid_node(index,
+                            "trusted object field is outside its layout");
+      }
+      if (node.opcode == Opcode::kLoadObject) {
+        if (node.lhs.valid()) {
+          return invalid_node(index,
+                              "trusted object load has a stored value");
+        }
+      } else if (!node.lhs.valid() || node.lhs.id() >= index ||
+                 nodes[node.lhs.id()].type != node.type) {
+        return invalid_node(index,
+                            "trusted object store value is malformed");
       }
       continue;
     }
