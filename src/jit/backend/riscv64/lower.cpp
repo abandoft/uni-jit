@@ -201,6 +201,45 @@ class Assembler final {
     return status;
   }
 
+  Status floor_arithmetic(int destination, int lhs, int rhs, bool modulo) {
+    move_register(kScratch0, lhs);
+    move_register(kScratch1, rhs);
+    move_register(destination, kScratch0);
+    const std::size_t zero_divisor = branch_zero(kScratch1);
+    emit_r(0x01, kScratch1, kScratch0, 4, kScratch0, 0x33);
+    emit_r(0x01, kScratch1, destination, 6, destination, 0x33);
+    const std::size_t exact = branch_zero(destination);
+    bitwise_xor(kScratch2, destination, kScratch1);
+    const std::size_t same_sign = branch_nonnegative(kScratch2);
+    if (modulo) {
+      add(destination, destination, kScratch1);
+    } else {
+      emit_i(-1, kScratch0, 0, kScratch0, 0x13);
+    }
+    const std::size_t result = size();
+    if (!modulo) {
+      move_register(destination, kScratch0);
+    }
+    const std::size_t normal_done = branch();
+    const std::size_t zero = size();
+    move_register(destination, kZero);
+    const std::size_t end = size();
+
+    Status status = patch_conditional_branch(zero_divisor, zero, kZero,
+                                             kScratch1, 0);
+    if (status.ok()) {
+      status = patch_conditional_branch(exact, result, kZero, destination, 0);
+    }
+    if (status.ok()) {
+      status = patch_conditional_branch(same_sign, result, kZero, kScratch2,
+                                        5);
+    }
+    if (status.ok()) {
+      status = patch_branch(normal_done, end, false);
+    }
+    return status;
+  }
+
   void compare(int destination, int lhs, int rhs, bool or_equal) {
     if (or_equal) {
       emit_r(0x00, lhs, rhs, 2, destination, 0x33);
@@ -242,6 +281,12 @@ class Assembler final {
     return offset;
   }
 
+  std::size_t branch_nonnegative(int source) {
+    const std::size_t offset = buffer_.size();
+    emit_b(0, kZero, source, 5, 0x63);
+    return offset;
+  }
+
   Status patch_conditional_branch(std::size_t offset, std::size_t target,
                                   int rhs, int lhs, int function) {
     const std::int64_t delta =
@@ -261,7 +306,7 @@ class Assembler final {
   }
 
   Status patch_branch(std::size_t offset, std::size_t target,
-                      bool conditional) {
+                      bool conditional, int source = kScratch0) {
     const std::int64_t delta =
         static_cast<std::int64_t>(target) - static_cast<std::int64_t>(offset);
     if ((delta & 1) != 0) {
@@ -274,7 +319,7 @@ class Assembler final {
                 "RISC-V conditional branch exceeds its encoding range"};
       }
       buffer_.patch_u32(offset, encode_b(static_cast<std::int32_t>(delta),
-                                         kZero, kScratch0, 1, 0x63));
+                                         kZero, source, 1, 0x63));
     } else {
       if (delta < -(std::int64_t{1} << 20) ||
           delta > (std::int64_t{1} << 20) - 2) {
@@ -590,6 +635,7 @@ LoweringResult lower_impl(const ir::Function& function,
           std::max(maximum_call_arguments,
                    static_cast<std::size_t>(node.argument_count));
     } else if (node.opcode == ir::Opcode::kSafepoint ||
+               node.opcode == ir::Opcode::kGuardWordNonzero ||
                node.opcode == ir::Opcode::kGuardFloatNonzero) {
       has_context_operations = true;
     }
@@ -635,6 +681,7 @@ LoweringResult lower_impl(const ir::Function& function,
     const std::vector<ir::Value>& live_values =
         stack_map_liveness.live_values_by_node[index];
     if (node.opcode == ir::Opcode::kSafepoint ||
+        node.opcode == ir::Opcode::kGuardWordNonzero ||
         node.opcode == ir::Opcode::kGuardFloatNonzero) {
       spill_straight_stack_map_values(&assembler, function, allocation,
                                       live_values, stack_map_base);
@@ -696,14 +743,19 @@ LoweringResult lower_impl(const ir::Function& function,
       case ir::Opcode::kBitwiseAnd:
       case ir::Opcode::kBitwiseOr:
       case ir::Opcode::kBitwiseXor:
-      case ir::Opcode::kShiftLeft: {
+      case ir::Opcode::kShiftLeft:
+      case ir::Opcode::kFloorDivide:
+      case ir::Opcode::kFloorModulo: {
         const int lhs = load_operand(
             &assembler, allocation.locations[node.lhs.id()], kScratch0);
         const int rhs = load_operand(
             &assembler, allocation.locations[node.rhs.id()], kScratch1);
-        const int target = destination.in_register()
-                               ? physical_register(destination)
-                               : kScratch0;
+        const bool is_floor = node.opcode == ir::Opcode::kFloorDivide ||
+                              node.opcode == ir::Opcode::kFloorModulo;
+        const int target =
+            destination.in_register()
+                ? physical_register(destination)
+                : (is_floor ? kArgumentAndReturn : kScratch0);
         if (node.opcode == ir::Opcode::kAdd) {
           assembler.add(target, lhs, rhs);
         } else if (node.opcode == ir::Opcode::kSubtract) {
@@ -718,6 +770,12 @@ LoweringResult lower_impl(const ir::Function& function,
           const Status shift_status = assembler.shift_left(target, lhs, rhs);
           if (!shift_status.ok()) {
             return {shift_status, {}, 0};
+          }
+        } else if (is_floor) {
+          const Status floor_status = assembler.floor_arithmetic(
+              target, lhs, rhs, node.opcode == ir::Opcode::kFloorModulo);
+          if (!floor_status.ok()) {
+            return {floor_status, {}, 0};
           }
         } else {
           assembler.bitwise_xor(target, lhs, rhs);
@@ -852,13 +910,25 @@ LoweringResult lower_impl(const ir::Function& function,
         restore_live_across_call(&assembler, function, allocation, index);
         break;
       }
+      case ir::Opcode::kGuardWordNonzero:
       case ir::Opcode::kGuardFloatNonzero: {
-        const int source = load_float_operand(
-            &assembler, allocation.locations[node.lhs.id()], kFloatScratch0);
-        assembler.move_float_to_word(kScratch0, source);
-        assembler.move_register(kScratch1, kScratch0);
-        assembler.add(kScratch0, kScratch0, kScratch0);
-        const std::size_t nonzero = assembler.branch_nonzero(kScratch0);
+        std::size_t nonzero = 0;
+        int nonzero_source = kScratch0;
+        if (node.opcode == ir::Opcode::kGuardWordNonzero) {
+          const int source = load_operand(
+              &assembler, allocation.locations[node.lhs.id()], kScratch0);
+          assembler.move_register(kScratch1, source);
+          nonzero_source = kScratch1;
+          nonzero = assembler.branch_nonzero(kScratch1);
+        } else {
+          const int source = load_float_operand(
+              &assembler, allocation.locations[node.lhs.id()],
+              kFloatScratch0);
+          assembler.move_float_to_word(kScratch0, source);
+          assembler.move_register(kScratch1, kScratch0);
+          assembler.add(kScratch0, kScratch0, kScratch0);
+          nonzero = assembler.branch_nonzero(kScratch0);
+        }
 
         assembler.load(kScratch0, kStackPointer,
                        context_slot * sizeof(ir::Word));
@@ -894,7 +964,7 @@ LoweringResult lower_impl(const ir::Function& function,
           return {context_status, {}, 0};
         }
         const Status guard_status =
-            assembler.patch_branch(nonzero, resume, true);
+            assembler.patch_branch(nonzero, resume, true, nonzero_source);
         if (!guard_status.ok()) {
           return {guard_status, {}, 0};
         }
@@ -1276,6 +1346,7 @@ LoweringResult lower_control_flow_impl(
       function.nodes().begin(), function.nodes().end(),
       [](const ir::ControlNode& node) {
         return node.opcode == ir::ControlOpcode::kSafepoint ||
+               node.opcode == ir::ControlOpcode::kGuardWordNonzero ||
                node.opcode == ir::ControlOpcode::kGuardFloatNonzero;
       });
   std::size_t maximum_call_arguments = 0;
@@ -1355,13 +1426,20 @@ LoweringResult lower_control_flow_impl(
           destination_is_float
               ? control_float_register(allocation, value, block_index)
               : -1;
-      const int word_destination =
-          allocated_word >= 0 ? allocated_word : kScratch0;
+      const bool floor_destination =
+          node.opcode == ir::ControlOpcode::kFloorDivide ||
+          node.opcode == ir::ControlOpcode::kFloorModulo;
+      const int word_destination = allocated_word >= 0
+                                       ? allocated_word
+                                       : (floor_destination
+                                              ? kArgumentAndReturn
+                                              : kScratch0);
       const int float_destination =
           allocated_float >= 0 ? allocated_float : kFloatScratch0;
       const std::vector<ir::Value>& live_values =
           stack_map_liveness.live_values_by_node[value.id()];
       if (node.opcode == ir::ControlOpcode::kSafepoint ||
+          node.opcode == ir::ControlOpcode::kGuardWordNonzero ||
           node.opcode == ir::ControlOpcode::kGuardFloatNonzero) {
         spill_control_stack_map_values(&assembler, function, allocation,
                                        live_values, block_index);
@@ -1462,13 +1540,25 @@ LoweringResult lower_control_flow_impl(
           restore_control_live_across_call(&assembler, function, allocation,
                                            value, block_index);
           break;
+        case ir::ControlOpcode::kGuardWordNonzero:
         case ir::ControlOpcode::kGuardFloatNonzero: {
-          const int source = load_control_float(
-              &assembler, allocation, node.lhs, block_index, kFloatScratch0);
-          assembler.move_float_to_word(kScratch0, source);
-          assembler.move_register(kScratch1, kScratch0);
-          assembler.add(kScratch0, kScratch0, kScratch0);
-          const std::size_t nonzero = assembler.branch_nonzero(kScratch0);
+          std::size_t nonzero = 0;
+          int nonzero_source = kScratch0;
+          if (node.opcode == ir::ControlOpcode::kGuardWordNonzero) {
+            const int source = load_control_word(
+                &assembler, allocation, node.lhs, block_index, kScratch0);
+            assembler.move_register(kScratch1, source);
+            nonzero_source = kScratch1;
+            nonzero = assembler.branch_nonzero(kScratch1);
+          } else {
+            const int source = load_control_float(
+                &assembler, allocation, node.lhs, block_index,
+                kFloatScratch0);
+            assembler.move_float_to_word(kScratch0, source);
+            assembler.move_register(kScratch1, kScratch0);
+            assembler.add(kScratch0, kScratch0, kScratch0);
+            nonzero = assembler.branch_nonzero(kScratch0);
+          }
 
           assembler.load(kScratch0, kStackPointer,
                          context_slot * sizeof(ir::Word));
@@ -1504,7 +1594,7 @@ LoweringResult lower_control_flow_impl(
             return {context_status, {}, 0};
           }
           const Status guard_status =
-              assembler.patch_branch(nonzero, resume, true);
+              assembler.patch_branch(nonzero, resume, true, nonzero_source);
           if (!guard_status.ok()) {
             return {guard_status, {}, 0};
           }
@@ -1659,6 +1749,8 @@ LoweringResult lower_control_flow_impl(
         case ir::ControlOpcode::kBitwiseOr:
         case ir::ControlOpcode::kBitwiseXor:
         case ir::ControlOpcode::kShiftLeft:
+        case ir::ControlOpcode::kFloorDivide:
+        case ir::ControlOpcode::kFloorModulo:
         case ir::ControlOpcode::kLessThan:
         case ir::ControlOpcode::kLessEqual:
           const int lhs = load_control_word(
@@ -1682,6 +1774,14 @@ LoweringResult lower_control_flow_impl(
                 assembler.shift_left(word_destination, lhs, rhs);
             if (!shift_status.ok()) {
               return {shift_status, {}, 0};
+            }
+          } else if (node.opcode == ir::ControlOpcode::kFloorDivide ||
+                     node.opcode == ir::ControlOpcode::kFloorModulo) {
+            const Status floor_status = assembler.floor_arithmetic(
+                word_destination, lhs, rhs,
+                node.opcode == ir::ControlOpcode::kFloorModulo);
+            if (!floor_status.ok()) {
+              return {floor_status, {}, 0};
             }
           } else {
             assembler.compare(word_destination, lhs, rhs,
