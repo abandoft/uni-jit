@@ -225,6 +225,50 @@ for _, values in ipairs(shift_cases) do
 end
 checkpoint("integer shifts")
 
+local floor_cases = {
+  {0, 1}, {1, 1}, {-1, 1}, {17, 5}, {-17, 5},
+  {17, -5}, {-17, -5}, {math.mininteger, -1},
+  {math.mininteger, 3}, {math.maxinteger, -7},
+}
+local floor_divide = function(lhs, rhs)
+  return lhs // rhs
+end
+local floor_modulo = function(lhs, rhs)
+  return lhs % rhs
+end
+local native_floor_divide = compare(floor_divide, floor_cases)
+local native_floor_modulo = compare(floor_modulo, floor_cases)
+compare(function(value)
+  return value // -7
+end, integer_unary_cases)
+compare(function(value)
+  return value % -7
+end, integer_unary_cases)
+for _ = 1, 64 do
+  assert(native_floor_divide(-17, 5) == -4)
+  assert(native_floor_modulo(-17, 5) == 3)
+end
+assert(unijit.wait(native_floor_divide, 5000))
+assert(unijit.wait(native_floor_modulo, 5000))
+assert(unijit.stats(native_floor_divide).active_tier == "optimized")
+assert(unijit.stats(native_floor_modulo).active_tier == "optimized")
+for _, values in ipairs(floor_cases) do
+  assert(native_floor_divide(table.unpack(values)) ==
+         floor_divide(table.unpack(values)))
+  assert(native_floor_modulo(table.unpack(values)) ==
+         floor_modulo(table.unpack(values)))
+end
+local floor_ok, floor_message = pcall(native_floor_divide, 7, 0)
+assert(not floor_ok and tostring(floor_message):find("divide by zero"))
+floor_ok, floor_message = pcall(native_floor_modulo, 7, 0)
+assert(not floor_ok and tostring(floor_message):find("n%%0"))
+local native_constant_zero = unijit.compile(function(value)
+  return value // 0
+end)
+floor_ok, floor_message = pcall(native_constant_zero, 7)
+assert(not floor_ok and tostring(floor_message):find("divide by zero"))
+checkpoint("integer floor arithmetic")
+
 compare(function()
   return 17
 end, {{}})
@@ -502,6 +546,34 @@ for _, values in ipairs(shift_loop_cases) do
   assert(native_shift_loop(table.unpack(values)) ==
          shift_loop(table.unpack(values)))
 end
+
+local floor_loop = function(count, seed, divisor)
+  local value = seed
+  for index = 1, count do
+    value = (value // divisor) + (index % 7)
+  end
+  return value
+end
+local native_floor_loop = unijit.compile(floor_loop)
+local floor_loop_cases = {
+  {0, -123, 5}, {1, -123, 5}, {17, -1234567, 5},
+  {33, math.mininteger, -7}, {71, math.maxinteger, 11},
+}
+for _, values in ipairs(floor_loop_cases) do
+  assert(native_floor_loop(table.unpack(values)) ==
+         floor_loop(table.unpack(values)))
+end
+assert(native_floor_loop(10000, math.mininteger, 7) ==
+       floor_loop(10000, math.mininteger, 7))
+assert(unijit.wait(native_floor_loop, 5000))
+assert(unijit.stats(native_floor_loop).active_tier == "optimized")
+for _, values in ipairs(floor_loop_cases) do
+  assert(native_floor_loop(table.unpack(values)) ==
+         floor_loop(table.unpack(values)))
+end
+floor_ok, floor_message = pcall(native_floor_loop, 1, 7, 0)
+assert(not floor_ok and tostring(floor_message):find("divide by zero"))
+checkpoint("integer floor loop")
 
 checkpoint("numeric loops")
 
@@ -850,6 +922,10 @@ native_reverse_parameter_start_sum = nil
 native_parameter_step_sum = nil
 native_shift_left = nil
 native_shift_loop = nil
+native_floor_divide = nil
+native_floor_modulo = nil
+native_constant_zero = nil
+native_floor_loop = nil
 native_guarded_body_sum = nil
 native_guarded_break_sum = nil
 precise_guarded_break_sum = nil
