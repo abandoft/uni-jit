@@ -71,10 +71,10 @@ for lowering scratch. Windows retains the common volatile XMM1–XMM4 floor;
 using XMM6–XMM15 there requires target-specific nonvolatile save tracking.
 RV64 uses its existing caller-clobbered floating-point pool. These scalar
 decisions are prerequisites for SIMD but do not count as vector-IR delivery.
-CFG allocation lets a final-use Float64 left operand donate its physical
-register to the result, which maps recurrent SSA arithmetic to destructive
-two-address SSE2 instructions without an avoidable move while remaining valid
-for the three-address AArch64 and RISC-V lowerings.
+The x86-64 backend asks CFG allocation to let a final-use Float64 left operand
+donate its physical register to the result, which maps recurrent SSA arithmetic
+to destructive two-address SSE2 instructions without an avoidable move.
+AArch64 and RISC-V retain their ordinary three-address allocation policy.
 
 Qualification must force more simultaneously live scalar/vector values than
 each target's volatile pool, cross CFG edges and helper calls, and verify both

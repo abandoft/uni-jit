@@ -205,7 +205,8 @@ RegisterAllocation allocate_impl(const ir::Function& function,
 ControlFlowRegisterAllocation allocate_control_flow_impl(
     const ir::ControlFlowFunction& function, std::size_t word_register_count,
     std::size_t float_register_count,
-    const StackMapRequirements& requirements) {
+    const StackMapRequirements& requirements,
+    bool reuse_final_float_lhs) {
   if (word_register_count == 0 || float_register_count == 0) {
     return {{StatusCode::kInvalidArgument,
              "control-flow allocation requires Word and Float64 registers"},
@@ -394,7 +395,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
           node.opcode == ir::ControlOpcode::kFloatMultiply ||
           node.opcode == ir::ControlOpcode::kFloatDivide ||
           node.opcode == ir::ControlOpcode::kFloatNegate;
-      if (can_reuse_float_lhs && node.lhs.valid() &&
+      if (reuse_final_float_lhs && can_reuse_float_lhs && node.lhs.valid() &&
           owners[node.lhs.id()] == block_index) {
         const std::size_t lhs_position = positions[node.lhs.id()];
         const auto lhs_iterator =
@@ -852,10 +853,12 @@ RegisterAllocation allocate_linear_scan(const ir::Function& function,
 ControlFlowRegisterAllocation allocate_control_flow_registers(
     const ir::ControlFlowFunction& function, std::size_t word_register_count,
     std::size_t float_register_count,
-    const StackMapRequirements& requirements) {
+    const StackMapRequirements& requirements,
+    bool reuse_final_float_lhs) {
   try {
     return allocate_control_flow_impl(function, word_register_count,
-                                      float_register_count, requirements);
+                                      float_register_count, requirements,
+                                      reuse_final_float_lhs);
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate control-flow register state"},

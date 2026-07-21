@@ -1483,7 +1483,7 @@ LoweringResult lower_control_flow_impl(
   }
   ControlFlowRegisterAllocation allocation = allocate_control_flow_registers(
       function, kAllocationRegisters.size(), kFloatAllocationRegisters.size(),
-      requirements);
+      requirements, true);
   if (!allocation.status.ok()) {
     return {allocation.status, {}, 0, {}};
   }

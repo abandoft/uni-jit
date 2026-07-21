@@ -72,7 +72,8 @@ RegisterAllocation allocate_linear_scan(const ir::Function& function,
 ControlFlowRegisterAllocation allocate_control_flow_registers(
     const ir::ControlFlowFunction& function, std::size_t word_register_count,
     std::size_t float_register_count,
-    const StackMapRequirements& requirements);
+    const StackMapRequirements& requirements,
+    bool reuse_final_float_lhs = false);
 
 ControlFlowEdgeMoves plan_control_flow_edge_moves(
     const ir::ControlFlowFunction& function, const ir::ControlEdge& edge,

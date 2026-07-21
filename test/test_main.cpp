@@ -4932,7 +4932,7 @@ void test_control_flow_float64_lhs_register_reuse() {
   const auto allocation =
       unijit::jit::detail::allocate_control_flow_registers(
           function, 1, 2,
-          unijit::jit::detail::StackMapRequirements{});
+          unijit::jit::detail::StackMapRequirements{}, true);
   expect(allocation.status.ok() &&
              allocation.register_indices[lhs.id()] ==
                  allocation.register_indices[sum.id()] &&
