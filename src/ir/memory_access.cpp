@@ -6,12 +6,6 @@
 namespace unijit::ir::detail {
 namespace {
 
-struct ResolvedAccess final {
-  Status status;
-  std::uint8_t* address{nullptr};
-  std::size_t width{0};
-};
-
 std::uint64_t word_bits(Word value) noexcept {
   std::uint64_t bits = 0;
   std::memcpy(&bits, &value, sizeof(bits));
@@ -40,10 +34,10 @@ MemoryAccessResult access_failure(runtime::ExecutionContext* context,
   return {{StatusCode::kRuntimeExit, message, site}, 0};
 }
 
-ResolvedAccess resolve(const MemoryAccessDescriptor& access,
-                       Word byte_offset, std::size_t site,
-                       runtime::ExecutionContext* context,
-                       bool store) noexcept {
+ResolvedMemoryAccess resolve(const MemoryAccessDescriptor &access,
+                             Word byte_offset, std::size_t site,
+                             runtime::ExecutionContext *context,
+                             bool store) noexcept {
   if (context == nullptr || context->memory_regions() == nullptr ||
       access.region >= context->memory_region_count()) {
     return {access_failure(context, site, byte_offset,
@@ -108,10 +102,17 @@ bool little_endian(MemoryByteOrder order) noexcept {
 
 }  // namespace
 
+ResolvedMemoryAccess
+resolve_bounded_memory(const MemoryAccessDescriptor &access, Word byte_offset,
+                       std::size_t site, runtime::ExecutionContext *context,
+                       bool store) noexcept {
+  return resolve(access, byte_offset, site, context, store);
+}
+
 MemoryAccessResult load_bounded_word(
     const MemoryAccessDescriptor& access, Word byte_offset, std::size_t site,
     runtime::ExecutionContext* context) noexcept {
-  const ResolvedAccess resolved =
+  const ResolvedMemoryAccess resolved =
       resolve(access, byte_offset, site, context, false);
   if (!resolved.status.ok()) {
     return {resolved.status, 0};
@@ -137,7 +138,7 @@ MemoryAccessResult load_bounded_word(
 MemoryAccessResult store_bounded_word(
     const MemoryAccessDescriptor& access, Word byte_offset, Word value,
     std::size_t site, runtime::ExecutionContext* context) noexcept {
-  const ResolvedAccess resolved =
+  const ResolvedMemoryAccess resolved =
       resolve(access, byte_offset, site, context, true);
   if (!resolved.status.ok()) {
     return {resolved.status, 0};
@@ -186,7 +187,7 @@ VectorMemoryAccessResult
 load_bounded_vector(const MemoryAccessDescriptor &access, ValueType type,
                     Word byte_offset, std::size_t site,
                     runtime::ExecutionContext *context) noexcept {
-  const ResolvedAccess resolved =
+  const ResolvedMemoryAccess resolved =
       resolve(access, byte_offset, site, context, false);
   if (!resolved.status.ok()) {
     return {resolved.status, {}};
@@ -210,7 +211,7 @@ VectorMemoryAccessResult
 store_bounded_vector(const MemoryAccessDescriptor &access, ValueType type,
                      Word byte_offset, const Vector128 &value, std::size_t site,
                      runtime::ExecutionContext *context) noexcept {
-  const ResolvedAccess resolved =
+  const ResolvedMemoryAccess resolved =
       resolve(access, byte_offset, site, context, true);
   if (!resolved.status.ok()) {
     return {resolved.status, {}};

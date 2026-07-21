@@ -112,8 +112,22 @@ void visit_control_operands(const ir::ControlFlowFunction& function,
     case ir::ControlOpcode::kStoreWord:
     case ir::ControlOpcode::kStoreFloat:
     case ir::ControlOpcode::kStoreVector:
+    case ir::ControlOpcode::kAtomicStore:
+    case ir::ControlOpcode::kAtomicExchange:
+    case ir::ControlOpcode::kAtomicFetchAdd:
+    case ir::ControlOpcode::kAtomicFetchAnd:
+    case ir::ControlOpcode::kAtomicFetchOr:
+    case ir::ControlOpcode::kAtomicFetchXor:
       visitor(node.lhs);
       visitor(node.rhs);
+      break;
+    case ir::ControlOpcode::kAtomicCompareExchange:
+      visitor(node.lhs);
+      visitor(node.rhs);
+      visitor(node.auxiliary);
+      break;
+    case ir::ControlOpcode::kAtomicLoad:
+      visitor(node.lhs);
       break;
     case ir::ControlOpcode::kStoreFrame:
     case ir::ControlOpcode::kStoreObject:
@@ -129,6 +143,7 @@ void visit_control_operands(const ir::ControlFlowFunction& function,
     case ir::ControlOpcode::kBlockParameter:
     case ir::ControlOpcode::kConstant:
     case ir::ControlOpcode::kSafepoint:
+    case ir::ControlOpcode::kAtomicFence:
     case ir::ControlOpcode::kLoadFrame:
     case ir::ControlOpcode::kLoadObject:
     case ir::ControlOpcode::kVectorConstant:
@@ -423,8 +438,22 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kStoreWord:
         case ir::ControlOpcode::kStoreFloat:
         case ir::ControlOpcode::kStoreVector:
+        case ir::ControlOpcode::kAtomicStore:
+        case ir::ControlOpcode::kAtomicExchange:
+        case ir::ControlOpcode::kAtomicFetchAdd:
+        case ir::ControlOpcode::kAtomicFetchAnd:
+        case ir::ControlOpcode::kAtomicFetchOr:
+        case ir::ControlOpcode::kAtomicFetchXor:
           note_local_use(node.lhs);
           note_local_use(node.rhs);
+          break;
+        case ir::ControlOpcode::kAtomicCompareExchange:
+          note_local_use(node.lhs);
+          note_local_use(node.rhs);
+          note_local_use(node.auxiliary);
+          break;
+        case ir::ControlOpcode::kAtomicLoad:
+          note_local_use(node.lhs);
           break;
         case ir::ControlOpcode::kStoreFrame:
         case ir::ControlOpcode::kStoreObject:
@@ -442,6 +471,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kBlockParameter:
         case ir::ControlOpcode::kConstant:
         case ir::ControlOpcode::kSafepoint:
+        case ir::ControlOpcode::kAtomicFence:
         case ir::ControlOpcode::kLoadFrame:
         case ir::ControlOpcode::kLoadObject:
         case ir::ControlOpcode::kVectorConstant:
@@ -649,8 +679,22 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kStoreWord:
         case ir::ControlOpcode::kStoreFloat:
         case ir::ControlOpcode::kStoreVector:
+        case ir::ControlOpcode::kAtomicStore:
+        case ir::ControlOpcode::kAtomicExchange:
+        case ir::ControlOpcode::kAtomicFetchAdd:
+        case ir::ControlOpcode::kAtomicFetchAnd:
+        case ir::ControlOpcode::kAtomicFetchOr:
+        case ir::ControlOpcode::kAtomicFetchXor:
           note_nonlocal_use(block_index, node.lhs);
           note_nonlocal_use(block_index, node.rhs);
+          break;
+        case ir::ControlOpcode::kAtomicCompareExchange:
+          note_nonlocal_use(block_index, node.lhs);
+          note_nonlocal_use(block_index, node.rhs);
+          note_nonlocal_use(block_index, node.auxiliary);
+          break;
+        case ir::ControlOpcode::kAtomicLoad:
+          note_nonlocal_use(block_index, node.lhs);
           break;
         case ir::ControlOpcode::kStoreFrame:
         case ir::ControlOpcode::kStoreObject:
@@ -673,6 +717,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kLoadObject:
         case ir::ControlOpcode::kVectorConstant:
         case ir::ControlOpcode::kSafepoint:
+        case ir::ControlOpcode::kAtomicFence:
           break;
       }
       if (node.opcode == ir::ControlOpcode::kSafepoint ||

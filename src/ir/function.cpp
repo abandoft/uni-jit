@@ -465,6 +465,117 @@ Value FunctionBuilder::store_vector(Value byte_offset, Value value,
   return Value{id};
 }
 
+Value FunctionBuilder::append_atomic(Opcode opcode, Value byte_offset,
+                                     Value value, Value auxiliary,
+                                     AtomicAccessDescriptor access,
+                                     std::size_t site) {
+  if (function_.nodes_.size() >= Value::kInvalidId ||
+      function_.atomic_accesses_.size() >=
+          AtomicAccessDescriptor::kInvalidIndex ||
+      site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {
+    return {};
+  }
+  const auto access_index =
+      static_cast<std::uint32_t>(function_.atomic_accesses_.size());
+  function_.atomic_accesses_.push_back(access);
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  Node node;
+  node.opcode = opcode;
+  node.lhs = byte_offset;
+  node.rhs = value;
+  node.immediate = static_cast<Word>(site);
+  node.auxiliary = auxiliary;
+  node.atomic_access = access_index;
+  function_.nodes_.push_back(node);
+  return Value{id};
+}
+
+Value FunctionBuilder::atomic_load(Value byte_offset,
+                                   AtomicAccessDescriptor access,
+                                   std::size_t site) {
+  return append_atomic(Opcode::kAtomicLoad, byte_offset, {}, {}, access, site);
+}
+
+Value FunctionBuilder::atomic_store(Value byte_offset, Value value,
+                                    AtomicAccessDescriptor access,
+                                    std::size_t site) {
+  return append_atomic(Opcode::kAtomicStore, byte_offset, value, {}, access,
+                       site);
+}
+
+Value FunctionBuilder::atomic_exchange(Value byte_offset, Value value,
+                                       AtomicAccessDescriptor access,
+                                       std::size_t site) {
+  return append_atomic(Opcode::kAtomicExchange, byte_offset, value, {}, access,
+                       site);
+}
+
+AtomicCompareExchangeResult FunctionBuilder::atomic_compare_exchange(
+    Value byte_offset, Value expected, Value desired,
+    AtomicAccessDescriptor access, std::size_t site) {
+  Value normalized_expected = expected;
+  const std::size_t width = memory_width_bytes(access.memory.width);
+  if (width != 0 && width < sizeof(Word)) {
+    const std::size_t bits = width * 8U;
+    normalized_expected = bitwise_and(
+        expected,
+        constant(static_cast<Word>((UINT64_C(1) << bits) - UINT64_C(1))));
+  }
+  const Value observed = atomic_compare_exchange_observed(
+      byte_offset, normalized_expected, desired, access, site);
+  if (!observed.valid()) {
+    return {};
+  }
+  return {observed, equal(observed, normalized_expected)};
+}
+
+Value FunctionBuilder::atomic_compare_exchange_observed(
+    Value byte_offset, Value expected, Value desired,
+    AtomicAccessDescriptor access, std::size_t site) {
+  return append_atomic(Opcode::kAtomicCompareExchange, byte_offset, expected,
+                       desired, access, site);
+}
+
+Value FunctionBuilder::atomic_fetch_add(Value byte_offset, Value value,
+                                        AtomicAccessDescriptor access,
+                                        std::size_t site) {
+  return append_atomic(Opcode::kAtomicFetchAdd, byte_offset, value, {}, access,
+                       site);
+}
+
+Value FunctionBuilder::atomic_fetch_and(Value byte_offset, Value value,
+                                        AtomicAccessDescriptor access,
+                                        std::size_t site) {
+  return append_atomic(Opcode::kAtomicFetchAnd, byte_offset, value, {}, access,
+                       site);
+}
+
+Value FunctionBuilder::atomic_fetch_or(Value byte_offset, Value value,
+                                       AtomicAccessDescriptor access,
+                                       std::size_t site) {
+  return append_atomic(Opcode::kAtomicFetchOr, byte_offset, value, {}, access,
+                       site);
+}
+
+Value FunctionBuilder::atomic_fetch_xor(Value byte_offset, Value value,
+                                        AtomicAccessDescriptor access,
+                                        std::size_t site) {
+  return append_atomic(Opcode::kAtomicFetchXor, byte_offset, value, {}, access,
+                       site);
+}
+
+Value FunctionBuilder::atomic_fence(AtomicMemoryOrder order) {
+  if (function_.nodes_.size() >= Value::kInvalidId) {
+    return {};
+  }
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  Node node;
+  node.opcode = Opcode::kAtomicFence;
+  node.immediate = static_cast<Word>(order);
+  function_.nodes_.push_back(node);
+  return Value{id};
+}
+
 FrameSlot FunctionBuilder::create_frame_slot(ValueType type, bool sensitive) {
   if (function_.frame_slots_.size() >= FrameSlot::kInvalidId) {
     return {};

@@ -70,6 +70,15 @@ bool is_vector_memory(Opcode opcode) {
   return opcode == Opcode::kLoadVector || opcode == Opcode::kStoreVector;
 }
 
+bool is_atomic_access(Opcode opcode) {
+  return opcode == Opcode::kAtomicLoad || opcode == Opcode::kAtomicStore ||
+         opcode == Opcode::kAtomicExchange ||
+         opcode == Opcode::kAtomicCompareExchange ||
+         opcode == Opcode::kAtomicFetchAdd ||
+         opcode == Opcode::kAtomicFetchAnd ||
+         opcode == Opcode::kAtomicFetchOr || opcode == Opcode::kAtomicFetchXor;
+}
+
 bool is_frame(Opcode opcode) {
   return opcode == Opcode::kLoadFrame || opcode == Opcode::kStoreFrame;
 }
@@ -136,8 +145,8 @@ bool valid_byte_order(MemoryByteOrder order) {
 
 bool is_runtime_exit(Opcode opcode) {
   return opcode == Opcode::kGuardWordNonzero ||
-         opcode == Opcode::kGuardFloatNonzero ||
-         opcode == Opcode::kSafepoint || is_memory(opcode);
+         opcode == Opcode::kGuardFloatNonzero || opcode == Opcode::kSafepoint ||
+         is_memory(opcode) || is_atomic_access(opcode);
 }
 
 }  // namespace
@@ -177,6 +186,7 @@ Status verify(const Function& function) {
 
   std::size_t expected_call_argument = 0;
   std::size_t expected_memory_access = 0;
+  std::size_t expected_atomic_access = 0;
   std::size_t expected_vector_constant = 0;
   std::size_t expected_vector_shuffle = 0;
   std::size_t expected_vector_select = 0;
@@ -186,6 +196,14 @@ Status verify(const Function& function) {
         node.memory_access != MemoryAccessDescriptor::kInvalidIndex) {
       return invalid_node(index,
                           "non-memory node has a memory descriptor");
+    }
+    if (!is_atomic_access(node.opcode) &&
+        node.atomic_access != AtomicAccessDescriptor::kInvalidIndex) {
+      return invalid_node(index, "non-atomic node has an atomic descriptor");
+    }
+    if (node.opcode != Opcode::kAtomicCompareExchange &&
+        node.auxiliary.valid()) {
+      return invalid_node(index, "non-CAS node has an auxiliary operand");
     }
     if (!is_frame(node.opcode) && node.frame_slot != FrameSlot::kInvalidId) {
       return invalid_node(index, "non-frame node has a frame slot");
@@ -452,6 +470,77 @@ Status verify(const Function& function) {
       }
       continue;
     }
+    if (is_atomic_access(node.opcode)) {
+      if (node.atomic_access != expected_atomic_access ||
+          expected_atomic_access >= function.atomic_accesses().size()) {
+        return invalid_node(index, "atomic descriptor range is inconsistent");
+      }
+      const AtomicAccessDescriptor &access =
+          function.atomic_accesses()[expected_atomic_access++];
+      const MemoryAccessDescriptor &memory = access.memory;
+      const std::size_t width = memory_width_bytes(memory.width);
+      const bool compare_exchange =
+          node.opcode == Opcode::kAtomicCompareExchange;
+      const bool canonical_non_cas =
+          access.failure_order == AtomicMemoryOrder::kRelaxed &&
+          access.strength == AtomicCompareExchangeStrength::kStrong;
+      const bool valid_order =
+          node.opcode == Opcode::kAtomicLoad
+              ? is_valid_atomic_load_order(access.order)
+              : (node.opcode == Opcode::kAtomicStore
+                     ? is_valid_atomic_store_order(access.order)
+                     : is_valid_atomic_memory_order(access.order));
+      if (memory.region >= function.memory_region_count() ||
+          (memory.width != MemoryWidth::k8 &&
+           memory.width != MemoryWidth::k16 &&
+           memory.width != MemoryWidth::k32 &&
+           memory.width != MemoryWidth::k64) ||
+          memory.alignment != width ||
+          memory.byte_order != MemoryByteOrder::kNative || memory.sign_extend ||
+          memory.is_volatile || !valid_order ||
+          (!compare_exchange && !canonical_non_cas) ||
+          (compare_exchange &&
+           (!is_valid_atomic_compare_exchange_strength(access.strength) ||
+            !atomic_failure_order_allowed(access.order,
+                                          access.failure_order))) ||
+          node.immediate < 0 || node.type != ValueType::kWord ||
+          !node.lhs.valid() || node.lhs.id() >= index ||
+          nodes[node.lhs.id()].type != ValueType::kWord ||
+          node.argument_begin != 0 || node.argument_count != 0) {
+        return invalid_node(index, "atomic memory operation is malformed");
+      }
+      if (node.opcode == Opcode::kAtomicLoad) {
+        if (node.rhs.valid()) {
+          return invalid_node(index, "atomic load has a stored value");
+        }
+      } else if (!node.rhs.valid() || node.rhs.id() >= index ||
+                 nodes[node.rhs.id()].type != ValueType::kWord) {
+        return invalid_node(index, "atomic input value is malformed");
+      }
+      if (compare_exchange &&
+          (!node.auxiliary.valid() || node.auxiliary.id() >= index ||
+           nodes[node.auxiliary.id()].type != ValueType::kWord)) {
+        return invalid_node(
+            index, "atomic compare-exchange desired value is malformed");
+      }
+      for (std::size_t previous = 0; previous < index; ++previous) {
+        if (is_runtime_exit(nodes[previous].opcode) &&
+            nodes[previous].immediate == node.immediate) {
+          return invalid_node(index, "runtime exit site is duplicated");
+        }
+      }
+      continue;
+    }
+    if (node.opcode == Opcode::kAtomicFence) {
+      const auto order = static_cast<AtomicMemoryOrder>(node.immediate);
+      if (!is_valid_atomic_fence_order(order) ||
+          node.type != ValueType::kWord || node.lhs.valid() ||
+          node.rhs.valid() || node.argument_begin != 0 ||
+          node.argument_count != 0) {
+        return invalid_node(index, "atomic fence is malformed");
+      }
+      continue;
+    }
     if (is_frame(node.opcode)) {
       if (node.frame_slot >= function.frame_slots().size() ||
           node.immediate != 0 || node.rhs.valid() ||
@@ -581,6 +670,10 @@ Status verify(const Function& function) {
   if (expected_memory_access != function.memory_accesses().size()) {
     return {StatusCode::kInvalidIr,
             "function contains unreferenced memory descriptors"};
+  }
+  if (expected_atomic_access != function.atomic_accesses().size()) {
+    return {StatusCode::kInvalidIr,
+            "function contains unreferenced atomic descriptors"};
   }
   if (expected_vector_constant != function.vector_constants().size()) {
     return {StatusCode::kInvalidIr,

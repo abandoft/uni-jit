@@ -1,4 +1,5 @@
 add_library(unijit
+  ir/atomic_access.cpp
   ir/control_flow.cpp
   ir/function.cpp
   ir/interpreter.cpp

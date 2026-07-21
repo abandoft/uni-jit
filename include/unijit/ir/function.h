@@ -6,10 +6,11 @@
 #include <limits>
 #include <vector>
 
-#include "unijit/status.h"
+#include "unijit/ir/atomic.h"
 #include "unijit/ir/memory.h"
 #include "unijit/ir/object.h"
 #include "unijit/ir/vector.h"
+#include "unijit/status.h"
 
 namespace unijit::ir {
 
@@ -87,6 +88,15 @@ enum class Opcode : std::uint8_t {
   kStoreFloat,
   kLoadVector,
   kStoreVector,
+  kAtomicLoad,
+  kAtomicStore,
+  kAtomicExchange,
+  kAtomicCompareExchange,
+  kAtomicFetchAdd,
+  kAtomicFetchAnd,
+  kAtomicFetchOr,
+  kAtomicFetchXor,
+  kAtomicFence,
   kLoadFrame,
   kStoreFrame,
   kLoadObject,
@@ -133,6 +143,26 @@ struct FrameSlotDescriptor final {
 };
 
 struct Node final {
+  constexpr Node() noexcept = default;
+  constexpr Node(
+      Opcode opcode_value, Value lhs_value = {}, Value rhs_value = {},
+      Word immediate_value = 0, ValueType type_value = ValueType::kWord,
+      std::uint32_t argument_begin_value = 0,
+      std::uint32_t argument_count_value = 0,
+      std::uint32_t memory_access_value = MemoryAccessDescriptor::kInvalidIndex,
+      std::uint32_t frame_slot_value = FrameSlot::kInvalidId,
+      std::uint32_t trusted_object_value = TrustedObjectSlot::kInvalidId,
+      Value auxiliary_value = {},
+      std::uint32_t atomic_access_value =
+          AtomicAccessDescriptor::kInvalidIndex) noexcept
+      : opcode(opcode_value), lhs(lhs_value), rhs(rhs_value),
+        immediate(immediate_value), type(type_value),
+        argument_begin(argument_begin_value),
+        argument_count(argument_count_value),
+        memory_access(memory_access_value), frame_slot(frame_slot_value),
+        trusted_object(trusted_object_value), auxiliary(auxiliary_value),
+        atomic_access(atomic_access_value) {}
+
   Opcode opcode{Opcode::kConstant};
   Value lhs;
   Value rhs;
@@ -143,6 +173,15 @@ struct Node final {
   std::uint32_t memory_access{MemoryAccessDescriptor::kInvalidIndex};
   std::uint32_t frame_slot{FrameSlot::kInvalidId};
   std::uint32_t trusted_object{TrustedObjectSlot::kInvalidId};
+  Value auxiliary;
+  std::uint32_t atomic_access{AtomicAccessDescriptor::kInvalidIndex};
+};
+
+struct AtomicCompareExchangeResult final {
+  Value observed;
+  Value success;
+
+  bool valid() const noexcept { return observed.valid() && success.valid(); }
 };
 
 class Function final {
@@ -163,6 +202,9 @@ class Function final {
   }
   const std::vector<MemoryAccessDescriptor>& memory_accesses() const noexcept {
     return memory_accesses_;
+  }
+  const std::vector<AtomicAccessDescriptor> &atomic_accesses() const noexcept {
+    return atomic_accesses_;
   }
   const std::vector<FrameSlotDescriptor>& frame_slots() const noexcept {
     return frame_slots_;
@@ -200,6 +242,7 @@ class Function final {
   std::vector<Value> call_arguments_;
   std::size_t memory_region_count_{0};
   std::vector<MemoryAccessDescriptor> memory_accesses_;
+  std::vector<AtomicAccessDescriptor> atomic_accesses_;
   std::vector<FrameSlotDescriptor> frame_slots_;
   std::vector<TrustedObjectDescriptor> trusted_objects_;
   std::vector<Vector128> vector_constants_;
@@ -273,6 +316,28 @@ class FunctionBuilder final {
                     MemoryAccessDescriptor access, std::size_t site);
   Value store_vector(Value byte_offset, Value value,
                      MemoryAccessDescriptor access, std::size_t site);
+  Value atomic_load(Value byte_offset, AtomicAccessDescriptor access,
+                    std::size_t site);
+  Value atomic_store(Value byte_offset, Value value,
+                     AtomicAccessDescriptor access, std::size_t site);
+  Value atomic_exchange(Value byte_offset, Value value,
+                        AtomicAccessDescriptor access, std::size_t site);
+  Value atomic_compare_exchange_observed(Value byte_offset, Value expected,
+                                         Value desired,
+                                         AtomicAccessDescriptor access,
+                                         std::size_t site);
+  AtomicCompareExchangeResult
+  atomic_compare_exchange(Value byte_offset, Value expected, Value desired,
+                          AtomicAccessDescriptor access, std::size_t site);
+  Value atomic_fetch_add(Value byte_offset, Value value,
+                         AtomicAccessDescriptor access, std::size_t site);
+  Value atomic_fetch_and(Value byte_offset, Value value,
+                         AtomicAccessDescriptor access, std::size_t site);
+  Value atomic_fetch_or(Value byte_offset, Value value,
+                        AtomicAccessDescriptor access, std::size_t site);
+  Value atomic_fetch_xor(Value byte_offset, Value value,
+                         AtomicAccessDescriptor access, std::size_t site);
+  Value atomic_fence(AtomicMemoryOrder order);
   // Frame slots are fixed-size, zero-initialized for each invocation, and
   // remain live for the complete generated frame. Sensitive slots are cleared
   // on every native return path.
@@ -309,6 +374,9 @@ class FunctionBuilder final {
 
  private:
   Value append_binary(Opcode opcode, Value lhs, Value rhs);
+  Value append_atomic(Opcode opcode, Value byte_offset, Value value,
+                      Value auxiliary, AtomicAccessDescriptor access,
+                      std::size_t site);
 
   Function function_;
 };

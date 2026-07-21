@@ -2132,6 +2132,19 @@ LoweringResult lower_impl(const ir::Function& function,
         }
         break;
       }
+      case ir::Opcode::kAtomicLoad:
+      case ir::Opcode::kAtomicStore:
+      case ir::Opcode::kAtomicExchange:
+      case ir::Opcode::kAtomicCompareExchange:
+      case ir::Opcode::kAtomicFetchAdd:
+      case ir::Opcode::kAtomicFetchAnd:
+      case ir::Opcode::kAtomicFetchOr:
+      case ir::Opcode::kAtomicFetchXor:
+      case ir::Opcode::kAtomicFence:
+        return {{StatusCode::kCodeGenerationFailed,
+                 "x86-64 atomic lowering is not enabled", index},
+                {},
+                0};
       case ir::Opcode::kVectorConstant:
       case ir::Opcode::kVectorSplat:
       case ir::Opcode::kVectorExtractLane:
@@ -3413,6 +3426,19 @@ LoweringResult lower_control_flow_impl(
           }
           break;
         }
+        case ir::ControlOpcode::kAtomicLoad:
+        case ir::ControlOpcode::kAtomicStore:
+        case ir::ControlOpcode::kAtomicExchange:
+        case ir::ControlOpcode::kAtomicCompareExchange:
+        case ir::ControlOpcode::kAtomicFetchAdd:
+        case ir::ControlOpcode::kAtomicFetchAnd:
+        case ir::ControlOpcode::kAtomicFetchOr:
+        case ir::ControlOpcode::kAtomicFetchXor:
+        case ir::ControlOpcode::kAtomicFence:
+          return {{StatusCode::kCodeGenerationFailed,
+                   "x86-64 CFG atomic lowering is not enabled", value.id()},
+                  {},
+                  0};
         case ir::ControlOpcode::kVectorConstant:
         case ir::ControlOpcode::kVectorSplat:
         case ir::ControlOpcode::kVectorExtractLane:

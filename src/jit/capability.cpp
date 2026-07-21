@@ -104,6 +104,36 @@ bool is_call(ir::ControlOpcode opcode) noexcept {
   return opcode == ir::ControlOpcode::kCall;
 }
 
+bool is_atomic_access(ir::Opcode opcode) noexcept {
+  return opcode == ir::Opcode::kAtomicLoad ||
+         opcode == ir::Opcode::kAtomicStore ||
+         opcode == ir::Opcode::kAtomicExchange ||
+         opcode == ir::Opcode::kAtomicCompareExchange ||
+         opcode == ir::Opcode::kAtomicFetchAdd ||
+         opcode == ir::Opcode::kAtomicFetchAnd ||
+         opcode == ir::Opcode::kAtomicFetchOr ||
+         opcode == ir::Opcode::kAtomicFetchXor;
+}
+
+bool is_atomic(ir::Opcode opcode) noexcept {
+  return is_atomic_access(opcode) || opcode == ir::Opcode::kAtomicFence;
+}
+
+bool is_atomic_access(ir::ControlOpcode opcode) noexcept {
+  return opcode == ir::ControlOpcode::kAtomicLoad ||
+         opcode == ir::ControlOpcode::kAtomicStore ||
+         opcode == ir::ControlOpcode::kAtomicExchange ||
+         opcode == ir::ControlOpcode::kAtomicCompareExchange ||
+         opcode == ir::ControlOpcode::kAtomicFetchAdd ||
+         opcode == ir::ControlOpcode::kAtomicFetchAnd ||
+         opcode == ir::ControlOpcode::kAtomicFetchOr ||
+         opcode == ir::ControlOpcode::kAtomicFetchXor;
+}
+
+bool is_atomic(ir::ControlOpcode opcode) noexcept {
+  return is_atomic_access(opcode) || opcode == ir::ControlOpcode::kAtomicFence;
+}
+
 bool requires_context(ir::Opcode opcode) noexcept {
   return opcode == ir::Opcode::kGuardWordNonzero ||
          opcode == ir::Opcode::kGuardFloatNonzero ||
@@ -111,7 +141,7 @@ bool requires_context(ir::Opcode opcode) noexcept {
          opcode == ir::Opcode::kStoreWord || opcode == ir::Opcode::kLoadFloat ||
          opcode == ir::Opcode::kStoreFloat ||
          opcode == ir::Opcode::kLoadVector ||
-         opcode == ir::Opcode::kStoreVector ||
+         opcode == ir::Opcode::kStoreVector || is_atomic_access(opcode) ||
          opcode == ir::Opcode::kLoadObject ||
          opcode == ir::Opcode::kStoreObject;
 }
@@ -126,7 +156,7 @@ bool requires_context(ir::ControlOpcode opcode) noexcept {
          opcode == ir::ControlOpcode::kStoreFloat ||
          opcode == ir::ControlOpcode::kLoadVector ||
          opcode == ir::ControlOpcode::kStoreVector ||
-         opcode == ir::ControlOpcode::kLoadObject ||
+         is_atomic_access(opcode) || opcode == ir::ControlOpcode::kLoadObject ||
          opcode == ir::ControlOpcode::kStoreObject;
 }
 
@@ -363,6 +393,14 @@ CapabilityReport analyze_verified(const FunctionType &function,
     const auto &node = function.nodes()[index];
     report.requires_execution_context =
         report.requires_execution_context || requires_context(node.opcode);
+    if (is_atomic(node.opcode)) {
+      if (!found_unsupported) {
+        found_unsupported = true;
+        first_unsupported = index;
+      }
+      note_operation(&report, LoweringStrategy::kUnsupported, 0);
+      continue;
+    }
     const NormalizedVectorOpcode vector_opcode = normalize(node.opcode);
     if (vector_opcode == NormalizedVectorOpcode::kNone) {
       LoweringStrategy strategy = is_call(node.opcode)

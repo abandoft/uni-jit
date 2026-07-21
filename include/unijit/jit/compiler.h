@@ -47,6 +47,7 @@ struct CompilationLimits final {
   std::size_t maximum_ir_arguments{256U * 1024U};
   std::size_t maximum_memory_regions{64};
   std::size_t maximum_memory_accesses{64U * 1024U};
+  std::size_t maximum_atomic_accesses{64U * 1024U};
   std::size_t maximum_vector_constants{64U * 1024U};
   std::size_t maximum_vector_shuffles{64U * 1024U};
   std::size_t maximum_vector_selects{64U * 1024U};

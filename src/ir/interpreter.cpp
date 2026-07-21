@@ -3,8 +3,10 @@
 #include <cstdint>
 #include <cstring>
 #include <new>
+#include <system_error>
 #include <vector>
 
+#include "ir/atomic_access.h"
 #include "ir/memory_access.h"
 #include "ir/object_access.h"
 
@@ -101,6 +103,15 @@ Word evaluate_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
     case Opcode::kStoreFloat:
     case Opcode::kLoadVector:
     case Opcode::kStoreVector:
+    case Opcode::kAtomicLoad:
+    case Opcode::kAtomicStore:
+    case Opcode::kAtomicExchange:
+    case Opcode::kAtomicCompareExchange:
+    case Opcode::kAtomicFetchAdd:
+    case Opcode::kAtomicFetchAnd:
+    case Opcode::kAtomicFetchOr:
+    case Opcode::kAtomicFetchXor:
+    case Opcode::kAtomicFence:
     case Opcode::kLoadFrame:
     case Opcode::kStoreFrame:
     case Opcode::kLoadObject:
@@ -119,6 +130,29 @@ Word evaluate_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
       return 0;
   }
   return 0;
+}
+
+detail::AtomicOperation atomic_operation(Opcode opcode) noexcept {
+  switch (opcode) {
+  case Opcode::kAtomicLoad:
+    return detail::AtomicOperation::kLoad;
+  case Opcode::kAtomicStore:
+    return detail::AtomicOperation::kStore;
+  case Opcode::kAtomicExchange:
+    return detail::AtomicOperation::kExchange;
+  case Opcode::kAtomicCompareExchange:
+    return detail::AtomicOperation::kCompareExchange;
+  case Opcode::kAtomicFetchAdd:
+    return detail::AtomicOperation::kFetchAdd;
+  case Opcode::kAtomicFetchAnd:
+    return detail::AtomicOperation::kFetchAnd;
+  case Opcode::kAtomicFetchOr:
+    return detail::AtomicOperation::kFetchOr;
+  case Opcode::kAtomicFetchXor:
+    return detail::AtomicOperation::kFetchXor;
+  default:
+    return detail::AtomicOperation::kLoad;
+  }
 }
 
 }  // namespace
@@ -283,6 +317,32 @@ EvaluationResult Interpreter::evaluate(const Function& function,
           vector_values[index] = result.value;
           break;
         }
+        case Opcode::kAtomicLoad:
+        case Opcode::kAtomicStore:
+        case Opcode::kAtomicExchange:
+        case Opcode::kAtomicCompareExchange:
+        case Opcode::kAtomicFetchAdd:
+        case Opcode::kAtomicFetchAnd:
+        case Opcode::kAtomicFetchOr:
+        case Opcode::kAtomicFetchXor: {
+          const detail::AtomicAccessResult result =
+              detail::access_bounded_atomic(
+                  function.atomic_accesses()[node.atomic_access],
+                  atomic_operation(node.opcode), values[node.lhs.id()],
+                  node.rhs.valid() ? values[node.rhs.id()] : 0,
+                  node.auxiliary.valid() ? values[node.auxiliary.id()] : 0,
+                  static_cast<std::size_t>(node.immediate), context);
+          if (!result.ok()) {
+            return {result.status, 0};
+          }
+          values[index] = result.value;
+          break;
+        }
+        case Opcode::kAtomicFence:
+          detail::execute_atomic_fence(
+              static_cast<AtomicMemoryOrder>(node.immediate));
+          values[index] = 0;
+          break;
         case Opcode::kLoadFrame:
           values[index] = frame_values[node.frame_slot];
           break;
@@ -417,6 +477,10 @@ EvaluationResult Interpreter::evaluate(const Function& function,
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate interpreter value storage"},
+            0};
+  } catch (const std::system_error &) {
+    return {{StatusCode::kResourceExhausted,
+             "unable to synchronize interpreter atomic access"},
             0};
   }
 }

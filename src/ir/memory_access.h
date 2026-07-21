@@ -8,6 +8,14 @@
 
 namespace unijit::ir::detail {
 
+struct ResolvedMemoryAccess final {
+  Status status;
+  std::uint8_t *address{nullptr};
+  std::size_t width{0};
+
+  bool ok() const noexcept { return status.ok(); }
+};
+
 struct MemoryAccessResult final {
   Status status;
   Word value{0};
@@ -21,6 +29,11 @@ struct VectorMemoryAccessResult final {
 
   bool ok() const noexcept { return status.ok(); }
 };
+
+ResolvedMemoryAccess
+resolve_bounded_memory(const MemoryAccessDescriptor &access, Word byte_offset,
+                       std::size_t site, runtime::ExecutionContext *context,
+                       bool store) noexcept;
 
 MemoryAccessResult load_bounded_word(
     const MemoryAccessDescriptor& access, Word byte_offset, std::size_t site,

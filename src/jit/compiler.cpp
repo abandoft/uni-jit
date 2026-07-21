@@ -741,18 +741,15 @@ std::size_t stack_map_value_count(
 
 Status validate_compilation_limits(const CompilationLimits& limits) {
   if (limits.maximum_parameters == 0 || limits.maximum_ir_nodes == 0 ||
-      limits.maximum_cfg_blocks == 0 ||
-      limits.maximum_ir_arguments == 0 ||
+      limits.maximum_cfg_blocks == 0 || limits.maximum_ir_arguments == 0 ||
       limits.maximum_memory_regions == 0 ||
       limits.maximum_memory_accesses == 0 ||
+      limits.maximum_atomic_accesses == 0 ||
       limits.maximum_vector_constants == 0 ||
       limits.maximum_vector_shuffles == 0 ||
-      limits.maximum_vector_selects == 0 ||
-      limits.maximum_frame_slots == 0 ||
-      limits.maximum_trusted_objects == 0 ||
-      limits.maximum_stack_maps == 0 ||
-      limits.maximum_metadata_values == 0 ||
-      limits.maximum_code_bytes == 0) {
+      limits.maximum_vector_selects == 0 || limits.maximum_frame_slots == 0 ||
+      limits.maximum_trusted_objects == 0 || limits.maximum_stack_maps == 0 ||
+      limits.maximum_metadata_values == 0 || limits.maximum_code_bytes == 0) {
     return {StatusCode::kInvalidArgument,
             "compilation resource limits must all be positive"};
   }
@@ -870,6 +867,11 @@ Status validate_function_limits(
             "compilation exceeds the memory access limit",
             function.memory_accesses().size()};
   }
+  if (function.atomic_accesses().size() > limits.maximum_atomic_accesses) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the atomic access limit",
+            function.atomic_accesses().size()};
+  }
   if (function.vector_constants().size() >
       limits.maximum_vector_constants) {
     return {StatusCode::kResourceExhausted,
@@ -936,6 +938,11 @@ Status validate_function_limits(
     return {StatusCode::kResourceExhausted,
             "compilation exceeds the CFG memory access limit",
             function.memory_accesses().size()};
+  }
+  if (function.atomic_accesses().size() > limits.maximum_atomic_accesses) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the CFG atomic access limit",
+            function.atomic_accesses().size()};
   }
   if (function.vector_constants().size() >
       limits.maximum_vector_constants) {

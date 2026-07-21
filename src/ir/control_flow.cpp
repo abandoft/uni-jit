@@ -7,9 +7,11 @@
 #include <limits>
 #include <new>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
+#include "ir/atomic_access.h"
 #include "ir/memory_access.h"
 #include "ir/object_access.h"
 
@@ -65,6 +67,15 @@ bool is_binary(ControlOpcode opcode) {
   case ControlOpcode::kStoreFloat:
   case ControlOpcode::kLoadVector:
   case ControlOpcode::kStoreVector:
+  case ControlOpcode::kAtomicLoad:
+  case ControlOpcode::kAtomicStore:
+  case ControlOpcode::kAtomicExchange:
+  case ControlOpcode::kAtomicCompareExchange:
+  case ControlOpcode::kAtomicFetchAdd:
+  case ControlOpcode::kAtomicFetchAnd:
+  case ControlOpcode::kAtomicFetchOr:
+  case ControlOpcode::kAtomicFetchXor:
+  case ControlOpcode::kAtomicFence:
   case ControlOpcode::kLoadFrame:
   case ControlOpcode::kStoreFrame:
   case ControlOpcode::kLoadObject:
@@ -121,6 +132,17 @@ bool is_memory_store(ControlOpcode opcode) {
 bool is_vector_memory(ControlOpcode opcode) {
   return opcode == ControlOpcode::kLoadVector ||
          opcode == ControlOpcode::kStoreVector;
+}
+
+bool is_atomic_access(ControlOpcode opcode) {
+  return opcode == ControlOpcode::kAtomicLoad ||
+         opcode == ControlOpcode::kAtomicStore ||
+         opcode == ControlOpcode::kAtomicExchange ||
+         opcode == ControlOpcode::kAtomicCompareExchange ||
+         opcode == ControlOpcode::kAtomicFetchAdd ||
+         opcode == ControlOpcode::kAtomicFetchAnd ||
+         opcode == ControlOpcode::kAtomicFetchOr ||
+         opcode == ControlOpcode::kAtomicFetchXor;
 }
 
 bool is_frame(ControlOpcode opcode) {
@@ -196,7 +218,31 @@ bool valid_byte_order(MemoryByteOrder order) {
 bool is_runtime_exit(ControlOpcode opcode) {
   return opcode == ControlOpcode::kGuardWordNonzero ||
          opcode == ControlOpcode::kGuardFloatNonzero ||
-         opcode == ControlOpcode::kSafepoint || is_memory(opcode);
+         opcode == ControlOpcode::kSafepoint || is_memory(opcode) ||
+         is_atomic_access(opcode);
+}
+
+detail::AtomicOperation atomic_operation(ControlOpcode opcode) noexcept {
+  switch (opcode) {
+  case ControlOpcode::kAtomicLoad:
+    return detail::AtomicOperation::kLoad;
+  case ControlOpcode::kAtomicStore:
+    return detail::AtomicOperation::kStore;
+  case ControlOpcode::kAtomicExchange:
+    return detail::AtomicOperation::kExchange;
+  case ControlOpcode::kAtomicCompareExchange:
+    return detail::AtomicOperation::kCompareExchange;
+  case ControlOpcode::kAtomicFetchAdd:
+    return detail::AtomicOperation::kFetchAdd;
+  case ControlOpcode::kAtomicFetchAnd:
+    return detail::AtomicOperation::kFetchAnd;
+  case ControlOpcode::kAtomicFetchOr:
+    return detail::AtomicOperation::kFetchOr;
+  case ControlOpcode::kAtomicFetchXor:
+    return detail::AtomicOperation::kFetchXor;
+  default:
+    return detail::AtomicOperation::kLoad;
+  }
 }
 
 Status invalid_control_flow(std::size_t location, const char *message) {
@@ -269,6 +315,16 @@ Status verify_impl(const ControlFlowFunction &function) {
           node.memory_access != MemoryAccessDescriptor::kInvalidIndex) {
         return invalid_control_flow(
             value.id(), "non-memory CFG node has a memory descriptor");
+      }
+      if (!is_atomic_access(node.opcode) &&
+          node.atomic_access != AtomicAccessDescriptor::kInvalidIndex) {
+        return invalid_control_flow(
+            value.id(), "non-atomic CFG node has an atomic descriptor");
+      }
+      if (node.opcode != ControlOpcode::kAtomicCompareExchange &&
+          node.auxiliary.valid()) {
+        return invalid_control_flow(
+            value.id(), "non-CAS CFG node has an auxiliary operand");
       }
       if (!is_frame(node.opcode) && node.frame_slot != FrameSlot::kInvalidId) {
         return invalid_control_flow(
@@ -419,6 +475,8 @@ Status verify_impl(const ControlFlowFunction &function) {
   std::vector<bool> claimed_call_arguments(function.call_arguments().size(),
                                            false);
   std::vector<bool> claimed_memory_accesses(function.memory_accesses().size(),
+                                            false);
+  std::vector<bool> claimed_atomic_accesses(function.atomic_accesses().size(),
                                             false);
   std::vector<bool> claimed_vector_constants(function.vector_constants().size(),
                                              false);
@@ -708,6 +766,85 @@ Status verify_impl(const ControlFlowFunction &function) {
         }
         continue;
       }
+      if (is_atomic_access(node.opcode)) {
+        if (node.atomic_access >= function.atomic_accesses().size() ||
+            claimed_atomic_accesses[node.atomic_access]) {
+          return invalid_control_flow(
+              value.id(), "CFG atomic descriptor is invalid or duplicated");
+        }
+        claimed_atomic_accesses[node.atomic_access] = true;
+        const AtomicAccessDescriptor &access =
+            function.atomic_accesses()[node.atomic_access];
+        const MemoryAccessDescriptor &memory = access.memory;
+        const std::size_t width = memory_width_bytes(memory.width);
+        const bool compare_exchange =
+            node.opcode == ControlOpcode::kAtomicCompareExchange;
+        const bool canonical_non_cas =
+            access.failure_order == AtomicMemoryOrder::kRelaxed &&
+            access.strength == AtomicCompareExchangeStrength::kStrong;
+        const bool valid_order =
+            node.opcode == ControlOpcode::kAtomicLoad
+                ? is_valid_atomic_load_order(access.order)
+                : (node.opcode == ControlOpcode::kAtomicStore
+                       ? is_valid_atomic_store_order(access.order)
+                       : is_valid_atomic_memory_order(access.order));
+        if (memory.region >= function.memory_region_count() ||
+            (memory.width != MemoryWidth::k8 &&
+             memory.width != MemoryWidth::k16 &&
+             memory.width != MemoryWidth::k32 &&
+             memory.width != MemoryWidth::k64) ||
+            memory.alignment != width ||
+            memory.byte_order != MemoryByteOrder::kNative ||
+            memory.sign_extend || memory.is_volatile || !valid_order ||
+            (!compare_exchange && !canonical_non_cas) ||
+            (compare_exchange &&
+             (!is_valid_atomic_compare_exchange_strength(access.strength) ||
+              !atomic_failure_order_allowed(access.order,
+                                            access.failure_order))) ||
+            node.immediate < 0 || node.type != ValueType::kWord ||
+            !available(node.lhs, block_index, instruction_index) ||
+            function.value_type(node.lhs) != ValueType::kWord ||
+            node.argument_begin != 0 || node.argument_count != 0) {
+          return invalid_control_flow(
+              value.id(), "bounded CFG atomic operation is malformed");
+        }
+        if (node.opcode == ControlOpcode::kAtomicLoad) {
+          if (node.rhs.valid()) {
+            return invalid_control_flow(value.id(),
+                                        "CFG atomic load has a stored value");
+          }
+        } else if (!available(node.rhs, block_index, instruction_index) ||
+                   function.value_type(node.rhs) != ValueType::kWord) {
+          return invalid_control_flow(value.id(),
+                                      "CFG atomic input value is malformed");
+        }
+        if (compare_exchange &&
+            (!available(node.auxiliary, block_index, instruction_index) ||
+             function.value_type(node.auxiliary) != ValueType::kWord)) {
+          return invalid_control_flow(
+              value.id(),
+              "CFG atomic compare-exchange desired value is malformed");
+        }
+        for (std::size_t previous = 0; previous < value.id(); ++previous) {
+          if (is_runtime_exit(nodes[previous].opcode) &&
+              nodes[previous].immediate == node.immediate) {
+            return invalid_control_flow(
+                value.id(), "control-flow runtime exit site is duplicated");
+          }
+        }
+        continue;
+      }
+      if (node.opcode == ControlOpcode::kAtomicFence) {
+        const auto order = static_cast<AtomicMemoryOrder>(node.immediate);
+        if (!is_valid_atomic_fence_order(order) ||
+            node.type != ValueType::kWord || node.lhs.valid() ||
+            node.rhs.valid() || node.argument_begin != 0 ||
+            node.argument_count != 0) {
+          return invalid_control_flow(value.id(),
+                                      "CFG atomic fence is malformed");
+        }
+        continue;
+      }
       if (is_frame(node.opcode)) {
         if (node.frame_slot >= function.frame_slots().size() ||
             node.immediate != 0 || node.rhs.valid() ||
@@ -916,6 +1053,11 @@ Status verify_impl(const ControlFlowFunction &function) {
       claimed_memory_accesses.end()) {
     return invalid_control_flow(
         0, "control-flow graph contains unreferenced memory descriptors");
+  }
+  if (std::find(claimed_atomic_accesses.begin(), claimed_atomic_accesses.end(),
+                false) != claimed_atomic_accesses.end()) {
+    return invalid_control_flow(
+        0, "control-flow graph contains unreferenced atomic descriptors");
   }
   if (std::find(claimed_vector_constants.begin(),
                 claimed_vector_constants.end(), false) !=
@@ -1446,6 +1588,114 @@ Value ControlFlowBuilder::store_vector(Value byte_offset, Value value,
   return result;
 }
 
+Value ControlFlowBuilder::append_atomic(ControlOpcode opcode, Value byte_offset,
+                                        Value value, Value auxiliary,
+                                        AtomicAccessDescriptor access,
+                                        std::size_t site) {
+  if (function_.atomic_accesses_.size() >=
+          AtomicAccessDescriptor::kInvalidIndex ||
+      site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {
+    return {};
+  }
+  const auto access_index =
+      static_cast<std::uint32_t>(function_.atomic_accesses_.size());
+  function_.atomic_accesses_.push_back(access);
+  ControlNode node;
+  node.opcode = opcode;
+  node.lhs = byte_offset;
+  node.rhs = value;
+  node.immediate = static_cast<Word>(site);
+  node.auxiliary = auxiliary;
+  node.atomic_access = access_index;
+  const Value result = append_node(node);
+  if (!result.valid()) {
+    function_.atomic_accesses_.pop_back();
+  }
+  return result;
+}
+
+Value ControlFlowBuilder::atomic_load(Value byte_offset,
+                                      AtomicAccessDescriptor access,
+                                      std::size_t site) {
+  return append_atomic(ControlOpcode::kAtomicLoad, byte_offset, {}, {}, access,
+                       site);
+}
+
+Value ControlFlowBuilder::atomic_store(Value byte_offset, Value value,
+                                       AtomicAccessDescriptor access,
+                                       std::size_t site) {
+  return append_atomic(ControlOpcode::kAtomicStore, byte_offset, value, {},
+                       access, site);
+}
+
+Value ControlFlowBuilder::atomic_exchange(Value byte_offset, Value value,
+                                          AtomicAccessDescriptor access,
+                                          std::size_t site) {
+  return append_atomic(ControlOpcode::kAtomicExchange, byte_offset, value, {},
+                       access, site);
+}
+
+AtomicCompareExchangeResult ControlFlowBuilder::atomic_compare_exchange(
+    Value byte_offset, Value expected, Value desired,
+    AtomicAccessDescriptor access, std::size_t site) {
+  Value normalized_expected = expected;
+  const std::size_t width = memory_width_bytes(access.memory.width);
+  if (width != 0 && width < sizeof(Word)) {
+    const std::size_t bits = width * 8U;
+    normalized_expected = bitwise_and(
+        expected,
+        constant(static_cast<Word>((UINT64_C(1) << bits) - UINT64_C(1))));
+  }
+  const Value observed = atomic_compare_exchange_observed(
+      byte_offset, normalized_expected, desired, access, site);
+  if (!observed.valid()) {
+    return {};
+  }
+  return {observed, equal(observed, normalized_expected)};
+}
+
+Value ControlFlowBuilder::atomic_compare_exchange_observed(
+    Value byte_offset, Value expected, Value desired,
+    AtomicAccessDescriptor access, std::size_t site) {
+  return append_atomic(ControlOpcode::kAtomicCompareExchange, byte_offset,
+                       expected, desired, access, site);
+}
+
+Value ControlFlowBuilder::atomic_fetch_add(Value byte_offset, Value value,
+                                           AtomicAccessDescriptor access,
+                                           std::size_t site) {
+  return append_atomic(ControlOpcode::kAtomicFetchAdd, byte_offset, value, {},
+                       access, site);
+}
+
+Value ControlFlowBuilder::atomic_fetch_and(Value byte_offset, Value value,
+                                           AtomicAccessDescriptor access,
+                                           std::size_t site) {
+  return append_atomic(ControlOpcode::kAtomicFetchAnd, byte_offset, value, {},
+                       access, site);
+}
+
+Value ControlFlowBuilder::atomic_fetch_or(Value byte_offset, Value value,
+                                          AtomicAccessDescriptor access,
+                                          std::size_t site) {
+  return append_atomic(ControlOpcode::kAtomicFetchOr, byte_offset, value, {},
+                       access, site);
+}
+
+Value ControlFlowBuilder::atomic_fetch_xor(Value byte_offset, Value value,
+                                           AtomicAccessDescriptor access,
+                                           std::size_t site) {
+  return append_atomic(ControlOpcode::kAtomicFetchXor, byte_offset, value, {},
+                       access, site);
+}
+
+Value ControlFlowBuilder::atomic_fence(AtomicMemoryOrder order) {
+  ControlNode node;
+  node.opcode = ControlOpcode::kAtomicFence;
+  node.immediate = static_cast<Word>(order);
+  return append_node(node);
+}
+
 FrameSlot ControlFlowBuilder::create_frame_slot(ValueType type,
                                                 bool sensitive) {
   if (function_.frame_slots_.size() >= FrameSlot::kInvalidId) {
@@ -1923,6 +2173,22 @@ ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
             return {result.status, 0};
           }
           vector_values[value.id()] = result.value;
+        } else if (is_atomic_access(node.opcode)) {
+          const detail::AtomicAccessResult result =
+              detail::access_bounded_atomic(
+                  function.atomic_accesses()[node.atomic_access],
+                  atomic_operation(node.opcode), values[node.lhs.id()],
+                  node.rhs.valid() ? values[node.rhs.id()] : 0,
+                  node.auxiliary.valid() ? values[node.auxiliary.id()] : 0,
+                  static_cast<std::size_t>(node.immediate), context);
+          if (!result.ok()) {
+            return {result.status, 0};
+          }
+          values[value.id()] = result.value;
+        } else if (node.opcode == ControlOpcode::kAtomicFence) {
+          detail::execute_atomic_fence(
+              static_cast<AtomicMemoryOrder>(node.immediate));
+          values[value.id()] = 0;
         } else if (node.opcode == ControlOpcode::kLoadFrame) {
           values[value.id()] = frame_values[node.frame_slot];
         } else if (node.opcode == ControlOpcode::kStoreFrame) {
@@ -2048,6 +2314,10 @@ ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
   } catch (const std::bad_alloc &) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate control-flow interpreter state"},
+            0};
+  } catch (const std::system_error &) {
+    return {{StatusCode::kResourceExhausted,
+             "unable to synchronize CFG interpreter atomic access"},
             0};
   }
 }

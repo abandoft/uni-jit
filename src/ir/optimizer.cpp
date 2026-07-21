@@ -180,6 +180,19 @@ bool is_memory(Opcode opcode) noexcept {
          opcode == Opcode::kLoadVector || opcode == Opcode::kStoreVector;
 }
 
+bool is_atomic_access(Opcode opcode) noexcept {
+  return opcode == Opcode::kAtomicLoad || opcode == Opcode::kAtomicStore ||
+         opcode == Opcode::kAtomicExchange ||
+         opcode == Opcode::kAtomicCompareExchange ||
+         opcode == Opcode::kAtomicFetchAdd ||
+         opcode == Opcode::kAtomicFetchAnd ||
+         opcode == Opcode::kAtomicFetchOr || opcode == Opcode::kAtomicFetchXor;
+}
+
+bool is_atomic(Opcode opcode) noexcept {
+  return is_atomic_access(opcode) || opcode == Opcode::kAtomicFence;
+}
+
 bool is_frame(Opcode opcode) noexcept {
   return opcode == Opcode::kLoadFrame || opcode == Opcode::kStoreFrame;
 }
@@ -214,6 +227,21 @@ bool is_memory(ControlOpcode opcode) noexcept {
          opcode == ControlOpcode::kStoreFloat ||
          opcode == ControlOpcode::kLoadVector ||
          opcode == ControlOpcode::kStoreVector;
+}
+
+bool is_atomic_access(ControlOpcode opcode) noexcept {
+  return opcode == ControlOpcode::kAtomicLoad ||
+         opcode == ControlOpcode::kAtomicStore ||
+         opcode == ControlOpcode::kAtomicExchange ||
+         opcode == ControlOpcode::kAtomicCompareExchange ||
+         opcode == ControlOpcode::kAtomicFetchAdd ||
+         opcode == ControlOpcode::kAtomicFetchAnd ||
+         opcode == ControlOpcode::kAtomicFetchOr ||
+         opcode == ControlOpcode::kAtomicFetchXor;
+}
+
+bool is_atomic(ControlOpcode opcode) noexcept {
+  return is_atomic_access(opcode) || opcode == ControlOpcode::kAtomicFence;
 }
 
 bool is_frame(ControlOpcode opcode) noexcept {
@@ -388,6 +416,78 @@ Value emit_vector(ControlFlowBuilder* builder,
     default:
       return {};
   }
+}
+
+Value emit_atomic(FunctionBuilder *builder, const Function &input,
+                  const Node &node, const std::vector<Value> &mapped) {
+  if (node.opcode == Opcode::kAtomicFence) {
+    return builder->atomic_fence(
+        static_cast<AtomicMemoryOrder>(node.immediate));
+  }
+  const AtomicAccessDescriptor access =
+      input.atomic_accesses()[node.atomic_access];
+  const Value offset = mapped[node.lhs.id()];
+  const auto site = static_cast<std::size_t>(node.immediate);
+  if (node.opcode == Opcode::kAtomicLoad) {
+    return builder->atomic_load(offset, access, site);
+  }
+  const Value operand = mapped[node.rhs.id()];
+  if (node.opcode == Opcode::kAtomicStore) {
+    return builder->atomic_store(offset, operand, access, site);
+  }
+  if (node.opcode == Opcode::kAtomicExchange) {
+    return builder->atomic_exchange(offset, operand, access, site);
+  }
+  if (node.opcode == Opcode::kAtomicCompareExchange) {
+    return builder->atomic_compare_exchange_observed(
+        offset, operand, mapped[node.auxiliary.id()], access, site);
+  }
+  if (node.opcode == Opcode::kAtomicFetchAdd) {
+    return builder->atomic_fetch_add(offset, operand, access, site);
+  }
+  if (node.opcode == Opcode::kAtomicFetchAnd) {
+    return builder->atomic_fetch_and(offset, operand, access, site);
+  }
+  if (node.opcode == Opcode::kAtomicFetchOr) {
+    return builder->atomic_fetch_or(offset, operand, access, site);
+  }
+  return builder->atomic_fetch_xor(offset, operand, access, site);
+}
+
+Value emit_atomic(ControlFlowBuilder *builder, const ControlFlowFunction &input,
+                  const ControlNode &node, const std::vector<Value> &mapped) {
+  if (node.opcode == ControlOpcode::kAtomicFence) {
+    return builder->atomic_fence(
+        static_cast<AtomicMemoryOrder>(node.immediate));
+  }
+  const AtomicAccessDescriptor access =
+      input.atomic_accesses()[node.atomic_access];
+  const Value offset = mapped[node.lhs.id()];
+  const auto site = static_cast<std::size_t>(node.immediate);
+  if (node.opcode == ControlOpcode::kAtomicLoad) {
+    return builder->atomic_load(offset, access, site);
+  }
+  const Value operand = mapped[node.rhs.id()];
+  if (node.opcode == ControlOpcode::kAtomicStore) {
+    return builder->atomic_store(offset, operand, access, site);
+  }
+  if (node.opcode == ControlOpcode::kAtomicExchange) {
+    return builder->atomic_exchange(offset, operand, access, site);
+  }
+  if (node.opcode == ControlOpcode::kAtomicCompareExchange) {
+    return builder->atomic_compare_exchange_observed(
+        offset, operand, mapped[node.auxiliary.id()], access, site);
+  }
+  if (node.opcode == ControlOpcode::kAtomicFetchAdd) {
+    return builder->atomic_fetch_add(offset, operand, access, site);
+  }
+  if (node.opcode == ControlOpcode::kAtomicFetchAnd) {
+    return builder->atomic_fetch_and(offset, operand, access, site);
+  }
+  if (node.opcode == ControlOpcode::kAtomicFetchOr) {
+    return builder->atomic_fetch_or(offset, operand, access, site);
+  }
+  return builder->atomic_fetch_xor(offset, operand, access, site);
 }
 
 enum class VectorNodeKind : std::uint8_t {
@@ -848,6 +948,7 @@ PassResult transform_once(
   for (std::size_t index = 0; index < node_count; ++index) {
     if (input.nodes()[index].opcode == Opcode::kCall ||
         is_memory(input.nodes()[index].opcode) ||
+        is_atomic(input.nodes()[index].opcode) ||
         is_frame(input.nodes()[index].opcode) ||
         is_object(input.nodes()[index].opcode) ||
         is_nonzero_guard(input.nodes()[index].opcode) ||
@@ -889,6 +990,14 @@ PassResult transform_once(
           node.opcode == Opcode::kStoreFloat ||
           node.opcode == Opcode::kStoreVector) {
         live[node.rhs.id()] = true;
+      }
+    } else if (is_atomic_access(node.opcode)) {
+      live[node.lhs.id()] = true;
+      if (node.opcode != Opcode::kAtomicLoad) {
+        live[node.rhs.id()] = true;
+      }
+      if (node.opcode == Opcode::kAtomicCompareExchange) {
+        live[node.auxiliary.id()] = true;
       }
     } else if (node.opcode == Opcode::kStoreFrame ||
                node.opcode == Opcode::kStoreObject) {
@@ -1011,6 +1120,11 @@ PassResult transform_once(
             mapped[node.lhs.id()], mapped[node.rhs.id()], access,
             static_cast<std::size_t>(node.immediate));
       }
+      continue;
+    }
+
+    if (is_atomic(node.opcode)) {
+      mapped[index] = emit_atomic(&builder, input, node, mapped);
       continue;
     }
 
@@ -1426,15 +1540,13 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
     const ControlOpcode opcode = input.nodes()[index].opcode;
     const bool reachable_owner =
         owners[index] != no_owner && reachable[owners[index]];
-    live[index] = reachable_owner &&
-                  (opcode == ControlOpcode::kParameter ||
-                   opcode == ControlOpcode::kBlockParameter ||
-                   opcode == ControlOpcode::kCall ||
-                   is_memory(opcode) ||
-                   is_frame(opcode) ||
-                   is_object(opcode) ||
-                   is_nonzero_guard(opcode) ||
-                   opcode == ControlOpcode::kSafepoint);
+    live[index] =
+        reachable_owner &&
+        (opcode == ControlOpcode::kParameter ||
+         opcode == ControlOpcode::kBlockParameter ||
+         opcode == ControlOpcode::kCall || is_memory(opcode) ||
+         is_atomic(opcode) || is_frame(opcode) || is_object(opcode) ||
+         is_nonzero_guard(opcode) || opcode == ControlOpcode::kSafepoint);
   }
   const auto mark_edge = [&live](const ControlEdge& edge) {
     for (const Value argument : edge.arguments) {
@@ -1497,6 +1609,14 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
           node.opcode == ControlOpcode::kStoreFloat ||
           node.opcode == ControlOpcode::kStoreVector) {
         live[node.rhs.id()] = true;
+      }
+    } else if (is_atomic_access(node.opcode)) {
+      live[node.lhs.id()] = true;
+      if (node.opcode != ControlOpcode::kAtomicLoad) {
+        live[node.rhs.id()] = true;
+      }
+      if (node.opcode == ControlOpcode::kAtomicCompareExchange) {
+        live[node.auxiliary.id()] = true;
       }
     } else if (node.opcode == ControlOpcode::kStoreFrame ||
                node.opcode == ControlOpcode::kStoreObject) {
@@ -1598,6 +1718,8 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
             mapped[node.lhs.id()], mapped[node.rhs.id()], access,
             static_cast<std::size_t>(node.immediate));
       }
+    } else if (is_atomic(node.opcode)) {
+      mapped[index] = emit_atomic(&builder, input, node, mapped);
     } else if (is_frame(node.opcode)) {
       const FrameSlot slot{node.frame_slot};
       mapped[index] = node.opcode == ControlOpcode::kLoadFrame
@@ -1632,8 +1754,8 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
               {}, {}, 0, 0};
     }
     if (node.opcode == ControlOpcode::kCall || is_memory(node.opcode) ||
-        is_frame(node.opcode) || is_object(node.opcode) ||
-        is_nonzero_guard(node.opcode) ||
+        is_atomic(node.opcode) || is_frame(node.opcode) ||
+        is_object(node.opcode) || is_nonzero_guard(node.opcode) ||
         node.opcode == ControlOpcode::kSafepoint) {
       available[owner].clear();
     }
@@ -1985,11 +2107,9 @@ ControlFlowOptimizationResult Optimizer::run(
       const ControlOpcode opcode = function.nodes()[index].opcode;
       live[index] = opcode == ControlOpcode::kParameter ||
                     opcode == ControlOpcode::kBlockParameter ||
-                    opcode == ControlOpcode::kCall ||
-                    is_memory(opcode) ||
-                    is_frame(opcode) ||
-                    is_object(opcode) ||
-                    is_nonzero_guard(opcode) ||
+                    opcode == ControlOpcode::kCall || is_memory(opcode) ||
+                    is_atomic(opcode) || is_frame(opcode) ||
+                    is_object(opcode) || is_nonzero_guard(opcode) ||
                     opcode == ControlOpcode::kSafepoint;
     }
     const auto mark_edge = [&live](const ControlEdge& edge) {
@@ -2040,6 +2160,14 @@ ControlFlowOptimizationResult Optimizer::run(
             node.opcode == ControlOpcode::kStoreFloat ||
             node.opcode == ControlOpcode::kStoreVector) {
           live[node.rhs.id()] = true;
+        }
+      } else if (is_atomic_access(node.opcode)) {
+        live[node.lhs.id()] = true;
+        if (node.opcode != ControlOpcode::kAtomicLoad) {
+          live[node.rhs.id()] = true;
+        }
+        if (node.opcode == ControlOpcode::kAtomicCompareExchange) {
+          live[node.auxiliary.id()] = true;
         }
       } else if (node.opcode == ControlOpcode::kStoreFrame ||
                  node.opcode == ControlOpcode::kStoreObject) {
@@ -2135,6 +2263,8 @@ ControlFlowOptimizationResult Optimizer::run(
               mapped[node.lhs.id()], mapped[node.rhs.id()], access,
               static_cast<std::size_t>(node.immediate));
         }
+      } else if (is_atomic(node.opcode)) {
+        mapped[index] = emit_atomic(&builder, function, node, mapped);
       } else if (is_frame(node.opcode)) {
         const FrameSlot slot{node.frame_slot};
         mapped[index] = node.opcode == ControlOpcode::kLoadFrame
