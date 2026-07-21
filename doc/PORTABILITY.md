@@ -20,7 +20,8 @@ semantics in both the reference interpreter and native backends.
 | x86-64 | x86-64 with SSE2 | System V and Windows x64 | 64-bit immediate move |
 | RISC-V 64 | little-endian RV64IMD | ELF psABI | PC-relative literal pool |
 
-The RISC-V backend requires the `M` extension for native integer multiply. The
+The RISC-V backend requires the `M` extension for native integer multiply,
+floor division, and modulo. The
 Float64 tier requires the `D` extension. The assembler, ABI selection, register
 allocator, and executable-memory publisher are owned by UniJIT and do not link
 against SLJIT or another JIT library.

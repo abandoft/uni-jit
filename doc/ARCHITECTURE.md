@@ -88,6 +88,14 @@ IR builders preserve the same rule. AArch64 lowers to guarded `LSLV`/`LSRV`,
 x86-64 to guarded `SHL`/`SHR` while preserving an allocated `RCX`, and RISC-V
 64 to guarded `SLL`/`SRL`; no runtime helper or target-specific semantic leak
 is involved.
+Word `floor_divide` and `floor_modulo` round toward negative infinity and keep
+the remainder's sign aligned with the divisor. `INT64_MIN / -1` wraps to
+`INT64_MIN`, while a zero divisor is totalized to zero at the core IR boundary
+so untrusted IR cannot trigger a hardware exception. Frontends that require a
+language error place an effectful Word nonzero guard before the operation.
+AArch64 uses `SDIV` plus `MSUB`, x86-64 splits zero and overflow before `IDIV`,
+and RISC-V 64 uses `DIV`/`REM`; each target applies the same non-exact negative
+quotient or remainder correction inline without a runtime helper.
 
 Effectful runtime helpers use one portable signature: a pointer to a flat
 value-bits argument area plus its element count, returning one value-bits word.
@@ -100,9 +108,9 @@ shadow-space ABI, and preserves the link register on AArch64 and RISC-V 64.
 Native entries also accept an optional execution context. Explicit effectful
 safepoints poll its lock-free sticky interrupt flag, publish a stable exit site,
 restore the complete native frame, and return through the normal ABI boundary.
-Effectful Float64 nonzero guards distinguish both signed zeroes using value bits
-without misclassifying NaNs, then publish a diagnosed runtime exit for frontend
-exception reconstruction. Immutable site metadata describes the semantic exit,
+Effectful Word and Float64 nonzero guards publish diagnosed runtime exits for
+frontend exception reconstruction; the Float64 form distinguishes both signed
+zeroes using value bits without misclassifying NaNs. Immutable site metadata describes the semantic exit,
 frontend resume offset, and typed recovery of entry arguments, constants, and
 the exact guarded value. The same exit semantics are implemented by the
 reference interpreters and native lowering on all three architectures. Null

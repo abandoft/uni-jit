@@ -143,6 +143,16 @@ bytecodes in straight-line and numeric-loop baseline/optimized tiers and
 compares every boundary result with the unmodified Lua VM across asynchronous
 promotion.
 
+Word floor-arithmetic qualification crosses positive and negative exact and
+non-exact operands, both signed boundaries, `INT64_MIN / -1`, and zero divisors
+through straight-line and CFG interpreter/native execution. It proves inline
+floor correction, live-input preservation, deterministic total core semantics,
+diagnosed Word guard exits, optimizer and verifier behavior, deterministic
+fuzzing, and both installed-package builders. Stock Lua executes constant-K and
+register `IDIV`/`MOD` bytecodes in straight-line and numeric-loop baseline and
+optimized tiers, compares every nonzero-divisor result against the unmodified
+VM, and requires the exact Lua error class after guard exits in either tier.
+
 Strided-loop coverage executes QuickJS prefix/postfix decrement and `+=`/`-=`
 updates plus PocketPy one-, two-, and three-argument `range` forms. Positive
 and reverse loops are combined with early control guards, while zero and

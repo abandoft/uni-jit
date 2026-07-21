@@ -89,10 +89,11 @@ caller-clobbered live values and link-register restoration. CFG lowering can
 place a poll in a loop body so long-running generated code can be interrupted
 without a signal handler or writable executable memory.
 
-Float64 nonzero guards are explicit effectful SSA nodes. A passing finite,
-infinite, subnormal, or NaN value continues with a zero Word effect result.
-Either signed zero records `ExitReason::kRuntime`, the frontend-provided source
-site, and the exact guarded value bits before restoring the native frame.
+Word and Float64 nonzero guards are explicit effectful SSA nodes. A passing
+Word, finite, infinite, subnormal, or NaN value continues with a zero Word
+effect result. Integer zero or either Float64 signed zero records
+`ExitReason::kRuntime`, the frontend-provided source site, and the exact guarded
+value bits before restoring the native frame.
 Straight-line and CFG representations share this contract on AArch64, x86-64,
 and RISC-V 64, including guards executed inside loop bodies.
 Managed invocation reports `StatusCode::kRuntimeExit`; the frontend can then
