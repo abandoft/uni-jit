@@ -759,6 +759,61 @@ void test_float64_division() {
   }
 }
 
+void test_float64_negation() {
+  using unijit::ir::ValueType;
+  FunctionBuilder builder(std::vector<ValueType>{ValueType::kFloat64});
+  const Value negated = builder.float64_negate(builder.parameter(0));
+  expect(builder.set_return(negated).ok(),
+         "Float64 negation fixture must record its result");
+  const Function function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok() &&
+             function.return_type() == ValueType::kFloat64,
+         "Float64 negation must preserve its operand type");
+
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "Float64 negation must compile to native code");
+  constexpr std::array<std::uint64_t, 8> kSamples = {
+      UINT64_C(0x0000000000000000), UINT64_C(0x8000000000000000),
+      UINT64_C(0x3ff4000000000000), UINT64_C(0xbff4000000000000),
+      UINT64_C(0x7ff0000000000000), UINT64_C(0xfff0000000000000),
+      UINT64_C(0x7ff8000000001234), UINT64_C(0xfff8000000005678)};
+  for (const std::uint64_t bits : kSamples) {
+    const Word argument = static_cast<Word>(bits);
+    const auto interpreted = Interpreter::evaluate(function, &argument, 1);
+    expect(interpreted.ok() &&
+               static_cast<std::uint64_t>(interpreted.value) ==
+                   (bits ^ (UINT64_C(1) << 63U)),
+           "interpreter negation must only toggle the Float64 sign bit");
+    if (compilation.ok()) {
+      const auto native = compilation.function->invoke(&argument, 1);
+      expect(native.ok() && native.value == interpreted.value,
+             "native negation must preserve exact zero, infinity, and NaN bits");
+    }
+  }
+
+  FunctionBuilder constant_builder(0);
+  const Value constant_nan = constant_builder.float64_constant_bits(
+      static_cast<Word>(UINT64_C(0x7ff8000000001234)));
+  expect(constant_builder
+             .set_return(constant_builder.float64_negate(constant_nan))
+             .ok(),
+         "constant Float64 negation fixture must record its result");
+  const auto optimized =
+      unijit::ir::Optimizer::run(std::move(constant_builder).build());
+  expect(optimized.ok() && optimized.stats.constants_folded == 1 &&
+             optimized.function.nodes().size() == 1 &&
+             static_cast<std::uint64_t>(
+                 optimized.function.nodes()[0].immediate) ==
+                 UINT64_C(0xfff8000000001234),
+         "optimizer must fold Float64 negation without canonicalizing NaN");
+
+  FunctionBuilder malformed(1);
+  const Value invalid = malformed.float64_negate(malformed.parameter(0));
+  expect(malformed.set_return(invalid).ok() &&
+             !unijit::ir::verify(std::move(malformed).build()).ok(),
+         "verifier must reject Float64 negation over a Word operand");
+}
+
 void test_float64_comparisons() {
   using unijit::ir::ValueType;
   FunctionBuilder builder(
@@ -2797,6 +2852,42 @@ void test_control_flow_float64_comparisons() {
         "unordered operands must compare unequal");
 }
 
+void test_control_flow_float64_negation() {
+  using unijit::ir::ValueType;
+  unijit::ir::ControlFlowBuilder builder(
+      std::vector<ValueType>{ValueType::kFloat64});
+  const Value first = builder.float64_negate(builder.parameter(0));
+  const Value duplicate = builder.float64_negate(builder.parameter(0));
+  const Value result = builder.float64_add(first, duplicate);
+  expect(builder.set_return(result).ok(),
+         "Float64 CFG negation fixture must record its result");
+  const unijit::ir::ControlFlowFunction function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "Float64 CFG negation must satisfy type verification");
+
+  const auto optimization = unijit::ir::Optimizer::run(function);
+  expect(optimization.ok() &&
+             optimization.stats.common_subexpressions == 1,
+         "CFG optimizer must eliminate duplicate Float64 negations");
+
+  auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "Float64 CFG negation must compile");
+  constexpr std::array<std::uint64_t, 4> kSamples = {
+      UINT64_C(0x0000000000000000), UINT64_C(0x8000000000000000),
+      UINT64_C(0x3ff0000000000000), UINT64_C(0xbff0000000000000)};
+  for (const std::uint64_t bits : kSamples) {
+    const Word argument = static_cast<Word>(bits);
+    const auto interpreted = unijit::ir::ControlFlowInterpreter::evaluate(
+        function, &argument, 1);
+    if (compilation.ok()) {
+      const auto native = compilation.function->invoke(&argument, 1);
+      expect(interpreted.ok() && native.ok() &&
+                 native.value == interpreted.value,
+             "native CFG negation must match exact interpreter bits");
+    }
+  }
+}
+
 void test_control_flow_merge() {
   unijit::ir::ControlFlowBuilder builder(2);
   const unijit::ir::Block take_lhs = builder.create_block(0);
@@ -4044,6 +4135,7 @@ int main() {
   test_differential_arithmetic();
   test_float64_ir_and_interpreter();
   test_float64_division();
+  test_float64_negation();
   test_float64_comparisons();
   test_float64_nonzero_guard();
   test_deoptimization_reconstruction();
@@ -4077,6 +4169,7 @@ int main() {
   test_control_flow_rejects_mixed_edge_types();
   test_control_flow_rejects_mixed_return_types();
   test_control_flow_float64_comparisons();
+  test_control_flow_float64_negation();
   test_control_flow_merge();
   test_control_flow_parallel_edge_copy();
   test_control_flow_float64_parallel_edge_copy();
