@@ -99,6 +99,8 @@ Word evaluate_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
     case Opcode::kStoreWord:
     case Opcode::kLoadFloat:
     case Opcode::kStoreFloat:
+    case Opcode::kLoadVector:
+    case Opcode::kStoreVector:
     case Opcode::kLoadFrame:
     case Opcode::kStoreFrame:
     case Opcode::kLoadObject:
@@ -255,6 +257,30 @@ EvaluationResult Interpreter::evaluate(const Function& function,
             return {result.status, 0};
           }
           values[index] = result.value;
+          break;
+        }
+        case Opcode::kLoadVector: {
+          const detail::VectorMemoryAccessResult result =
+              detail::load_bounded_vector(
+                  function.memory_accesses()[node.memory_access], node.type,
+                  values[node.lhs.id()],
+                  static_cast<std::size_t>(node.immediate), context);
+          if (!result.ok()) {
+            return {result.status, 0};
+          }
+          vector_values[index] = result.value;
+          break;
+        }
+        case Opcode::kStoreVector: {
+          const detail::VectorMemoryAccessResult result =
+              detail::store_bounded_vector(
+                  function.memory_accesses()[node.memory_access], node.type,
+                  values[node.lhs.id()], vector_values[node.rhs.id()],
+                  static_cast<std::size_t>(node.immediate), context);
+          if (!result.ok()) {
+            return {result.status, 0};
+          }
+          vector_values[index] = result.value;
           break;
         }
         case Opcode::kLoadFrame:

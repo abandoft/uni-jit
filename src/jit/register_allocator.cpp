@@ -94,6 +94,7 @@ void visit_control_operands(const ir::ControlFlowFunction& function,
     case ir::ControlOpcode::kGuardFloatNonzero:
     case ir::ControlOpcode::kLoadWord:
     case ir::ControlOpcode::kLoadFloat:
+    case ir::ControlOpcode::kLoadVector:
     case ir::ControlOpcode::kVectorSplat:
     case ir::ControlOpcode::kVectorExtractLane:
     case ir::ControlOpcode::kVectorUnary:
@@ -110,6 +111,7 @@ void visit_control_operands(const ir::ControlFlowFunction& function,
       break;
     case ir::ControlOpcode::kStoreWord:
     case ir::ControlOpcode::kStoreFloat:
+    case ir::ControlOpcode::kStoreVector:
       visitor(node.lhs);
       visitor(node.rhs);
       break;
@@ -191,6 +193,7 @@ RegisterAllocation allocate_impl(const ir::Function& function,
                node.opcode == ir::Opcode::kGuardFloatNonzero ||
                node.opcode == ir::Opcode::kLoadWord ||
                node.opcode == ir::Opcode::kLoadFloat ||
+               node.opcode == ir::Opcode::kLoadVector ||
                node.opcode == ir::Opcode::kVectorSplat ||
                node.opcode == ir::Opcode::kVectorExtractLane ||
                node.opcode == ir::Opcode::kVectorUnary ||
@@ -206,7 +209,8 @@ RegisterAllocation allocate_impl(const ir::Function& function,
                    static_cast<std::size_t>(node.immediate)],
                index);
     } else if (node.opcode == ir::Opcode::kStoreWord ||
-               node.opcode == ir::Opcode::kStoreFloat) {
+               node.opcode == ir::Opcode::kStoreFloat ||
+               node.opcode == ir::Opcode::kStoreVector) {
       note_use(&last_use, node.lhs, index);
       note_use(&last_use, node.rhs, index);
     } else if (node.opcode == ir::Opcode::kStoreFrame ||
@@ -401,6 +405,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kGuardFloatNonzero:
         case ir::ControlOpcode::kLoadWord:
         case ir::ControlOpcode::kLoadFloat:
+        case ir::ControlOpcode::kLoadVector:
         case ir::ControlOpcode::kVectorSplat:
         case ir::ControlOpcode::kVectorExtractLane:
         case ir::ControlOpcode::kVectorUnary:
@@ -417,6 +422,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
           break;
         case ir::ControlOpcode::kStoreWord:
         case ir::ControlOpcode::kStoreFloat:
+        case ir::ControlOpcode::kStoreVector:
           note_local_use(node.lhs);
           note_local_use(node.rhs);
           break;
@@ -511,7 +517,9 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
           opcode == ir::ControlOpcode::kLoadWord ||
           opcode == ir::ControlOpcode::kStoreWord ||
           opcode == ir::ControlOpcode::kLoadFloat ||
-          opcode == ir::ControlOpcode::kStoreFloat) {
+          opcode == ir::ControlOpcode::kStoreFloat ||
+          opcode == ir::ControlOpcode::kLoadVector ||
+          opcode == ir::ControlOpcode::kStoreVector) {
         const auto require_live_stack =
             [&](const std::vector<std::size_t>& active) {
           for (const std::size_t position : active) {
@@ -621,6 +629,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kGuardFloatNonzero:
         case ir::ControlOpcode::kLoadWord:
         case ir::ControlOpcode::kLoadFloat:
+        case ir::ControlOpcode::kLoadVector:
         case ir::ControlOpcode::kVectorSplat:
         case ir::ControlOpcode::kVectorExtractLane:
         case ir::ControlOpcode::kVectorUnary:
@@ -639,6 +648,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
           break;
         case ir::ControlOpcode::kStoreWord:
         case ir::ControlOpcode::kStoreFloat:
+        case ir::ControlOpcode::kStoreVector:
           note_nonlocal_use(block_index, node.lhs);
           note_nonlocal_use(block_index, node.rhs);
           break;
@@ -839,7 +849,9 @@ StackMapLiveness plan_straight_stack_map_liveness_impl(
         opcode != ir::Opcode::kGuardWordNonzero &&
         opcode != ir::Opcode::kGuardFloatNonzero &&
         opcode != ir::Opcode::kLoadWord && opcode != ir::Opcode::kStoreWord &&
-        opcode != ir::Opcode::kLoadFloat && opcode != ir::Opcode::kStoreFloat) {
+        opcode != ir::Opcode::kLoadFloat && opcode != ir::Opcode::kStoreFloat &&
+        opcode != ir::Opcode::kLoadVector &&
+        opcode != ir::Opcode::kStoreVector) {
       continue;
     }
     std::vector<ir::Value>& site_values = live_values[node_index];
@@ -1014,7 +1026,9 @@ StackMapLiveness plan_control_stack_map_liveness_impl(
           node.opcode != ir::ControlOpcode::kLoadWord &&
           node.opcode != ir::ControlOpcode::kStoreWord &&
           node.opcode != ir::ControlOpcode::kLoadFloat &&
-          node.opcode != ir::ControlOpcode::kStoreFloat) {
+          node.opcode != ir::ControlOpcode::kStoreFloat &&
+          node.opcode != ir::ControlOpcode::kLoadVector &&
+          node.opcode != ir::ControlOpcode::kStoreVector) {
         continue;
       }
       std::vector<ir::Value>& site_values = live_values[value.id()];

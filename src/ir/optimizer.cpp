@@ -176,7 +176,8 @@ bool is_nonzero_guard(Opcode opcode) noexcept {
 
 bool is_memory(Opcode opcode) noexcept {
   return opcode == Opcode::kLoadWord || opcode == Opcode::kStoreWord ||
-         opcode == Opcode::kLoadFloat || opcode == Opcode::kStoreFloat;
+         opcode == Opcode::kLoadFloat || opcode == Opcode::kStoreFloat ||
+         opcode == Opcode::kLoadVector || opcode == Opcode::kStoreVector;
 }
 
 bool is_frame(Opcode opcode) noexcept {
@@ -210,7 +211,9 @@ bool is_memory(ControlOpcode opcode) noexcept {
   return opcode == ControlOpcode::kLoadWord ||
          opcode == ControlOpcode::kStoreWord ||
          opcode == ControlOpcode::kLoadFloat ||
-         opcode == ControlOpcode::kStoreFloat;
+         opcode == ControlOpcode::kStoreFloat ||
+         opcode == ControlOpcode::kLoadVector ||
+         opcode == ControlOpcode::kStoreVector;
 }
 
 bool is_frame(ControlOpcode opcode) noexcept {
@@ -883,7 +886,8 @@ PassResult transform_once(
     } else if (is_memory(node.opcode)) {
       live[node.lhs.id()] = true;
       if (node.opcode == Opcode::kStoreWord ||
-          node.opcode == Opcode::kStoreFloat) {
+          node.opcode == Opcode::kStoreFloat ||
+          node.opcode == Opcode::kStoreVector) {
         live[node.rhs.id()] = true;
       }
     } else if (node.opcode == Opcode::kStoreFrame ||
@@ -994,8 +998,16 @@ PassResult transform_once(
         mapped[index] =
             builder.load_float(mapped[node.lhs.id()], access,
                                static_cast<std::size_t>(node.immediate));
-      } else {
+      } else if (node.opcode == Opcode::kStoreFloat) {
         mapped[index] = builder.store_float(
+            mapped[node.lhs.id()], mapped[node.rhs.id()], access,
+            static_cast<std::size_t>(node.immediate));
+      } else if (node.opcode == Opcode::kLoadVector) {
+        mapped[index] =
+            builder.load_vector(mapped[node.lhs.id()], node.type, access,
+                                static_cast<std::size_t>(node.immediate));
+      } else {
+        mapped[index] = builder.store_vector(
             mapped[node.lhs.id()], mapped[node.rhs.id()], access,
             static_cast<std::size_t>(node.immediate));
       }
@@ -1482,7 +1494,8 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
     } else if (is_memory(node.opcode)) {
       live[node.lhs.id()] = true;
       if (node.opcode == ControlOpcode::kStoreWord ||
-          node.opcode == ControlOpcode::kStoreFloat) {
+          node.opcode == ControlOpcode::kStoreFloat ||
+          node.opcode == ControlOpcode::kStoreVector) {
         live[node.rhs.id()] = true;
       }
     } else if (node.opcode == ControlOpcode::kStoreFrame ||
@@ -1572,8 +1585,16 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
         mapped[index] =
             builder.load_float(mapped[node.lhs.id()], access,
                                static_cast<std::size_t>(node.immediate));
-      } else {
+      } else if (node.opcode == ControlOpcode::kStoreFloat) {
         mapped[index] = builder.store_float(
+            mapped[node.lhs.id()], mapped[node.rhs.id()], access,
+            static_cast<std::size_t>(node.immediate));
+      } else if (node.opcode == ControlOpcode::kLoadVector) {
+        mapped[index] =
+            builder.load_vector(mapped[node.lhs.id()], node.type, access,
+                                static_cast<std::size_t>(node.immediate));
+      } else {
+        mapped[index] = builder.store_vector(
             mapped[node.lhs.id()], mapped[node.rhs.id()], access,
             static_cast<std::size_t>(node.immediate));
       }
@@ -2016,7 +2037,8 @@ ControlFlowOptimizationResult Optimizer::run(
       } else if (is_memory(node.opcode)) {
         live[node.lhs.id()] = true;
         if (node.opcode == ControlOpcode::kStoreWord ||
-            node.opcode == ControlOpcode::kStoreFloat) {
+            node.opcode == ControlOpcode::kStoreFloat ||
+            node.opcode == ControlOpcode::kStoreVector) {
           live[node.rhs.id()] = true;
         }
       } else if (node.opcode == ControlOpcode::kStoreFrame ||
@@ -2100,8 +2122,16 @@ ControlFlowOptimizationResult Optimizer::run(
           mapped[index] =
               builder.load_float(mapped[node.lhs.id()], access,
                                  static_cast<std::size_t>(node.immediate));
-        } else {
+        } else if (node.opcode == ControlOpcode::kStoreFloat) {
           mapped[index] = builder.store_float(
+              mapped[node.lhs.id()], mapped[node.rhs.id()], access,
+              static_cast<std::size_t>(node.immediate));
+        } else if (node.opcode == ControlOpcode::kLoadVector) {
+          mapped[index] =
+              builder.load_vector(mapped[node.lhs.id()], node.type, access,
+                                  static_cast<std::size_t>(node.immediate));
+        } else {
+          mapped[index] = builder.store_vector(
               mapped[node.lhs.id()], mapped[node.rhs.id()], access,
               static_cast<std::size_t>(node.immediate));
         }

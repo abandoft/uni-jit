@@ -63,6 +63,8 @@ bool is_binary(ControlOpcode opcode) {
   case ControlOpcode::kStoreWord:
   case ControlOpcode::kLoadFloat:
   case ControlOpcode::kStoreFloat:
+  case ControlOpcode::kLoadVector:
+  case ControlOpcode::kStoreVector:
   case ControlOpcode::kLoadFrame:
   case ControlOpcode::kStoreFrame:
   case ControlOpcode::kLoadObject:
@@ -94,7 +96,9 @@ bool is_memory(ControlOpcode opcode) {
   return opcode == ControlOpcode::kLoadWord ||
          opcode == ControlOpcode::kStoreWord ||
          opcode == ControlOpcode::kLoadFloat ||
-         opcode == ControlOpcode::kStoreFloat;
+         opcode == ControlOpcode::kStoreFloat ||
+         opcode == ControlOpcode::kLoadVector ||
+         opcode == ControlOpcode::kStoreVector;
 }
 
 bool is_float_memory(ControlOpcode opcode) {
@@ -104,12 +108,19 @@ bool is_float_memory(ControlOpcode opcode) {
 
 bool is_memory_load(ControlOpcode opcode) {
   return opcode == ControlOpcode::kLoadWord ||
-         opcode == ControlOpcode::kLoadFloat;
+         opcode == ControlOpcode::kLoadFloat ||
+         opcode == ControlOpcode::kLoadVector;
 }
 
 bool is_memory_store(ControlOpcode opcode) {
   return opcode == ControlOpcode::kStoreWord ||
-         opcode == ControlOpcode::kStoreFloat;
+         opcode == ControlOpcode::kStoreFloat ||
+         opcode == ControlOpcode::kStoreVector;
+}
+
+bool is_vector_memory(ControlOpcode opcode) {
+  return opcode == ControlOpcode::kLoadVector ||
+         opcode == ControlOpcode::kStoreVector;
 }
 
 bool is_frame(ControlOpcode opcode) {
@@ -172,7 +183,8 @@ bool valid_vector_widen(ValueType source, ValueType result) {
 
 bool valid_memory_width(MemoryWidth width) {
   return width == MemoryWidth::k8 || width == MemoryWidth::k16 ||
-         width == MemoryWidth::k32 || width == MemoryWidth::k64;
+         width == MemoryWidth::k32 || width == MemoryWidth::k64 ||
+         width == MemoryWidth::k128;
 }
 
 bool valid_byte_order(MemoryByteOrder order) {
@@ -652,8 +664,11 @@ Status verify_impl(const ControlFlowFunction &function) {
             function.memory_accesses()[node.memory_access];
         const std::size_t width = memory_width_bytes(access.width);
         const bool float_memory = is_float_memory(node.opcode);
+        const bool vector_memory = is_vector_memory(node.opcode);
         const ValueType result_type =
-            float_memory ? ValueType::kFloat64 : ValueType::kWord;
+            vector_memory
+                ? node.type
+                : (float_memory ? ValueType::kFloat64 : ValueType::kWord);
         if (access.region >= function.memory_region_count() ||
             !valid_memory_width(access.width) || access.alignment == 0 ||
             access.alignment > width ||
@@ -661,6 +676,10 @@ Status verify_impl(const ControlFlowFunction &function) {
             !valid_byte_order(access.byte_order) ||
             ((float_memory || is_memory_store(node.opcode)) &&
              access.sign_extend) ||
+            (!vector_memory && access.width == MemoryWidth::k128) ||
+            (vector_memory && (access.width != MemoryWidth::k128 ||
+                               (!is_integer_vector_type(node.type) &&
+                                !is_float_vector_type(node.type)))) ||
             (float_memory && access.width != MemoryWidth::k32 &&
              access.width != MemoryWidth::k64) ||
             node.immediate < 0 || node.type != result_type ||
@@ -1380,6 +1399,53 @@ Value ControlFlowBuilder::store_float(Value byte_offset, Value value,
   return result;
 }
 
+Value ControlFlowBuilder::load_vector(Value byte_offset, ValueType type,
+                                      MemoryAccessDescriptor access,
+                                      std::size_t site) {
+  if (function_.memory_accesses_.size() >=
+          MemoryAccessDescriptor::kInvalidIndex ||
+      site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {
+    return {};
+  }
+  access.sign_extend = false;
+  const auto access_index =
+      static_cast<std::uint32_t>(function_.memory_accesses_.size());
+  function_.memory_accesses_.push_back(access);
+  const Value result = append_node(ControlNode{ControlOpcode::kLoadVector,
+                                               byte_offset,
+                                               {},
+                                               static_cast<Word>(site),
+                                               type,
+                                               0,
+                                               0,
+                                               access_index});
+  if (!result.valid()) {
+    function_.memory_accesses_.pop_back();
+  }
+  return result;
+}
+
+Value ControlFlowBuilder::store_vector(Value byte_offset, Value value,
+                                       MemoryAccessDescriptor access,
+                                       std::size_t site) {
+  if (function_.memory_accesses_.size() >=
+          MemoryAccessDescriptor::kInvalidIndex ||
+      site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {
+    return {};
+  }
+  access.sign_extend = false;
+  const auto access_index =
+      static_cast<std::uint32_t>(function_.memory_accesses_.size());
+  function_.memory_accesses_.push_back(access);
+  const Value result = append_node(ControlNode{
+      ControlOpcode::kStoreVector, byte_offset, value, static_cast<Word>(site),
+      function_.value_type(value), 0, 0, access_index});
+  if (!result.valid()) {
+    function_.memory_accesses_.pop_back();
+  }
+  return result;
+}
+
 FrameSlot ControlFlowBuilder::create_frame_slot(ValueType type,
                                                 bool sensitive) {
   if (function_.frame_slots_.size() >= FrameSlot::kInvalidId) {
@@ -1837,6 +1903,26 @@ ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
             return {result.status, 0};
           }
           values[value.id()] = result.value;
+        } else if (node.opcode == ControlOpcode::kLoadVector) {
+          const detail::VectorMemoryAccessResult result =
+              detail::load_bounded_vector(
+                  function.memory_accesses()[node.memory_access], node.type,
+                  values[node.lhs.id()],
+                  static_cast<std::size_t>(node.immediate), context);
+          if (!result.ok()) {
+            return {result.status, 0};
+          }
+          vector_values[value.id()] = result.value;
+        } else if (node.opcode == ControlOpcode::kStoreVector) {
+          const detail::VectorMemoryAccessResult result =
+              detail::store_bounded_vector(
+                  function.memory_accesses()[node.memory_access], node.type,
+                  values[node.lhs.id()], vector_values[node.rhs.id()],
+                  static_cast<std::size_t>(node.immediate), context);
+          if (!result.ok()) {
+            return {result.status, 0};
+          }
+          vector_values[value.id()] = result.value;
         } else if (node.opcode == ControlOpcode::kLoadFrame) {
           values[value.id()] = frame_values[node.frame_slot];
         } else if (node.opcode == ControlOpcode::kStoreFrame) {

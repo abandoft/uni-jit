@@ -72,6 +72,8 @@ enum class ControlOpcode : std::uint8_t {
   kStoreWord,
   kLoadFloat,
   kStoreFloat,
+  kLoadVector,
+  kStoreVector,
   kLoadFrame,
   kStoreFrame,
   kLoadObject,
@@ -254,6 +256,10 @@ public:
                    std::size_t site);
   Value store_float(Value byte_offset, Value value,
                    MemoryAccessDescriptor access, std::size_t site);
+  Value load_vector(Value byte_offset, ValueType type,
+                    MemoryAccessDescriptor access, std::size_t site);
+  Value store_vector(Value byte_offset, Value value,
+                     MemoryAccessDescriptor access, std::size_t site);
   FrameSlot create_frame_slot(ValueType type, bool sensitive = false);
   Value load_frame(FrameSlot slot);
   Value store_frame(FrameSlot slot, Value value);

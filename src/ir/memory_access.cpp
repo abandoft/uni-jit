@@ -182,4 +182,51 @@ MemoryAccessResult store_bounded_float(
   return stored.ok() ? MemoryAccessResult{Status::ok_status(), value} : stored;
 }
 
+VectorMemoryAccessResult
+load_bounded_vector(const MemoryAccessDescriptor &access, ValueType type,
+                    Word byte_offset, std::size_t site,
+                    runtime::ExecutionContext *context) noexcept {
+  const ResolvedAccess resolved =
+      resolve(access, byte_offset, site, context, false);
+  if (!resolved.status.ok()) {
+    return {resolved.status, {}};
+  }
+  Vector128 result;
+  const std::size_t lane_bytes = vector_lane_bits(type) / 8U;
+  const bool little = little_endian(access.byte_order);
+  for (std::size_t lane = 0; lane < vector_lane_count(type); ++lane) {
+    for (std::size_t index = 0; index < lane_bytes; ++index) {
+      const std::size_t memory_index = lane * lane_bytes + index;
+      const std::size_t logical_index =
+          lane * lane_bytes + (little ? index : lane_bytes - index - 1U);
+      result.bytes[logical_index] =
+          read_byte(resolved.address, memory_index, access.is_volatile);
+    }
+  }
+  return {Status::ok_status(), result};
+}
+
+VectorMemoryAccessResult
+store_bounded_vector(const MemoryAccessDescriptor &access, ValueType type,
+                     Word byte_offset, const Vector128 &value, std::size_t site,
+                     runtime::ExecutionContext *context) noexcept {
+  const ResolvedAccess resolved =
+      resolve(access, byte_offset, site, context, true);
+  if (!resolved.status.ok()) {
+    return {resolved.status, {}};
+  }
+  const std::size_t lane_bytes = vector_lane_bits(type) / 8U;
+  const bool little = little_endian(access.byte_order);
+  for (std::size_t lane = 0; lane < vector_lane_count(type); ++lane) {
+    for (std::size_t index = 0; index < lane_bytes; ++index) {
+      const std::size_t memory_index = lane * lane_bytes + index;
+      const std::size_t logical_index =
+          lane * lane_bytes + (little ? index : lane_bytes - index - 1U);
+      write_byte(resolved.address, memory_index, value.bytes[logical_index],
+                 access.is_volatile);
+    }
+  }
+  return {Status::ok_status(), value};
+}
+
 }  // namespace unijit::ir::detail

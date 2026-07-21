@@ -52,9 +52,11 @@ bool is_nonzero_guard(ir::Opcode opcode) noexcept {
 }
 
 bool is_memory(ir::Opcode opcode) noexcept {
-  return opcode == ir::Opcode::kLoadWord ||
-         opcode == ir::Opcode::kStoreWord ||
-         opcode == ir::Opcode::kLoadFloat || opcode == ir::Opcode::kStoreFloat;
+  return opcode == ir::Opcode::kLoadWord || opcode == ir::Opcode::kStoreWord ||
+         opcode == ir::Opcode::kLoadFloat ||
+         opcode == ir::Opcode::kStoreFloat ||
+         opcode == ir::Opcode::kLoadVector ||
+         opcode == ir::Opcode::kStoreVector;
 }
 
 bool is_object(ir::Opcode opcode) noexcept {
@@ -71,7 +73,9 @@ bool is_memory(ir::ControlOpcode opcode) noexcept {
   return opcode == ir::ControlOpcode::kLoadWord ||
          opcode == ir::ControlOpcode::kStoreWord ||
          opcode == ir::ControlOpcode::kLoadFloat ||
-         opcode == ir::ControlOpcode::kStoreFloat;
+         opcode == ir::ControlOpcode::kStoreFloat ||
+         opcode == ir::ControlOpcode::kLoadVector ||
+         opcode == ir::ControlOpcode::kStoreVector;
 }
 
 bool is_object(ir::ControlOpcode opcode) noexcept {

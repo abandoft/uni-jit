@@ -817,6 +817,23 @@ void materialize_vector(Assembler* assembler, int destination,
   assembler->insert_vector_lane(destination, kScratch0, 64, 1);
 }
 
+void reverse_vector_lanes(Assembler *assembler, int destination, int source,
+                          ir::ValueType type) {
+  const std::size_t lane_bits = ir::vector_lane_bits(type);
+  if (lane_bits == 8) {
+    if (destination != source) {
+      assembler->move_vector_register(destination, source);
+    }
+    return;
+  }
+  const std::size_t lane_bytes = lane_bits / 8U;
+  for (std::size_t lane = 0; lane < ir::vector_lane_count(type); ++lane) {
+    assembler->extract_vector_lane(kScratch0, source, lane_bits, lane, false);
+    assembler->reverse_bytes(kScratch0, kScratch0, lane_bytes);
+    assembler->insert_vector_lane(destination, kScratch0, lane_bits, lane);
+  }
+}
+
 void store_vector_if_spilled(Assembler* assembler,
                              const ValueLocation& destination,
                              int source) {
@@ -1174,6 +1191,8 @@ LoweringResult lower_impl(const ir::Function& function,
                node.opcode == ir::Opcode::kStoreWord ||
                node.opcode == ir::Opcode::kLoadFloat ||
                node.opcode == ir::Opcode::kStoreFloat ||
+               node.opcode == ir::Opcode::kLoadVector ||
+               node.opcode == ir::Opcode::kStoreVector ||
                node.opcode == ir::Opcode::kLoadObject ||
                node.opcode == ir::Opcode::kStoreObject) {
       has_context_operations = true;
@@ -1228,7 +1247,9 @@ LoweringResult lower_impl(const ir::Function& function,
         node.opcode == ir::Opcode::kLoadWord ||
         node.opcode == ir::Opcode::kStoreWord ||
         node.opcode == ir::Opcode::kLoadFloat ||
-        node.opcode == ir::Opcode::kStoreFloat) {
+        node.opcode == ir::Opcode::kStoreFloat ||
+        node.opcode == ir::Opcode::kLoadVector ||
+        node.opcode == ir::Opcode::kStoreVector) {
       spill_straight_stack_map_values(&assembler, function, allocation,
                                       live_values, stack_map_base);
       stack_maps.push_back(make_stack_map_record(
@@ -1661,12 +1682,15 @@ LoweringResult lower_impl(const ir::Function& function,
       case ir::Opcode::kLoadWord:
       case ir::Opcode::kStoreWord:
       case ir::Opcode::kLoadFloat:
-      case ir::Opcode::kStoreFloat: {
+      case ir::Opcode::kStoreFloat:
+      case ir::Opcode::kLoadVector:
+      case ir::Opcode::kStoreVector: {
         const ir::MemoryAccessDescriptor& access =
             function.memory_accesses()[node.memory_access];
         const std::size_t width = ir::memory_width_bytes(access.width);
         const bool is_store = node.opcode == ir::Opcode::kStoreWord ||
-                              node.opcode == ir::Opcode::kStoreFloat;
+                              node.opcode == ir::Opcode::kStoreFloat ||
+                              node.opcode == ir::Opcode::kStoreVector;
         const std::size_t region_offset =
             static_cast<std::size_t>(access.region) *
             sizeof(runtime::MemoryRegion);
@@ -1771,7 +1795,7 @@ LoweringResult lower_impl(const ir::Function& function,
             assembler.store_float(target, kStackPointer,
                                   spill_offset(destination));
           }
-        } else {
+        } else if (node.opcode == ir::Opcode::kStoreFloat) {
           const int stored = load_float_operand(
               &assembler, allocation.locations[node.rhs.id()], kFloatScratch0);
           if (width == 4) {
@@ -1798,6 +1822,31 @@ LoweringResult lower_impl(const ir::Function& function,
           if (!destination.in_register()) {
             assembler.store_float(target, kStackPointer, spill_offset(destination));
           }
+        } else if (node.opcode == ir::Opcode::kLoadVector) {
+          const int target = destination.in_register()
+                                 ? physical_vector_register(destination)
+                                 : kFloatScratch0;
+          assembler.load_vector(target, kReturnRegister, 0);
+          if (access.byte_order == ir::MemoryByteOrder::kBigEndian) {
+            reverse_vector_lanes(&assembler, target, target, node.type);
+          }
+          store_vector_if_spilled(&assembler, destination, target);
+        } else {
+          const int stored = load_vector_operand(
+              &assembler, allocation.locations[node.rhs.id()], kFloatScratch0);
+          int memory_value = stored;
+          if (access.byte_order == ir::MemoryByteOrder::kBigEndian) {
+            reverse_vector_lanes(&assembler, kFloatScratch1, stored, node.type);
+            memory_value = kFloatScratch1;
+          }
+          assembler.store_vector(memory_value, kReturnRegister, 0);
+          const int target = destination.in_register()
+                                 ? physical_vector_register(destination)
+                                 : kFloatScratch0;
+          if (target != stored) {
+            assembler.move_vector_register(target, stored);
+          }
+          store_vector_if_spilled(&assembler, destination, target);
         }
         const std::size_t completed = assembler.branch();
 
@@ -2526,7 +2575,7 @@ LoweringResult lower_control_flow_impl(
 
   const bool has_context_operations = std::any_of(
       function.nodes().begin(), function.nodes().end(),
-      [](const ir::ControlNode& node) {
+      [](const ir::ControlNode &node) {
         return node.opcode == ir::ControlOpcode::kSafepoint ||
                node.opcode == ir::ControlOpcode::kGuardWordNonzero ||
                node.opcode == ir::ControlOpcode::kGuardFloatNonzero ||
@@ -2534,6 +2583,8 @@ LoweringResult lower_control_flow_impl(
                node.opcode == ir::ControlOpcode::kStoreWord ||
                node.opcode == ir::ControlOpcode::kLoadFloat ||
                node.opcode == ir::ControlOpcode::kStoreFloat ||
+               node.opcode == ir::ControlOpcode::kLoadVector ||
+               node.opcode == ir::ControlOpcode::kStoreVector ||
                node.opcode == ir::ControlOpcode::kLoadObject ||
                node.opcode == ir::ControlOpcode::kStoreObject;
       });
@@ -2633,10 +2684,16 @@ LoweringResult lower_control_flow_impl(
           destination_is_float && !destination_is_vector
               ? control_float_register(allocation, value, block_index)
               : -1;
+      const int allocated_vector =
+          destination_is_vector
+              ? control_vector_register(allocation, value, block_index)
+              : -1;
       const int word_destination =
           allocated_word >= 0 ? allocated_word : kScratch0;
       const int float_destination =
           allocated_float >= 0 ? allocated_float : kFloatScratch0;
+      const int vector_destination =
+          allocated_vector >= 0 ? allocated_vector : kFloatScratch0;
       const std::vector<ir::Value>& live_values =
           stack_map_liveness.live_values_by_node[value.id()];
       if (node.opcode == ir::ControlOpcode::kSafepoint ||
@@ -2645,7 +2702,9 @@ LoweringResult lower_control_flow_impl(
           node.opcode == ir::ControlOpcode::kLoadWord ||
           node.opcode == ir::ControlOpcode::kStoreWord ||
           node.opcode == ir::ControlOpcode::kLoadFloat ||
-          node.opcode == ir::ControlOpcode::kStoreFloat) {
+          node.opcode == ir::ControlOpcode::kStoreFloat ||
+          node.opcode == ir::ControlOpcode::kLoadVector ||
+          node.opcode == ir::ControlOpcode::kStoreVector) {
         spill_control_stack_map_values(&assembler, function, allocation,
                                        live_values, block_index);
         stack_maps.push_back(make_stack_map_record(
@@ -2918,12 +2977,15 @@ LoweringResult lower_control_flow_impl(
         case ir::ControlOpcode::kLoadWord:
         case ir::ControlOpcode::kStoreWord:
         case ir::ControlOpcode::kLoadFloat:
-        case ir::ControlOpcode::kStoreFloat: {
+        case ir::ControlOpcode::kStoreFloat:
+        case ir::ControlOpcode::kLoadVector:
+        case ir::ControlOpcode::kStoreVector: {
           const ir::MemoryAccessDescriptor& access =
               function.memory_accesses()[node.memory_access];
           const std::size_t width = ir::memory_width_bytes(access.width);
           const bool is_store = node.opcode == ir::ControlOpcode::kStoreWord ||
-                                node.opcode == ir::ControlOpcode::kStoreFloat;
+                                node.opcode == ir::ControlOpcode::kStoreFloat ||
+                                node.opcode == ir::ControlOpcode::kStoreVector;
           const std::size_t region_offset =
               static_cast<std::size_t>(access.region) *
               sizeof(runtime::MemoryRegion);
@@ -3016,7 +3078,7 @@ LoweringResult lower_control_flow_impl(
                                                      float_destination);
               }
             }
-          } else {
+          } else if (node.opcode == ir::ControlOpcode::kStoreFloat) {
             const int stored = load_control_float(
                 &assembler, allocation, node.rhs, block_index, kFloatScratch0);
             if (width == 4) {
@@ -3037,14 +3099,38 @@ LoweringResult lower_control_flow_impl(
               assembler.store_float_width(stored, kReturnRegister, 0, width);
             }
             assembler.move_float_register(float_destination, stored);
+          } else if (node.opcode == ir::ControlOpcode::kLoadVector) {
+            assembler.load_vector(vector_destination, kReturnRegister, 0);
+            if (access.byte_order == ir::MemoryByteOrder::kBigEndian) {
+              reverse_vector_lanes(&assembler, vector_destination,
+                                   vector_destination, node.type);
+            }
+          } else {
+            const int stored = load_control_vector(
+                &assembler, allocation, node.rhs, block_index, kFloatScratch0);
+            int memory_value = stored;
+            if (access.byte_order == ir::MemoryByteOrder::kBigEndian) {
+              reverse_vector_lanes(&assembler, kFloatScratch1, stored,
+                                   node.type);
+              memory_value = kFloatScratch1;
+            }
+            assembler.store_vector(memory_value, kReturnRegister, 0);
+            if (vector_destination != stored) {
+              assembler.move_vector_register(vector_destination, stored);
+            }
           }
-          if (destination_is_float) {
+          if (destination_is_vector) {
+            if (allocated_vector < 0 || allocation.requires_stack[value.id()]) {
+              assembler.store_vector(vector_destination, kStackPointer,
+                                     destination_offset);
+            }
+          } else if (destination_is_float) {
             if (allocated_float < 0 || allocation.requires_stack[value.id()]) {
               assembler.store_float(float_destination, kStackPointer,
                                     destination_offset);
             }
           } else if (allocated_word < 0 ||
-              allocation.requires_stack[value.id()]) {
+                     allocation.requires_stack[value.id()]) {
             assembler.store(word_destination, kStackPointer,
                             destination_offset);
           }

@@ -85,6 +85,8 @@ enum class Opcode : std::uint8_t {
   kStoreWord,
   kLoadFloat,
   kStoreFloat,
+  kLoadVector,
+  kStoreVector,
   kLoadFrame,
   kStoreFrame,
   kLoadObject,
@@ -264,6 +266,13 @@ class FunctionBuilder final {
                    std::size_t site);
   Value store_float(Value byte_offset, Value value,
                     MemoryAccessDescriptor access, std::size_t site);
+  // Vector memory transfers exactly 128 bits. Lane zero remains at the lowest
+  // address; byte order applies independently within each typed lane. Mask
+  // vectors cannot be loaded from untrusted bytes.
+  Value load_vector(Value byte_offset, ValueType type,
+                    MemoryAccessDescriptor access, std::size_t site);
+  Value store_vector(Value byte_offset, Value value,
+                     MemoryAccessDescriptor access, std::size_t site);
   // Frame slots are fixed-size, zero-initialized for each invocation, and
   // remain live for the complete generated frame. Sensitive slots are cleared
   // on every native return path.

@@ -48,7 +48,8 @@ bool is_float_comparison(Opcode opcode) {
 
 bool is_memory(Opcode opcode) {
   return opcode == Opcode::kLoadWord || opcode == Opcode::kStoreWord ||
-         opcode == Opcode::kLoadFloat || opcode == Opcode::kStoreFloat;
+         opcode == Opcode::kLoadFloat || opcode == Opcode::kStoreFloat ||
+         opcode == Opcode::kLoadVector || opcode == Opcode::kStoreVector;
 }
 
 bool is_float_memory(Opcode opcode) {
@@ -56,11 +57,17 @@ bool is_float_memory(Opcode opcode) {
 }
 
 bool is_memory_load(Opcode opcode) {
-  return opcode == Opcode::kLoadWord || opcode == Opcode::kLoadFloat;
+  return opcode == Opcode::kLoadWord || opcode == Opcode::kLoadFloat ||
+         opcode == Opcode::kLoadVector;
 }
 
 bool is_memory_store(Opcode opcode) {
-  return opcode == Opcode::kStoreWord || opcode == Opcode::kStoreFloat;
+  return opcode == Opcode::kStoreWord || opcode == Opcode::kStoreFloat ||
+         opcode == Opcode::kStoreVector;
+}
+
+bool is_vector_memory(Opcode opcode) {
+  return opcode == Opcode::kLoadVector || opcode == Opcode::kStoreVector;
 }
 
 bool is_frame(Opcode opcode) {
@@ -117,7 +124,8 @@ bool valid_vector_widen(ValueType source, ValueType result) {
 
 bool valid_memory_width(MemoryWidth width) {
   return width == MemoryWidth::k8 || width == MemoryWidth::k16 ||
-         width == MemoryWidth::k32 || width == MemoryWidth::k64;
+         width == MemoryWidth::k32 || width == MemoryWidth::k64 ||
+         width == MemoryWidth::k128;
 }
 
 bool valid_byte_order(MemoryByteOrder order) {
@@ -403,18 +411,26 @@ Status verify(const Function& function) {
           function.memory_accesses()[expected_memory_access++];
       const std::size_t width = memory_width_bytes(access.width);
       const bool float_memory = is_float_memory(node.opcode);
+      const bool vector_memory = is_vector_memory(node.opcode);
       const ValueType result_type =
-          float_memory ? ValueType::kFloat64 : ValueType::kWord;
+          vector_memory
+              ? node.type
+              : (float_memory ? ValueType::kFloat64 : ValueType::kWord);
       if (access.region >= function.memory_region_count() ||
           !valid_memory_width(access.width) || access.alignment == 0 ||
           access.alignment > width ||
           (access.alignment & (access.alignment - 1U)) != 0 ||
           !valid_byte_order(access.byte_order) ||
-          ((float_memory || is_memory_store(node.opcode)) && access.sign_extend) ||
+          ((float_memory || is_memory_store(node.opcode)) &&
+           access.sign_extend) ||
+          (!vector_memory && access.width == MemoryWidth::k128) ||
+          (vector_memory && (access.width != MemoryWidth::k128 ||
+                             (!is_integer_vector_type(node.type) &&
+                              !is_float_vector_type(node.type)))) ||
           (float_memory && access.width != MemoryWidth::k32 &&
            access.width != MemoryWidth::k64) ||
-          node.immediate < 0 || node.type != result_type ||
-          !node.lhs.valid() || node.lhs.id() >= index ||
+          node.immediate < 0 || node.type != result_type || !node.lhs.valid() ||
+          node.lhs.id() >= index ||
           nodes[node.lhs.id()].type != ValueType::kWord ||
           node.argument_begin != 0 || node.argument_count != 0) {
         return invalid_node(index, "bounded memory operation is malformed");

@@ -419,6 +419,52 @@ Value FunctionBuilder::store_float(Value byte_offset, Value value,
   return Value{id};
 }
 
+Value FunctionBuilder::load_vector(Value byte_offset, ValueType type,
+                                   MemoryAccessDescriptor access,
+                                   std::size_t site) {
+  if (function_.nodes_.size() >= Value::kInvalidId ||
+      function_.memory_accesses_.size() >=
+          MemoryAccessDescriptor::kInvalidIndex ||
+      site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {
+    return {};
+  }
+  access.sign_extend = false;
+  const auto access_index =
+      static_cast<std::uint32_t>(function_.memory_accesses_.size());
+  function_.memory_accesses_.push_back(access);
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  function_.nodes_.push_back(Node{Opcode::kLoadVector,
+                                  byte_offset,
+                                  {},
+                                  static_cast<Word>(site),
+                                  type,
+                                  0,
+                                  0,
+                                  access_index});
+  return Value{id};
+}
+
+Value FunctionBuilder::store_vector(Value byte_offset, Value value,
+                                    MemoryAccessDescriptor access,
+                                    std::size_t site) {
+  if (function_.nodes_.size() >= Value::kInvalidId ||
+      function_.memory_accesses_.size() >=
+          MemoryAccessDescriptor::kInvalidIndex ||
+      site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {
+    return {};
+  }
+  access.sign_extend = false;
+  const auto access_index =
+      static_cast<std::uint32_t>(function_.memory_accesses_.size());
+  function_.memory_accesses_.push_back(access);
+  const ValueType type = function_.value_type(value);
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  function_.nodes_.push_back(Node{Opcode::kStoreVector, byte_offset, value,
+                                  static_cast<Word>(site), type, 0, 0,
+                                  access_index});
+  return Value{id};
+}
+
 FrameSlot FunctionBuilder::create_frame_slot(ValueType type, bool sensitive) {
   if (function_.frame_slots_.size() >= FrameSlot::kInvalidId) {
     return {};

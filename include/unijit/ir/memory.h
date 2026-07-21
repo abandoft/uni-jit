@@ -11,6 +11,7 @@ enum class MemoryWidth : std::uint8_t {
   k16 = 2,
   k32 = 4,
   k64 = 8,
+  k128 = 16,
 };
 
 enum class MemoryByteOrder : std::uint8_t {
