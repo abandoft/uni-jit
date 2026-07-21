@@ -194,6 +194,37 @@ compare(function(value)
 end, integer_unary_cases)
 checkpoint("integer binary bitwise arithmetic")
 
+local shift_cases = {
+  {0, 0}, {1, 1}, {-1, -1}, {0x123456789abcdef, 31},
+  {math.mininteger, 63}, {math.maxinteger, -63},
+  {-1, 64}, {-1, -64}, {-1, 65}, {-1, -65},
+  {math.mininteger, math.mininteger},
+  {math.maxinteger, math.maxinteger},
+}
+local shift_left = function(value, amount)
+  return value << amount
+end
+local native_shift_left = compare(shift_left, shift_cases)
+compare(function(value, amount)
+  return value >> amount
+end, shift_cases)
+compare(function(_, amount)
+  return 7 << amount
+end, shift_cases)
+compare(function(value, _)
+  return value >> 7
+end, shift_cases)
+for _ = 1, 64 do
+  assert(native_shift_left(-1, 63) == shift_left(-1, 63))
+end
+assert(unijit.wait(native_shift_left, 5000))
+assert(unijit.stats(native_shift_left).active_tier == "optimized")
+for _, values in ipairs(shift_cases) do
+  assert(native_shift_left(table.unpack(values)) ==
+         shift_left(table.unpack(values)))
+end
+checkpoint("integer shifts")
+
 compare(function()
   return 17
 end, {{}})
@@ -442,6 +473,34 @@ assert(unijit.stats(native_bitwise_loop).active_tier == "optimized")
 for _, values in ipairs(bitwise_loop_cases) do
   assert(native_bitwise_loop(table.unpack(values)) ==
          bitwise_loop(table.unpack(values)))
+end
+
+local shift_loop = function(count, seed, amount)
+  local value = seed
+  for index = 1, count do
+    value = (value << amount) ~ (value >> index)
+    value = value | (7 << (amount - index))
+    value = value >> -3
+  end
+  return value
+end
+local native_shift_loop = unijit.compile(shift_loop)
+local shift_loop_cases = {
+  {0, 0, 0}, {1, -1, 63}, {2, -1, 64}, {17, -97, -3},
+  {31, math.mininteger, -64}, {32, math.maxinteger, 65},
+  {33, -1, math.mininteger},
+}
+for _, values in ipairs(shift_loop_cases) do
+  assert(native_shift_loop(table.unpack(values)) ==
+         shift_loop(table.unpack(values)))
+end
+assert(native_shift_loop(10000, math.mininteger, 7) ==
+       shift_loop(10000, math.mininteger, 7))
+assert(unijit.wait(native_shift_loop, 5000))
+assert(unijit.stats(native_shift_loop).active_tier == "optimized")
+for _, values in ipairs(shift_loop_cases) do
+  assert(native_shift_loop(table.unpack(values)) ==
+         shift_loop(table.unpack(values)))
 end
 
 checkpoint("numeric loops")
@@ -789,6 +848,8 @@ native_negative_stride_sum = nil
 native_parameter_start_sum = nil
 native_reverse_parameter_start_sum = nil
 native_parameter_step_sum = nil
+native_shift_left = nil
+native_shift_loop = nil
 native_guarded_body_sum = nil
 native_guarded_break_sum = nil
 precise_guarded_break_sum = nil
