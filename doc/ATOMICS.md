@@ -5,8 +5,8 @@
 UniJIT atomics operate only on naturally aligned integer cells inside a
 declared bounded `ExecutionContext` memory region. They never accept an IR
 pointer, host object address, GC reference, vector lane, or unbounded local
-address. The first delivered widths are 8, 16, 32, and 64 bits on AArch64,
-x86-64, and RISC-V 64.
+address. The portable contract covers 8-, 16-, 32-, and 64-bit cells on
+AArch64, x86-64, and RISC-V 64.
 
 Atomic memory is a distinct concurrency contract, not a volatile spelling of
 ordinary bounded memory. An embedder must allocate storage suitable for the
@@ -107,14 +107,17 @@ execution with a false success result, not a runtime exit.
   reported by capability preflight instead of optimistically emitted.
 
 Runtime fallback is a disclosed `helper` lowering decision. Helpers use the
-same resolved region address, width, order, and return-value contract; they do
-not receive an unchecked frontend pointer. Lock freedom is therefore a target
-capability, while semantic availability and progress remain deterministic.
+same generated-code-resolved region address, width, and return-value contract,
+apply an order at least as strong as the declared order, and do not receive an
+unchecked frontend pointer. Lock freedom is therefore a target capability,
+while semantic availability and progress remain deterministic.
 
-The current delivery boundary enables atomic capability preflight only for
-x86-64. AArch64 and RISC-V 64 remain `unsupported` before code emission until
-their mappings and target-feature contracts are complete; no release claim
-combines the x86-64 slice with those pending backends.
+The current delivery boundary enables atomic capability preflight and lowering
+for x86-64 and AArch64. AArch64 RMW operations are reported as `native` with an
+LSE requirement when the immutable profile authorizes LSE, or as `helper` for
+the baseline bounded-LL/SC path because progress fallback remains possible.
+RISC-V 64 remains `unsupported` before code emission until its `A` feature,
+mapping, and qualification contract are complete.
 
 ## Qualification gates
 
@@ -135,7 +138,13 @@ The completed x86-64 slice has baseline and optimized native parity for both IR
 forms, all four widths and every valid order, compare-exchange match and
 mismatch, diagnosed read-only/out-of-range/misaligned failures with stack maps,
 and contended multi-thread fetch-add. It passes the complete core suite with
-GCC and Clang plus ASan/UBSan on a real Ubuntu x86-64 host. Cross-architecture
-litmus tests, Windows x64 execution, installed-package coverage, and the two
-remaining native backends are still release gates for the overall atomic
-feature block.
+GCC and Clang plus ASan/UBSan on a real Ubuntu x86-64 host.
+
+The completed AArch64 slice has straight-line and CFG baseline/optimized parity
+for every operation, width, and valid order; direct LSE lowering under a
+discovered host profile; bounded 16-attempt LL/SC lowering with a lock-free
+atomic progress helper; diagnosed failure stack maps; and contended fetch-add.
+It passes the complete qualification suite on a real Apple AArch64 host in both
+baseline and LSE modes plus ASan/UBSan. Cross-architecture litmus tests, Windows
+x64 execution, installed-package coverage, and RISC-V 64 lowering remain
+release gates for the overall atomic feature block.

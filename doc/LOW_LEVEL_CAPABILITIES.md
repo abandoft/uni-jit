@@ -21,7 +21,7 @@ qualifying the shared commercial contract on those three targets.
 | Scalar Word and Float64 operations | Implemented in both IR forms and all three backends | Continue expanding through the same typed contract | Delivered |
 | SIMD | The strict 128-bit type/operation contract, both IR forms, verifier, interpreters, CFG whole-vector edges, folding, limits, differential generation, bounded vector memory, typed shared-SIMD allocation, aligned two-word vector slots, mixed-bank parallel copies, complete AArch64 Advanced SIMD/NEON and x86-64 SSE2 lowering, bounded stack-only RV64IMD scalar lowering, target-scoped lowering preflight/telemetry, and a retained three-architecture complete-CFG-loop performance gate for the current explicit surface are delivered | Retain this portable floor and add an optional profile-specific RVV fast path before claiming RVV or wider profiles | Delivered portable floor; optional profile follow-on |
 | Typed memory, unaligned access, byte reversal | Bounded 8/16/32/64-bit Word memory, Float32/Float64 storage, standalone 16/32/64-bit byte reversal, fixed Word/Float64 frame slots, and preflighted trusted Word/Float64 object layouts are delivered in both IR forms, the interpreter, optimizer, and all three native backends | Use the completed scalar provenance floor for SIMD, atomics, and later FFI lowering | Delivered scalar floor |
-| Generated-code atomics | Bounded typed atomic IR, verification, interpretation, optimization, runtime-exit metadata, and x86-64 native lowering are delivered; AArch64 and RISC-V 64 still fail closed | Complete AArch64 and RISC-V 64 lowering, cross-target concurrency qualification, and data-only patch cells | P1 in progress |
+| Generated-code atomics | Bounded typed atomic IR, verification, interpretation, optimization, runtime-exit metadata, x86-64 native lowering, and AArch64 profile-selected LSE or bounded LL/SC plus atomic progress fallback are delivered; RISC-V 64 still fails closed | Complete RISC-V 64 lowering, cross-target concurrency qualification, installed-package coverage, and data-only patch cells | P1 in progress |
 | Fast internal calls | Calls currently use the portable runtime-helper ABI | Add a private JIT-to-JIT convention without weakening external ABI safety | P1 |
 | Tail calls | Not represented | Add verified tail transfers after fast calls and unwind metadata exist | P2 |
 | Self-modifying code | Published code is immutable RX | Keep code immutable; use atomic RW non-executable patch cells and versioned replacement | P1 |
@@ -89,10 +89,11 @@ interfaces where available. Cross compilation requires an explicit profile and
 must not infer target features from the build host. Unknown features select the
 portable baseline rather than optimistic emission.
 
-Before atomics and wider SIMD land, the profile vocabulary must add every
-feature that changes legality or ABI state, including x86 SSE4.1 where used by
-vector legalization, AArch64 LSE, and the RISC-V `A` extension. A profile must
-not infer atomic support from the architecture name, and RVV execution must be
+The profile vocabulary must contain every feature that changes legality or ABI
+state. AArch64 LSE discovery and profile isolation are delivered; x86 SSE4.1
+remains required before any legalization selects it, and the RISC-V `A`
+extension must be added before RISC-V atomic lowering. A profile must not infer
+optional atomic support from the architecture name, and RVV execution must be
 authorized by both ISA discovery and operating-system vector-state support.
 
 The current minimum profiles remain AArch64 with FP64, x86-64 with SSE2, and
@@ -293,8 +294,10 @@ baseline profile on real hardware.
 ## Atomic operations
 
 The normative operation, memory-order, provenance, progress, and qualification
-contract is now frozen in [`ATOMICS.md`](ATOMICS.md). Implementation remains in
-progress and is not yet a delivered capability.
+contract is now frozen in [`ATOMICS.md`](ATOMICS.md). The shared semantic layer,
+x86-64 lowering, and AArch64 lowering are delivered; RISC-V 64, cross-target
+litmus qualification, and patch cells remain in progress, so the overall
+three-target capability is not yet release-complete.
 
 Generated-code atomics operate on naturally aligned 8-, 16-, 32-, or 64-bit
 integer locations from a verified memory region. The IR supports atomic load,
@@ -306,13 +309,15 @@ from strong form, and carries separate success and failure orders. A failure
 order cannot be `release` or `acq_rel` and cannot be stronger than the success
 order. The expected value is never modified through an implicit host pointer.
 
-x86-64 lowers through its TSO rules and `LOCK` operations, AArch64 selects LSE
-only when the feature profile permits it and otherwise uses bounded LL/SC
-attempts followed by a progress-preserving helper fallback, and RV64 uses the
-optional A extension's AMO or LR/SC operations under the same progress rule.
-Runtime fallback helpers are also allowed for widths not lock-free on a target,
-but the record and telemetry must disclose the fallback. GC pointer atomics are
-deferred until the owning frontend supplies write barriers and root visibility.
+x86-64 lowers through its TSO rules and `LOCK` operations. The delivered
+AArch64 backend selects LSE only when the feature profile permits it and
+otherwise performs at most 16 LL/SC attempts before invoking a lock-free atomic
+progress helper; its capability record reports `native` plus the LSE feature or
+`helper` for the baseline profile. RV64 will use the optional `A` extension's
+AMO or LR/SC operations under the same bounded-progress rule. Runtime fallback
+helpers are also allowed for widths not lock-free on a target, but the record
+and telemetry must disclose the fallback. GC pointer atomics are deferred until
+the owning frontend supplies write barriers and root visibility.
 
 Qualification combines a deterministic memory-model litmus corpus, contended
 compare-exchange stress, ThreadSanitizer runs for the runtime integration, and
