@@ -13,6 +13,9 @@ regions.
 | Call or CFG edge arguments | 262,144 |
 | Declared bounded memory regions | 64 |
 | Bounded memory accesses | 65,536 |
+| Strict SIMD constants | 65,536 |
+| Strict SIMD shuffle descriptors | 65,536 |
+| Strict SIMD selection operands | 65,536 |
 | Controlled frame slots | 256 |
 | Trusted object bindings | 64 |
 | Stack maps and exit records | 4,096 |
@@ -41,8 +44,9 @@ auto cfg_result = unijit::jit::Compiler::compile(cfg, cfg_options);
 
 The compiler rejects excessive parameters, nodes, CFG blocks, flattened
 straight-line or CFG runtime-call arguments, CFG edge arguments, requested exit
-records, declared memory regions, memory accesses, and recovery operations
-before the IR verifier runs. Controlled frame slots are counted independently
+records, declared memory regions, memory accesses, vector constants, shuffle
+descriptors, selection side-table operands, and recovery operations before the
+IR verifier runs. Controlled frame slots are counted independently
 from allocator spills, and trusted-object bindings have their own table limit;
 both are rejected before layout or lowering. Each trusted layout is also
 verifier-limited to 2,048 bytes. CFG call and edge arguments share the

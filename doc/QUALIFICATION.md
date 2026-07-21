@@ -19,7 +19,13 @@ result bit-for-bit with the matching reference interpreter. Each corpus covers:
   arithmetic operations, and exact unary negation;
 - typed Word and Float64 CFGs with diamonds, 1 to 12 loop-carried state values,
   permuted and duplicated edge sources, ordered comparisons, backedges, and
-  mandatory safepoints.
+  mandatory safepoints;
+- strict 128-bit SIMD across every integer and floating data shape, mask
+  logic, selection, lane insertion/extraction, immutable shuffles, lane-sign
+  masks, and integer widening, comparing straight-line and whole-vector-edge
+  CFG interpreters with both optimized forms and constant folding. Until
+  native vector allocation lands, the compiler is separately required to fail
+  closed whenever a dynamic vector node survives optimization.
 
 Mismatch diagnostics contain the tier, seed, program index, input index,
 statuses, and exact result bits. A hosted failure can therefore be replayed

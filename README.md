@@ -42,6 +42,9 @@ weighted priorities, deterministic shutdown, and scheduler telemetry.
 independent commercial roadmap for typed memory, strict SIMD, generated-code
 atomics, immutable patch cells, fast and tail calls, bounded frame locals,
 target profiles, and validated serialization/AOT.
+[doc/PORTABLE_SIMD.md](doc/PORTABLE_SIMD.md) defines the delivered strict
+128-bit semantic core, lane and mask rules, verifier and optimizer guarantees,
+fail-closed native boundary, qualification, and remaining three-backend gates.
 [doc/TARGET_PROFILES.md](doc/TARGET_PROFILES.md) defines host feature discovery,
 portable baselines, immutable compilation identity, and profile-scoped caches.
 [doc/TYPED_MEMORY.md](doc/TYPED_MEMORY.md) defines bounded regions, Word and

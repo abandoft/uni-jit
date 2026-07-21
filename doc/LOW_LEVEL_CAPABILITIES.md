@@ -19,7 +19,7 @@ qualifying the shared commercial contract on those three targets.
 | Capability | Current UniJIT state | Product decision | Priority |
 |---|---|---|---|
 | Scalar Word and Float64 operations | Implemented in both IR forms and all three backends | Continue expanding through the same typed contract | Delivered |
-| SIMD | No vector IR or vector allocation | Add strict portable SIMD, then guarded wider target profiles and loop vectorization | P0 |
+| SIMD | The strict 128-bit type/operation contract, both IR forms, verifier, interpreters, CFG whole-vector edges, folding, limits, differential generation, and fail-closed native boundary are delivered; vector allocation and native lowering are not | Complete bounded vector memory, spills/calls, NEON, SSE2, RVV or reported scalar fallback, capability telemetry, and real-host gates before wider profiles or loop vectorization | P0 partial |
 | Typed memory, unaligned access, byte reversal | Bounded 8/16/32/64-bit Word memory, Float32/Float64 storage, standalone 16/32/64-bit byte reversal, fixed Word/Float64 frame slots, and preflighted trusted Word/Float64 object layouts are delivered in both IR forms, the interpreter, optimizer, and all three native backends | Use the completed scalar provenance floor for SIMD, atomics, and later FFI lowering | Delivered scalar floor |
 | Generated-code atomics | Runtime control structures use C++ atomics; generated IR has none | Add typed atomic IR with explicit memory order and natural-alignment rules | P1 |
 | Fast internal calls | Calls currently use the portable runtime-helper ABI | Add a private JIT-to-JIT convention without weakening external ABI safety | P1 |
@@ -250,8 +250,10 @@ per-op probe flags with one cacheable, target-profile-scoped contract.
 
 ### Vectorization stages
 
-1. Land explicit vector IR, verifier, interpreter, folding, allocation, and
-   three-backend lowering.
+1. Land explicit vector IR, verifier, interpreter, and folding. This semantic
+   slice is delivered and specified in
+   [`PORTABLE_SIMD.md`](PORTABLE_SIMD.md); allocation and three-backend
+   lowering remain in progress.
 2. Add superword-level parallelism for independent isomorphic scalar nodes.
 3. Add a counted-loop vectorizer with dependence and alias proofs, guarded
    alignment/bounds checks, a scalar epilogue, and deoptimization metadata.
@@ -379,8 +381,11 @@ byte-identical packages for identical inputs and target profiles.
    and Float scalar memory, standalone byte reversal, and the fixed
    Word/Float64 frame-slot floor are delivered; trusted layouts and advanced
    aligned/lifetime frame classes remain.
-2. Deliver strict 128-bit SIMD with interpreter parity, spills, calls, CFG edge
-   copies, feature discovery, and scalar fallback where required.
+2. Complete strict 128-bit SIMD. The typed IR, interpreter parity, optimizer,
+   CFG whole-vector edge copies, resource limits, negative tests, differential
+   corpus, and fail-closed native boundary are delivered; vector memory,
+   spills, calls, feature preflight, three-backend lowering, and scalar
+   fallback where required remain.
 3. Add explicit SIMD and complete-loop performance gates on real AArch64,
    Ubuntu/Windows x86-64, and RISC-V 64 hosts; emulation is supplemental only.
 4. Deliver atomic memory operations and data-only patch cells with concurrency,
