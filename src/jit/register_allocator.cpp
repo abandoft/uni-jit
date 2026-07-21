@@ -57,6 +57,7 @@ void visit_control_operands(const ir::ControlFlowFunction& function,
       visitor(node.rhs);
       break;
     case ir::ControlOpcode::kStoreFrame:
+    case ir::ControlOpcode::kStoreObject:
       visitor(node.lhs);
       break;
     case ir::ControlOpcode::kCall:
@@ -70,6 +71,7 @@ void visit_control_operands(const ir::ControlFlowFunction& function,
     case ir::ControlOpcode::kConstant:
     case ir::ControlOpcode::kSafepoint:
     case ir::ControlOpcode::kLoadFrame:
+    case ir::ControlOpcode::kLoadObject:
       break;
   }
 }
@@ -131,7 +133,8 @@ RegisterAllocation allocate_impl(const ir::Function& function,
                node.opcode == ir::Opcode::kStoreFloat) {
       note_use(&last_use, node.lhs, index);
       note_use(&last_use, node.rhs, index);
-    } else if (node.opcode == ir::Opcode::kStoreFrame) {
+    } else if (node.opcode == ir::Opcode::kStoreFrame ||
+               node.opcode == ir::Opcode::kStoreObject) {
       note_use(&last_use, node.lhs, index);
     } else if (node.opcode == ir::Opcode::kCall) {
       for (std::size_t argument_index = 0;
@@ -308,6 +311,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
           note_local_use(node.rhs);
           break;
         case ir::ControlOpcode::kStoreFrame:
+        case ir::ControlOpcode::kStoreObject:
           note_local_use(node.lhs);
           break;
         case ir::ControlOpcode::kCall:
@@ -323,6 +327,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kConstant:
         case ir::ControlOpcode::kSafepoint:
         case ir::ControlOpcode::kLoadFrame:
+        case ir::ControlOpcode::kLoadObject:
           break;
       }
       if (node.opcode == ir::ControlOpcode::kSafepoint ||
@@ -506,6 +511,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
           note_nonlocal_use(block_index, node.rhs);
           break;
         case ir::ControlOpcode::kStoreFrame:
+        case ir::ControlOpcode::kStoreObject:
           note_nonlocal_use(block_index, node.lhs);
           break;
         case ir::ControlOpcode::kCall:
@@ -522,6 +528,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kBlockParameter:
         case ir::ControlOpcode::kConstant:
         case ir::ControlOpcode::kLoadFrame:
+        case ir::ControlOpcode::kLoadObject:
         case ir::ControlOpcode::kSafepoint:
           break;
       }
