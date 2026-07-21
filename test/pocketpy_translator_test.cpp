@@ -1,4 +1,5 @@
 #include <array>
+#include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -71,6 +72,43 @@ int main() {
         unordered.value != kUnorderedComparisonResults[index]) {
       std::cerr << "PocketPy numeric comparison semantics were not preserved\n";
       return EXIT_FAILURE;
+    }
+  }
+
+  constexpr char kNegateSource[] = "def negate(value): return -value";
+  constexpr char kNegateLoopSource[] =
+      "def negate_loop(value):\n"
+      "    result = value\n"
+      "    for iteration in range(1.0):\n"
+      "        result = -result\n"
+      "    return result\n";
+  constexpr std::array<std::uint64_t, 4> kNegateSamples = {
+      UINT64_C(0x0000000000000000), UINT64_C(0x8000000000000000),
+      UINT64_C(0x7ff8000000001234), UINT64_C(0xfff8000000005678)};
+  for (const auto level : {unijit::jit::OptimizationLevel::kBaseline,
+                           unijit::jit::OptimizationLevel::kOptimized}) {
+    const auto negate =
+        unijit::frontend::pocketpy::translate_numeric_function(kNegateSource,
+                                                                level);
+    const auto negate_loop =
+        unijit::frontend::pocketpy::translate_numeric_function(
+            kNegateLoopSource, level);
+    for (const std::uint64_t bits : kNegateSamples) {
+      const unijit::ir::Word argument =
+          static_cast<unijit::ir::Word>(bits);
+      const auto direct = negate.ok()
+                              ? negate.function->invoke(&argument, 1)
+                              : unijit::ir::EvaluationResult{};
+      const auto loop = negate_loop.ok()
+                            ? negate_loop.function->invoke(&argument, 1)
+                            : unijit::ir::EvaluationResult{};
+      if (!direct.ok() || !loop.ok() ||
+          static_cast<std::uint64_t>(direct.value) !=
+              (bits ^ (UINT64_C(1) << 63U)) ||
+          loop.value != direct.value) {
+        std::cerr << "PocketPy unary minus did not preserve exact Float64 bits\n";
+        return EXIT_FAILURE;
+      }
     }
   }
 
@@ -449,7 +487,8 @@ int main() {
       "(b - -3)\")\n"
       "divide = unijit.compile(\"def divide(a, b): return a / b\")\n"
       "compare = unijit.compile(\"def compare(a, b): return (a + 1) >= b * 2\")\n"
-      "equality = unijit.compile(\"def equality(a, b): return a != b\")\n";
+      "equality = unijit.compile(\"def equality(a, b): return a != b\")\n"
+      "negate = unijit.compile(\"def negate(value): return -value\")\n";
   if (!py_exec(kNativeSource, "<unijit-pocketpy-native>", EXEC_MODE, nullptr)) {
     py_printexc();
     py_finalize();
@@ -502,6 +541,34 @@ int main() {
       !py_tobool(equality_result) || equality_after == nullptr ||
       !py_isbool(equality_after) || py_tobool(equality_after)) {
     std::cerr << "PocketPy did not retain bool results across tiering\n";
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  if (!py_exec("negated_zero = negate(0.0)\n"
+               "for negate_iteration in range(63):\n"
+               "    negated_zero = negate(0.0)\n"
+               "assert unijit.wait(negate, 5000)\n"
+               "negated_zero = negate(0.0)\n"
+               "negated_positive_zero = negate(-0.0)\n"
+               "negate_tier = unijit.stats(negate)\n"
+               "assert negate_tier['active_tier'] == 'optimized'\n"
+               "assert negate_tier['promotions'] == 1\n",
+               "<unijit-pocketpy-negate>", EXEC_MODE, nullptr)) {
+    py_printexc();
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  const py_Ref negated_zero = py_getglobal(py_name("negated_zero"));
+  const py_Ref negated_positive_zero =
+      py_getglobal(py_name("negated_positive_zero"));
+  if (negated_zero == nullptr || !py_isfloat(negated_zero) ||
+      negated_positive_zero == nullptr ||
+      !py_isfloat(negated_positive_zero) ||
+      unijit::ir::pack_float64(py_tofloat(negated_zero)) !=
+          unijit::ir::pack_float64(-0.0) ||
+      unijit::ir::pack_float64(py_tofloat(negated_positive_zero)) !=
+          unijit::ir::pack_float64(0.0)) {
+    std::cerr << "PocketPy runtime did not preserve unary signed zero\n";
     py_finalize();
     return EXIT_FAILURE;
   }
@@ -583,6 +650,35 @@ int main() {
       !py_isfloat(native_equality_loop_result) ||
       py_tofloat(native_equality_loop_result) != 5.0) {
     std::cerr << "PocketPy runtime did not execute an equality loop\n";
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  constexpr char kNativeNegateLoopSource[] =
+      "native_negate_loop = unijit.compile('''def negate_loop(value):\n"
+      "    result = value\n"
+      "    for iteration in range(1.0):\n"
+      "        result = -result\n"
+      "    return result\n''')\n"
+      "negate_loop_zero = native_negate_loop(0.0)\n"
+      "negate_loop_positive_zero = native_negate_loop(-0.0)\n";
+  if (!py_exec(kNativeNegateLoopSource,
+               "<unijit-pocketpy-negate-loop>", EXEC_MODE, nullptr)) {
+    py_printexc();
+    py_finalize();
+    return EXIT_FAILURE;
+  }
+  const py_Ref negate_loop_zero =
+      py_getglobal(py_name("negate_loop_zero"));
+  const py_Ref negate_loop_positive_zero =
+      py_getglobal(py_name("negate_loop_positive_zero"));
+  if (negate_loop_zero == nullptr || !py_isfloat(negate_loop_zero) ||
+      negate_loop_positive_zero == nullptr ||
+      !py_isfloat(negate_loop_positive_zero) ||
+      unijit::ir::pack_float64(py_tofloat(negate_loop_zero)) !=
+          unijit::ir::pack_float64(-0.0) ||
+      unijit::ir::pack_float64(py_tofloat(negate_loop_positive_zero)) !=
+          unijit::ir::pack_float64(0.0)) {
+    std::cerr << "PocketPy runtime did not preserve unary loop signed zero\n";
     py_finalize();
     return EXIT_FAILURE;
   }

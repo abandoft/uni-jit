@@ -1,4 +1,5 @@
 #include <array>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -110,6 +111,46 @@ int main() {
         unordered.value != kUnorderedComparisonResults[index]) {
       std::cerr << "QuickJS numeric comparison semantics were not preserved\n";
       return EXIT_FAILURE;
+    }
+  }
+
+  constexpr char kNegateSource[] =
+      "function negate(value) { return -value; }";
+  constexpr char kNegateLoopSource[] =
+      "function negateLoop(value) {"
+      "  let result = value;"
+      "  for (let iteration = 0.0; iteration < 1.0; ++iteration) {"
+      "    result = -result;"
+      "  }"
+      "  return result;"
+      "}";
+  constexpr std::array<std::uint64_t, 4> kNegateSamples = {
+      UINT64_C(0x0000000000000000), UINT64_C(0x8000000000000000),
+      UINT64_C(0x7ff8000000001234), UINT64_C(0xfff8000000005678)};
+  for (const auto level : {unijit::jit::OptimizationLevel::kBaseline,
+                           unijit::jit::OptimizationLevel::kOptimized}) {
+    const auto negate =
+        unijit::frontend::quickjs::translate_numeric_function(kNegateSource,
+                                                               level);
+    const auto negate_loop =
+        unijit::frontend::quickjs::translate_numeric_function(
+            kNegateLoopSource, level);
+    for (const std::uint64_t bits : kNegateSamples) {
+      const unijit::ir::Word argument =
+          static_cast<unijit::ir::Word>(bits);
+      const auto direct = negate.ok()
+                              ? negate.function->invoke(&argument, 1)
+                              : unijit::ir::EvaluationResult{};
+      const auto loop = negate_loop.ok()
+                            ? negate_loop.function->invoke(&argument, 1)
+                            : unijit::ir::EvaluationResult{};
+      if (!direct.ok() || !loop.ok() ||
+          static_cast<std::uint64_t>(direct.value) !=
+              (bits ^ (UINT64_C(1) << 63U)) ||
+          loop.value != direct.value) {
+        std::cerr << "QuickJS unary minus did not preserve exact Float64 bits\n";
+        return EXIT_FAILURE;
+      }
     }
   }
 
@@ -350,10 +391,12 @@ int main() {
       "sourceFunction.toString = () => 'function(a, b) { return 999; }';"
       "function compareFunction(a, b) { return (a + 1) >= b * 2; }"
       "function equalityFunction(a, b) { return a !== b; }"
+      "function negateFunction(value) { return -value; }"
       "const native = unijit.compile(sourceFunction);"
       "const nativeCached = unijit.compile(sourceFunction);"
       "const nativeCompare = unijit.compile(compareFunction);"
       "const nativeEquality = unijit.compile(equalityFunction);"
+      "const nativeNegate = unijit.compile(negateFunction);"
       "native(1.5, 4.0, 99) + nativeCached(1.5, 4.0);";
   result = JS_Eval(context, kNativeSource, std::strlen(kNativeSource),
                    "<unijit-quickjs-native>", JS_EVAL_TYPE_GLOBAL);
@@ -368,15 +411,21 @@ int main() {
 
   constexpr char kBooleanSource[] =
       "let comparisonTyped = true;"
+      "let negateExact = true;"
       "for (let index = 0; index < 64; ++index) {"
       "  comparisonTyped = comparisonTyped && nativeCompare(3, 2) === true;"
       "  comparisonTyped = comparisonTyped && nativeEquality(3, 2) === true;"
+      "  negateExact = negateExact && Object.is(nativeNegate(0), -0);"
+      "  negateExact = negateExact && Object.is(nativeNegate(-0), 0);"
       "}"
       "const comparisonWaited = unijit.wait(nativeCompare, 5000);"
       "const equalityWaited = unijit.wait(nativeEquality, 5000);"
+      "const negateWaited = unijit.wait(nativeNegate, 5000);"
       "const comparisonStats = unijit.stats(nativeCompare);"
       "const equalityStats = unijit.stats(nativeEquality);"
-      "comparisonTyped && comparisonWaited && equalityWaited &&"
+      "const negateStats = unijit.stats(nativeNegate);"
+      "comparisonTyped && negateExact && comparisonWaited && equalityWaited &&"
+      "negateWaited &&"
       "nativeCompare(2, 2) === false &&"
       "nativeEquality(0, -0) === false &&"
       "nativeEquality(NaN, NaN) === true &&"
@@ -385,7 +434,9 @@ int main() {
       "comparisonStats.active_tier === 'optimized' &&"
       "comparisonStats.promotions === 1 &&"
       "equalityStats.active_tier === 'optimized' &&"
-      "equalityStats.promotions === 1;";
+      "equalityStats.promotions === 1 &&"
+      "negateStats.active_tier === 'optimized' &&"
+      "negateStats.promotions === 1;";
   result = JS_Eval(context, kBooleanSource, std::strlen(kBooleanSource),
                    "<unijit-quickjs-boolean>", JS_EVAL_TYPE_GLOBAL);
   if (JS_IsException(result) || JS_ToBool(context, result) != 1) {
@@ -405,6 +456,20 @@ int main() {
   if (JS_IsException(result) ||
       JS_ToFloat64(context, &number, result) != 0 || number != 8.0) {
     std::cerr << "QuickJS runtime did not execute an equality loop\n";
+    JS_FreeValue(context, result);
+    return EXIT_FAILURE;
+  }
+  JS_FreeValue(context, result);
+
+  const std::string negate_loop_call =
+      std::string("const nativeNegateLoop = unijit.compile(") +
+      kNegateLoopSource +
+      "); Object.is(nativeNegateLoop(0), -0) && "
+      "Object.is(nativeNegateLoop(-0), 0);";
+  result = JS_Eval(context, negate_loop_call.data(), negate_loop_call.size(),
+                   "<unijit-quickjs-negate-loop>", JS_EVAL_TYPE_GLOBAL);
+  if (JS_IsException(result) || JS_ToBool(context, result) != 1) {
+    std::cerr << "QuickJS runtime did not preserve signed zero in unary loops\n";
     JS_FreeValue(context, result);
     return EXIT_FAILURE;
   }
