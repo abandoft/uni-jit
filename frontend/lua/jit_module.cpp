@@ -104,6 +104,12 @@ Word shift_left_word(Word value, Word amount) noexcept {
              : word_from_bits(word_bits(value) << amount_bits);
 }
 
+Word floor_arithmetic_word(OpCode opcode, Word lhs, Word rhs) noexcept {
+  return opcode == OP_IDIV || opcode == OP_IDIVK
+             ? unijit::ir::floor_divide_word(lhs, rhs)
+             : unijit::ir::floor_modulo_word(lhs, rhs);
+}
+
 enum class NumericMode : unsigned char {
   kInteger,
   kFloat64,
@@ -722,11 +728,13 @@ LoopHotnessPlan analyze_loop_hotness(const Proto &prototype) {
                 body_opcode == OP_MOVE || body_opcode == OP_LOADI ||
                 body_opcode == OP_LOADK || body_opcode == OP_ADDI ||
                 body_opcode == OP_ADDK || body_opcode == OP_SUBK ||
-                body_opcode == OP_MULK || body_opcode == OP_BANDK ||
+                body_opcode == OP_MULK || body_opcode == OP_MODK ||
+                body_opcode == OP_IDIVK || body_opcode == OP_BANDK ||
                 body_opcode == OP_BORK || body_opcode == OP_BXORK ||
                 body_opcode == OP_SHLI || body_opcode == OP_SHRI ||
                 body_opcode == OP_ADD || body_opcode == OP_SUB ||
-                body_opcode == OP_MUL || body_opcode == OP_BAND ||
+                body_opcode == OP_MUL || body_opcode == OP_MOD ||
+                body_opcode == OP_IDIV || body_opcode == OP_BAND ||
                 body_opcode == OP_BOR || body_opcode == OP_BXOR ||
                 body_opcode == OP_SHL || body_opcode == OP_SHR ||
                 body_opcode == OP_UNM || body_opcode == OP_BNOT;
@@ -791,6 +799,29 @@ LoopHotnessPlan analyze_loop_hotness(const Proto &prototype) {
       result.parameter.reset();
       break;
     }
+    case OP_MODK:
+    case OP_IDIVK: {
+      const int source = GETARG_B(instruction);
+      const int constant_index = GETARG_C(instruction);
+      if (source < 0 || source >= prototype.maxstacksize ||
+          constant_index < 0 || constant_index >= prototype.sizek ||
+          !registers[static_cast<std::size_t>(source)].constant.has_value() ||
+          !ttisinteger(&prototype.k[constant_index])) {
+        result = {};
+        break;
+      }
+      const Word divisor =
+          static_cast<Word>(ivalue(&prototype.k[constant_index]));
+      if (divisor == 0) {
+        result = {};
+        break;
+      }
+      result.constant = floor_arithmetic_word(
+          opcode, registers[static_cast<std::size_t>(source)].constant.value(),
+          divisor);
+      result.parameter.reset();
+      break;
+    }
     case OP_BAND:
     case OP_BOR:
     case OP_BXOR: {
@@ -806,6 +837,29 @@ LoopHotnessPlan analyze_loop_hotness(const Proto &prototype) {
       result.constant = bitwise_binary_word(
           opcode, registers[static_cast<std::size_t>(lhs)].constant.value(),
           registers[static_cast<std::size_t>(rhs)].constant.value());
+      result.parameter.reset();
+      break;
+    }
+    case OP_MOD:
+    case OP_IDIV: {
+      const int lhs = GETARG_B(instruction);
+      const int rhs = GETARG_C(instruction);
+      if (lhs < 0 || lhs >= prototype.maxstacksize || rhs < 0 ||
+          rhs >= prototype.maxstacksize ||
+          !registers[static_cast<std::size_t>(lhs)].constant.has_value() ||
+          !registers[static_cast<std::size_t>(rhs)].constant.has_value()) {
+        result = {};
+        break;
+      }
+      const Word divisor =
+          registers[static_cast<std::size_t>(rhs)].constant.value();
+      if (divisor == 0) {
+        result = {};
+        break;
+      }
+      result.constant = floor_arithmetic_word(
+          opcode, registers[static_cast<std::size_t>(lhs)].constant.value(),
+          divisor);
       result.parameter.reset();
       break;
     }
@@ -899,6 +953,12 @@ compile_straight_prototype(const Proto &prototype,
 
   try {
     FunctionBuilder builder(prototype.numparams);
+    std::size_t next_guard_ordinal = 1;
+    const auto floor_guard_site = [&](int pc) {
+      return next_guard_ordinal++ *
+                 static_cast<std::size_t>(prototype.sizecode) +
+             static_cast<std::size_t>(pc);
+    };
     std::vector<Value> registers(prototype.maxstacksize);
     for (std::size_t index = 0; index < prototype.numparams; ++index) {
       registers[index] = builder.parameter(index);
@@ -1009,6 +1069,39 @@ compile_straight_prototype(const Proto &prototype,
         break;
       }
 
+      case OP_MODK:
+      case OP_IDIVK: {
+        const int source = GETARG_B(instruction);
+        const int constant_index = GETARG_C(instruction);
+        if (!valid_destination(registers, destination) ||
+            !valid_register(registers, source) || constant_index < 0 ||
+            constant_index >= prototype.sizek ||
+            !ttisinteger(&prototype.k[constant_index])) {
+          return translation_error(
+              static_cast<std::size_t>(pc),
+              "invalid operand in constant floor arithmetic");
+        }
+        const Value lhs = registers[static_cast<std::size_t>(source)];
+        const Value rhs = builder.constant(
+            static_cast<Word>(ivalue(&prototype.k[constant_index])));
+        if (!builder.guard_word_nonzero(rhs, floor_guard_site(pc))
+                 .valid()) {
+          return translation_error(static_cast<std::size_t>(pc),
+                                   "unable to guard a floor divisor");
+        }
+        registers[static_cast<std::size_t>(destination)] =
+            opcode == OP_IDIVK ? builder.floor_divide(lhs, rhs)
+                               : builder.floor_modulo(lhs, rhs);
+        if (pc + 1 >= prototype.sizecode ||
+            GET_OPCODE(prototype.code[pc + 1]) != OP_MMBINK) {
+          return translation_error(
+              static_cast<std::size_t>(pc),
+              "constant floor arithmetic is missing its Lua metamethod fallback");
+        }
+        ++pc;
+        break;
+      }
+
       case OP_BANDK:
       case OP_BORK:
       case OP_BXORK: {
@@ -1100,6 +1193,36 @@ compile_straight_prototype(const Proto &prototype,
           return translation_error(
               static_cast<std::size_t>(pc),
               "binary arithmetic is missing its Lua metamethod fallback");
+        }
+        ++pc;
+        break;
+      }
+
+      case OP_MOD:
+      case OP_IDIV: {
+        const int lhs_index = GETARG_B(instruction);
+        const int rhs_index = GETARG_C(instruction);
+        if (!valid_destination(registers, destination) ||
+            !valid_register(registers, lhs_index) ||
+            !valid_register(registers, rhs_index)) {
+          return translation_error(static_cast<std::size_t>(pc),
+                                   "invalid register in floor arithmetic");
+        }
+        const Value lhs = registers[static_cast<std::size_t>(lhs_index)];
+        const Value rhs = registers[static_cast<std::size_t>(rhs_index)];
+        if (!builder.guard_word_nonzero(rhs, floor_guard_site(pc))
+                 .valid()) {
+          return translation_error(static_cast<std::size_t>(pc),
+                                   "unable to guard a floor divisor");
+        }
+        registers[static_cast<std::size_t>(destination)] =
+            opcode == OP_IDIV ? builder.floor_divide(lhs, rhs)
+                              : builder.floor_modulo(lhs, rhs);
+        if (pc + 1 >= prototype.sizecode ||
+            GET_OPCODE(prototype.code[pc + 1]) != OP_MMBIN) {
+          return translation_error(
+              static_cast<std::size_t>(pc),
+              "floor arithmetic is missing its Lua metamethod fallback");
         }
         ++pc;
         break;
@@ -1345,6 +1468,12 @@ CompilationResult compile_numeric_for_prototype(
 
   try {
     ControlFlowBuilder builder(prototype.numparams);
+    std::size_t next_guard_ordinal = 1;
+    const auto floor_guard_site = [&](int pc) {
+      return next_guard_ordinal++ *
+                 static_cast<std::size_t>(prototype.sizecode) +
+             static_cast<std::size_t>(pc);
+    };
     std::vector<Value> registers(prototype.maxstacksize);
     std::vector<std::optional<Word>> known(prototype.maxstacksize);
     for (std::size_t index = 0; index < prototype.numparams; ++index) {
@@ -1368,9 +1497,11 @@ CompilationResult compile_numeric_for_prototype(
         const bool writes_destination =
             opcode == OP_MOVE || opcode == OP_LOADI || opcode == OP_LOADK ||
             opcode == OP_ADDI || opcode == OP_ADDK || opcode == OP_SUBK ||
-            opcode == OP_MULK || opcode == OP_BANDK || opcode == OP_BORK ||
+            opcode == OP_MULK || opcode == OP_MODK || opcode == OP_IDIVK ||
+            opcode == OP_BANDK || opcode == OP_BORK ||
             opcode == OP_BXORK || opcode == OP_SHLI || opcode == OP_SHRI ||
             opcode == OP_ADD || opcode == OP_SUB || opcode == OP_MUL ||
+            opcode == OP_MOD || opcode == OP_IDIV ||
             opcode == OP_BAND || opcode == OP_BOR || opcode == OP_BXOR ||
             opcode == OP_SHL || opcode == OP_SHR || opcode == OP_UNM ||
             opcode == OP_BNOT;
@@ -1477,6 +1608,47 @@ CompilationResult compile_numeric_for_prototype(
             return bytecode_error(
                 pc,
                 "constant arithmetic is missing its Lua metamethod fallback");
+          }
+          ++pc;
+          break;
+        }
+
+        case OP_MODK:
+        case OP_IDIVK: {
+          const int source = GETARG_B(instruction);
+          const int constant_index = GETARG_C(instruction);
+          if (!valid_destination(*values, destination) ||
+              !valid_register(*values, source) || constant_index < 0 ||
+              constant_index >= prototype.sizek ||
+              !ttisinteger(&prototype.k[constant_index])) {
+            return bytecode_error(
+                pc, "invalid operand in constant floor arithmetic");
+          }
+          const Value lhs = (*values)[static_cast<std::size_t>(source)];
+          const Word divisor =
+              static_cast<Word>(ivalue(&prototype.k[constant_index]));
+          const Value rhs = builder.constant(divisor);
+          if (!builder.guard_word_nonzero(rhs, floor_guard_site(pc))
+                   .valid()) {
+            return bytecode_error(pc, "unable to guard a floor divisor");
+          }
+          (*values)[static_cast<std::size_t>(destination)] =
+              opcode == OP_IDIVK ? builder.floor_divide(lhs, rhs)
+                                 : builder.floor_modulo(lhs, rhs);
+          const std::optional<Word> source_constant =
+              (*constants)[static_cast<std::size_t>(source)];
+          if (source_constant.has_value()) {
+            (*constants)[static_cast<std::size_t>(destination)] =
+                floor_arithmetic_word(opcode, source_constant.value(),
+                                      divisor);
+          } else {
+            (*constants)[static_cast<std::size_t>(destination)].reset();
+          }
+          if (pc + 1 >= end ||
+              GET_OPCODE(prototype.code[pc + 1]) != OP_MMBINK) {
+            return bytecode_error(
+                pc,
+                "constant floor arithmetic is missing its Lua metamethod fallback");
           }
           ++pc;
           break;
@@ -1590,6 +1762,45 @@ CompilationResult compile_numeric_for_prototype(
           if (pc + 1 >= end || GET_OPCODE(prototype.code[pc + 1]) != OP_MMBIN) {
             return bytecode_error(
                 pc, "binary arithmetic is missing its Lua metamethod fallback");
+          }
+          ++pc;
+          break;
+        }
+
+        case OP_MOD:
+        case OP_IDIV: {
+          const int lhs_index = GETARG_B(instruction);
+          const int rhs_index = GETARG_C(instruction);
+          if (!valid_destination(*values, destination) ||
+              !valid_register(*values, lhs_index) ||
+              !valid_register(*values, rhs_index)) {
+            return bytecode_error(pc,
+                                  "invalid register in floor arithmetic");
+          }
+          const Value lhs = (*values)[static_cast<std::size_t>(lhs_index)];
+          const Value rhs = (*values)[static_cast<std::size_t>(rhs_index)];
+          if (!builder.guard_word_nonzero(rhs, floor_guard_site(pc))
+                   .valid()) {
+            return bytecode_error(pc, "unable to guard a floor divisor");
+          }
+          (*values)[static_cast<std::size_t>(destination)] =
+              opcode == OP_IDIV ? builder.floor_divide(lhs, rhs)
+                                : builder.floor_modulo(lhs, rhs);
+          const std::optional<Word> lhs_constant =
+              (*constants)[static_cast<std::size_t>(lhs_index)];
+          const std::optional<Word> rhs_constant =
+              (*constants)[static_cast<std::size_t>(rhs_index)];
+          if (lhs_constant.has_value() && rhs_constant.has_value()) {
+            (*constants)[static_cast<std::size_t>(destination)] =
+                floor_arithmetic_word(opcode, lhs_constant.value(),
+                                      rhs_constant.value());
+          } else {
+            (*constants)[static_cast<std::size_t>(destination)].reset();
+          }
+          if (pc + 1 >= end ||
+              GET_OPCODE(prototype.code[pc + 1]) != OP_MMBIN) {
+            return bytecode_error(
+                pc, "floor arithmetic is missing its Lua metamethod fallback");
           }
           ++pc;
           break;
@@ -1774,11 +1985,13 @@ CompilationResult compile_numeric_for_prototype(
           }
         };
         if (opcode == OP_MOVE || opcode == OP_ADDI || opcode == OP_ADDK ||
-            opcode == OP_SUBK || opcode == OP_MULK || opcode == OP_BANDK ||
+            opcode == OP_SUBK || opcode == OP_MULK || opcode == OP_MODK ||
+            opcode == OP_IDIVK || opcode == OP_BANDK ||
             opcode == OP_BORK || opcode == OP_BXORK || opcode == OP_SHLI ||
             opcode == OP_SHRI || opcode == OP_UNM || opcode == OP_BNOT) {
           note(GETARG_B(instruction));
         } else if (opcode == OP_ADD || opcode == OP_SUB || opcode == OP_MUL ||
+                   opcode == OP_MOD || opcode == OP_IDIV ||
                    opcode == OP_BAND || opcode == OP_BOR ||
                    opcode == OP_BXOR || opcode == OP_SHL ||
                    opcode == OP_SHR) {
@@ -3046,10 +3259,27 @@ int invoke_compiled_function(lua_State *state) {
       value = result.result.value;
       invoked = true;
     } else {
-      std::snprintf(invocation_error, sizeof(invocation_error),
-                    "UniJIT invocation failed at site %zu: %s",
-                    result.result.status.location(),
-                    result.result.status.message().c_str());
+      const std::size_t site = result.result.status.location();
+      OpCode exit_opcode = OP_EXTRAARG;
+      if (result.result.status.code() == StatusCode::kRuntimeExit &&
+          compiled->prototype != nullptr &&
+          !compiled->prototype->instructions.empty()) {
+        const std::size_t bytecode_pc =
+            site % compiled->prototype->instructions.size();
+        exit_opcode =
+            GET_OPCODE(compiled->prototype->instructions[bytecode_pc]);
+      }
+      if (exit_opcode == OP_IDIV || exit_opcode == OP_IDIVK) {
+        std::snprintf(invocation_error, sizeof(invocation_error),
+                      "attempt to divide by zero");
+      } else if (exit_opcode == OP_MOD || exit_opcode == OP_MODK) {
+        std::snprintf(invocation_error, sizeof(invocation_error),
+                      "attempt to perform 'n%%0'");
+      } else {
+        std::snprintf(invocation_error, sizeof(invocation_error),
+                      "UniJIT invocation failed at site %zu: %s", site,
+                      result.result.status.message().c_str());
+      }
     }
   }
   if (!invoked) {
