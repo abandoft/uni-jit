@@ -1396,13 +1396,16 @@ CompilationResult compile_numeric_for_prototype(
 
   enum class GuardedBodyKind : unsigned char {
     kConditionalBody,
+    kConditionalElse,
     kBreak,
     kReturn,
   };
   struct GuardedBodyPlan final {
     int comparison_pc{-1};
     int action_begin{-1};
-    int bypass_begin{-1};
+    int action_end{-1};
+    int alternate_begin{-1};
+    int continuation_begin{-1};
     GuardedBodyKind kind{GuardedBodyKind::kConditionalBody};
   };
   std::optional<GuardedBodyPlan> guarded_body;
@@ -1427,15 +1430,19 @@ CompilationResult compile_numeric_for_prototype(
           "numeric-loop comparison is missing its conditional jump");
     }
     const int action_begin = pc + 2;
-    const int bypass_begin = pc + 2 + GETARG_sJ(prototype.code[pc + 1]);
-    if (action_begin >= loop_pc || bypass_begin <= action_begin ||
-        bypass_begin > loop_pc) {
+    const int conditional_target =
+        pc + 2 + GETARG_sJ(prototype.code[pc + 1]);
+    if (action_begin >= loop_pc || conditional_target <= action_begin ||
+        conditional_target > loop_pc) {
       return translation_error(
           static_cast<std::size_t>(pc),
           "numeric-loop condition has unsupported control flow");
     }
 
     GuardedBodyKind kind = GuardedBodyKind::kConditionalBody;
+    int action_end = conditional_target;
+    int alternate_begin = conditional_target;
+    int continuation_begin = conditional_target;
     const OpCode action_opcode = GET_OPCODE(prototype.code[action_begin]);
     if (action_opcode == OP_JMP) {
       const int break_target =
@@ -1445,7 +1452,8 @@ CompilationResult compile_numeric_for_prototype(
             static_cast<std::size_t>(action_begin),
             "guarded numeric-loop jump is not a structured break");
       }
-      for (int skipped_pc = action_begin + 1; skipped_pc < bypass_begin;
+      for (int skipped_pc = action_begin + 1;
+           skipped_pc < conditional_target;
            ++skipped_pc) {
         if (GET_OPCODE(prototype.code[skipped_pc]) != OP_CLOSE) {
           return translation_error(
@@ -1455,14 +1463,29 @@ CompilationResult compile_numeric_for_prototype(
       }
       kind = GuardedBodyKind::kBreak;
     } else if (action_opcode == OP_RETURN1 || action_opcode == OP_RETURN) {
-      if (bypass_begin != action_begin + 1) {
+      if (conditional_target != action_begin + 1) {
         return translation_error(
             static_cast<std::size_t>(action_begin),
             "guarded numeric-loop return must be a single return");
       }
       kind = GuardedBodyKind::kReturn;
+    } else if (conditional_target - 1 >= action_begin &&
+               GET_OPCODE(prototype.code[conditional_target - 1]) == OP_JMP) {
+      const int action_jump = conditional_target - 1;
+      const int merge_target =
+          action_jump + 1 + GETARG_sJ(prototype.code[action_jump]);
+      if (merge_target <= conditional_target || merge_target > loop_pc) {
+        return translation_error(
+            static_cast<std::size_t>(action_jump),
+            "numeric-loop if/else has an invalid merge target");
+      }
+      kind = GuardedBodyKind::kConditionalElse;
+      action_end = action_jump;
+      alternate_begin = conditional_target;
+      continuation_begin = merge_target;
     }
-    guarded_body = GuardedBodyPlan{pc, action_begin, bypass_begin, kind};
+    guarded_body = GuardedBodyPlan{pc, action_begin, action_end,
+                                   alternate_begin, continuation_begin, kind};
     ++pc;
   }
 
@@ -2154,9 +2177,7 @@ CompilationResult compile_numeric_for_prototype(
         if (opcode == OP_GEI) {
           return builder.less_equal(rhs, lhs);
         }
-        const Value lhs_le_rhs = builder.less_equal(lhs, rhs);
-        const Value rhs_le_lhs = builder.less_equal(rhs, lhs);
-        return builder.multiply(lhs_le_rhs, rhs_le_lhs);
+        return builder.equal(lhs, rhs);
       };
 
       const Value start = registers[static_cast<std::size_t>(state_base)];
@@ -2297,18 +2318,21 @@ CompilationResult compile_numeric_for_prototype(
         }
         const unijit::ir::Block action =
             builder.create_block(counted_parameter_count);
-        const unijit::ir::Block bypass =
+        const unijit::ir::Block alternate =
             builder.create_block(counted_parameter_count);
-        if (!action.valid() || !bypass.valid()) {
+        const unijit::ir::Block merge =
+            builder.create_block(counted_parameter_count);
+        if (!action.valid() || !alternate.valid() || !merge.valid()) {
           return {StatusCode::kResourceExhausted,
                   "unable to allocate guarded Lua iteration blocks"};
         }
         if (GETARG_k(prototype.code[plan.comparison_pc]) == 0) {
           iteration_status = builder.branch(relation, action, current_arguments,
-                                            bypass, current_arguments);
+                                            alternate, current_arguments);
         } else {
-          iteration_status = builder.branch(relation, bypass, current_arguments,
-                                            action, current_arguments);
+          iteration_status = builder.branch(relation, alternate,
+                                            current_arguments, action,
+                                            current_arguments);
         }
         if (!iteration_status.ok()) {
           return iteration_status;
@@ -2321,10 +2345,11 @@ CompilationResult compile_numeric_for_prototype(
         std::vector<Value> action_registers = block_registers(action);
         const Value action_remaining =
             builder.block_parameter(action, carried_registers.size());
-        if (plan.kind == GuardedBodyKind::kConditionalBody) {
+        if (plan.kind == GuardedBodyKind::kConditionalBody ||
+            plan.kind == GuardedBodyKind::kConditionalElse) {
           std::vector<std::optional<Word>> action_known(prototype.maxstacksize);
           iteration_status = translate_range(
-              plan.action_begin, plan.bypass_begin, false, state_base,
+              plan.action_begin, plan.action_end, false, state_base,
               &action_registers, &action_known, &returned);
           if (!iteration_status.ok()) {
             return iteration_status;
@@ -2333,7 +2358,7 @@ CompilationResult compile_numeric_for_prototype(
           iteration_status = counted_arguments(
               action_registers, action_remaining, &action_arguments);
           if (iteration_status.ok()) {
-            iteration_status = builder.jump(bypass, action_arguments);
+            iteration_status = builder.jump(merge, action_arguments);
           }
         } else if (plan.kind == GuardedBodyKind::kBreak) {
           std::vector<Value> break_arguments;
@@ -2346,7 +2371,7 @@ CompilationResult compile_numeric_for_prototype(
           std::vector<std::optional<Word>> return_known(prototype.maxstacksize);
           bool guarded_returned = false;
           iteration_status = translate_range(
-              plan.action_begin, plan.bypass_begin, true, state_base,
+              plan.action_begin, plan.action_end, true, state_base,
               &action_registers, &return_known, &guarded_returned);
           if (iteration_status.ok() && !guarded_returned) {
             iteration_status =
@@ -2358,21 +2383,48 @@ CompilationResult compile_numeric_for_prototype(
           return iteration_status;
         }
 
-        iteration_status = builder.set_insertion_block(bypass);
+        iteration_status = builder.set_insertion_block(alternate);
         if (!iteration_status.ok()) {
           return iteration_status;
         }
-        std::vector<Value> completed_iteration = block_registers(bypass);
+        std::vector<Value> alternate_registers = block_registers(alternate);
+        const Value alternate_remaining =
+            builder.block_parameter(alternate, carried_registers.size());
+        if (plan.kind == GuardedBodyKind::kConditionalElse) {
+          std::vector<std::optional<Word>> alternate_known(
+              prototype.maxstacksize);
+          iteration_status = translate_range(
+              plan.alternate_begin, plan.continuation_begin, false, state_base,
+              &alternate_registers, &alternate_known, &returned);
+          if (!iteration_status.ok()) {
+            return iteration_status;
+          }
+        }
+        std::vector<Value> alternate_arguments;
+        iteration_status = counted_arguments(
+            alternate_registers, alternate_remaining, &alternate_arguments);
+        if (iteration_status.ok()) {
+          iteration_status = builder.jump(merge, alternate_arguments);
+        }
+        if (!iteration_status.ok()) {
+          return iteration_status;
+        }
+
+        iteration_status = builder.set_insertion_block(merge);
+        if (!iteration_status.ok()) {
+          return iteration_status;
+        }
+        std::vector<Value> completed_iteration = block_registers(merge);
         std::vector<std::optional<Word>> completed_known(
             prototype.maxstacksize);
-        iteration_status =
-            translate_range(plan.bypass_begin, loop_pc, false, state_base,
-                            &completed_iteration, &completed_known, &returned);
+        iteration_status = translate_range(
+            plan.continuation_begin, loop_pc, false, state_base,
+            &completed_iteration, &completed_known, &returned);
         if (!iteration_status.ok()) {
           return iteration_status;
         }
         const Value current_remaining =
-            builder.block_parameter(bypass, carried_registers.size());
+            builder.block_parameter(merge, carried_registers.size());
         const Value current_index =
             completed_iteration[static_cast<std::size_t>(state_base + 2)];
         if (!current_index.valid()) {
