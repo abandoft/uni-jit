@@ -19,6 +19,11 @@
 #include "unijit/ir/optimizer.h"
 #include "unijit/jit/compiler.h"
 
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || \
+    defined(_M_X64) || (defined(__riscv) && __riscv_xlen == 64)
+#define UNIJIT_TEST_NATIVE_SIMD 1
+#endif
+
 namespace {
 
 using unijit::ir::ControlFlowBuilder;
@@ -648,8 +653,7 @@ bool fuzz_vector_function(std::mt19937_64* random, const Options& options,
     return false;
   }
 
-#if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || \
-    defined(_M_X64)
+#if defined(UNIJIT_TEST_NATIVE_SIMD)
   const unijit::jit::CompilationOptions baseline{
       unijit::jit::OptimizationLevel::kBaseline};
   const unijit::jit::CompilationOptions optimized{
@@ -697,8 +701,7 @@ bool fuzz_vector_function(std::mt19937_64* random, const Options& options,
                              cfg_result_value);
     }
 
-#if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || \
-    defined(_M_X64)
+#if defined(UNIJIT_TEST_NATIVE_SIMD)
     const auto straight_baseline_value = straight_baseline.function->invoke(
         arguments.data(), arguments.size());
     const auto straight_optimized_value = straight_optimized.function->invoke(

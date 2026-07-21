@@ -27,6 +27,11 @@
 #include "unijit/jit/tiering.h"
 #include "jit/register_allocator.h"
 
+#if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || \
+    defined(_M_X64) || (defined(__riscv) && __riscv_xlen == 64)
+#define UNIJIT_TEST_NATIVE_SIMD 1
+#endif
+
 namespace {
 
 using unijit::ir::Function;
@@ -284,8 +289,7 @@ Word sum_runtime_helper(const Word* arguments, std::size_t count) {
   return result;
 }
 
-#if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || \
-    defined(_M_X64)
+#if defined(UNIJIT_TEST_NATIVE_SIMD)
 Word vector_clobber_runtime_helper(const Word* arguments, std::size_t count) {
 #if defined(__aarch64__) && (defined(__GNUC__) || defined(__clang__))
   __asm__ volatile("movi v0.16b, #0xa5" ::: "v0");
@@ -6389,8 +6393,7 @@ void test_control_flow_vector_register_allocation() {
       });
   expect(liveness.status.ok() && !captures_vector,
          "CFG runtime-exit capture must omit non-reference vector payloads");
-#if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || \
-    defined(_M_X64)
+#if defined(UNIJIT_TEST_NATIVE_SIMD)
   const std::array<Word, 1> arguments = {11};
   const auto interpreted = unijit::ir::ControlFlowInterpreter::evaluate(
       function, arguments.data(), arguments.size());
@@ -6613,8 +6616,7 @@ void test_vector128_straight_line_ir() {
   }
 
   const auto compilation = Compiler::compile(function);
-#if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || \
-    defined(_M_X64)
+#if defined(UNIJIT_TEST_NATIVE_SIMD)
   const auto native = compilation.ok()
                           ? compilation.function->invoke(arguments.data(),
                                                          arguments.size())
@@ -6667,8 +6669,7 @@ void test_vector128_straight_line_ir() {
       unijit::jit::OptimizationLevel::kBaseline;
   const auto baseline_compilation =
       Compiler::compile(folding_function, baseline_options);
-#if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || \
-    defined(_M_X64)
+#if defined(UNIJIT_TEST_NATIVE_SIMD)
   const auto baseline_native =
       baseline_compilation.ok()
           ? baseline_compilation.function->invoke(nullptr, 0)
@@ -6728,8 +6729,7 @@ void test_vector128_control_flow_ir() {
            "optimized CFG SIMD must remain bit-exact");
   }
   const auto dynamic_compilation = Compiler::compile(function);
-#if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || \
-    defined(_M_X64)
+#if defined(UNIJIT_TEST_NATIVE_SIMD)
   const auto native = dynamic_compilation.ok()
                           ? dynamic_compilation.function->invoke(
                                 arguments.data(), arguments.size())
@@ -6782,8 +6782,7 @@ void test_vector128_control_flow_ir() {
 }
 
 void test_native_vector_operation_surface() {
-#if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || \
-    defined(_M_X64)
+#if defined(UNIJIT_TEST_NATIVE_SIMD)
   using unijit::ir::ControlFlowBuilder;
   using unijit::ir::ControlFlowFunction;
   using unijit::ir::ControlFlowInterpreter;
