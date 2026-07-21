@@ -19,7 +19,7 @@ qualifying the shared commercial contract on those three targets.
 | Capability | Current UniJIT state | Product decision | Priority |
 |---|---|---|---|
 | Scalar Word and Float64 operations | Implemented in both IR forms and all three backends | Continue expanding through the same typed contract | Delivered |
-| SIMD | The strict 128-bit type/operation contract, both IR forms, verifier, interpreters, CFG whole-vector edges, folding, limits, differential generation, typed shared-SIMD allocation, aligned two-word vector slots, mixed-bank parallel copies, complete AArch64 Advanced SIMD/NEON and x86-64 SSE2 lowering, bounded stack-only RV64IMD scalar lowering, and a retained three-architecture complete-CFG-loop performance gate for the current explicit surface are delivered | Complete bounded vector memory, capability telemetry, and an optional profile-specific RVV fast path before wider profiles or loop vectorization | P0 partial |
+| SIMD | The strict 128-bit type/operation contract, both IR forms, verifier, interpreters, CFG whole-vector edges, folding, limits, differential generation, bounded vector memory, typed shared-SIMD allocation, aligned two-word vector slots, mixed-bank parallel copies, complete AArch64 Advanced SIMD/NEON and x86-64 SSE2 lowering, bounded stack-only RV64IMD scalar lowering, target-scoped lowering preflight/telemetry, and a retained three-architecture complete-CFG-loop performance gate for the current explicit surface are delivered | Retain this portable floor and add an optional profile-specific RVV fast path before claiming RVV or wider profiles | Delivered portable floor; optional profile follow-on |
 | Typed memory, unaligned access, byte reversal | Bounded 8/16/32/64-bit Word memory, Float32/Float64 storage, standalone 16/32/64-bit byte reversal, fixed Word/Float64 frame slots, and preflighted trusted Word/Float64 object layouts are delivered in both IR forms, the interpreter, optimizer, and all three native backends | Use the completed scalar provenance floor for SIMD, atomics, and later FFI lowering | Delivered scalar floor |
 | Generated-code atomics | Runtime control structures use C++ atomics; generated IR has none | Add typed atomic IR with explicit memory order and natural-alignment rules | P1 |
 | Fast internal calls | Calls currently use the portable runtime-helper ABI | Add a private JIT-to-JIT convention without weakening external ABI safety | P1 |
@@ -239,7 +239,8 @@ deoptimization remains unsupported.
   delivered lowering consumes the shared Float64/vector allocation plan for
   straight-line and CFG code, full-width spills, mixed parallel copies, and
   helper-call preservation. It implements the current operation surface
-  directly except for deliberately scalar-legalized I64x2 multiplication.
+  directly except for deliberately legalized I64x2 multiplication and
+  lane-sign-mask assembly.
 - RISC-V 64 currently uses verified bounded RV64IMD scalar sequences with
   aligned stack-only vector storage, independent of optional vector state.
   A future RVV fast path will require an explicit target profile, set `vl` to
@@ -260,13 +261,17 @@ target cost model still proves a benefit.
 
 ### Capability preflight
 
-An embedder must be able to ask whether a typed operation set can compile for a
-specific immutable target profile without generating code. The planned report
-uses four outcomes: `native`, `legalized`, `helper`, and `unsupported`, plus the
-required feature bits, vector width, estimated temporary register class, and
-whether execution needs an `ExecutionContext`. Compilation rechecks the same
-decision so a stale preflight result cannot bypass verification. This replaces
-per-op probe flags with one cacheable, target-profile-scoped contract.
+An embedder can now ask whether a typed operation set can compile for a
+specific immutable target profile without generating code or allocating
+executable memory. `CapabilityReport` uses `native`, `legalized`, `scalarized`,
+`helper`, and `unsupported`, and exposes required feature bits, vector width,
+execution-context need, strategy counts, and per-vector-operation register and
+aligned-stack resource masks. Both IR forms use the same fixed-size report.
+Compilation rechecks the optimized IR, publishes that exact immutable report
+through the compiled function and cache lease, and fails closed on malformed
+IR or profiles. This delivered contract replaces per-op probe flags with one
+cacheable, target-profile-scoped decision; see
+[`TARGET_PROFILES.md`](TARGET_PROFILES.md).
 
 ### Vectorization stages
 
@@ -407,9 +412,9 @@ byte-identical packages for identical inputs and target profiles.
    corpus, target-scoped fail-closed boundary, shared SIMD allocation, aligned
    spill plans, call liveness, mixed-bank edge-cycle planning, complete
    AArch64 lowering, complete x86-64 SSE2 lowering, and bounded stack-only
-   RV64IMD scalar lowering plus bounded aligned/unaligned vector memory for the
-   current explicit surface are delivered; profile-specific feature
-   preflight/telemetry and optional RVV lowering remain.
+   RV64IMD scalar lowering, bounded aligned/unaligned vector memory, and
+   profile-specific feature preflight/telemetry for the current explicit
+   surface are delivered; optional RVV lowering remains a profile enhancement.
 3. Retain explicit SIMD and complete-loop performance gates on real AArch64,
    Ubuntu/Windows x86-64, and RISC-V 64 hosts. This gate is delivered with
    vector/scalar/interpreter parity, target lowering identity, fixed workload

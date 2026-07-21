@@ -18,7 +18,10 @@ and Float memory supports byte-exact scalar loads and stores, while bounded
 byte order, alignment and permission checks, diagnosed exits, and native or
 bounded scalar lowering on all three backends. A retained complete-CFG-loop
 SIMD gate requires speedup over both equivalent scalar generated code and the
-reference interpreter on every product architecture.
+reference interpreter on every product architecture. Public cross-target
+capability preflight classifies verified operation sets without emitting code,
+and compiled functions retain the post-optimization lowering decision for
+capacity planning and production telemetry.
 See [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) for the design and delivery
 gates, [doc/PORTABILITY.md](doc/PORTABILITY.md) for verified platforms, and
 [doc/RUNTIME.md](doc/RUNTIME.md) for execution contexts, exits, and safepoints.
@@ -51,9 +54,10 @@ target profiles, and validated serialization/AOT.
 [doc/PORTABLE_SIMD.md](doc/PORTABLE_SIMD.md) defines the delivered strict
 128-bit semantic core, lane and mask rules, verifier and optimizer guarantees,
 bounded vector memory, three-backend lowering, qualification, and remaining
-capability-telemetry and optional RVV gates.
+optional RVV gate.
 [doc/TARGET_PROFILES.md](doc/TARGET_PROFILES.md) defines host feature discovery,
-portable baselines, immutable compilation identity, and profile-scoped caches.
+portable baselines, immutable compilation identity, cross-target lowering
+preflight, compiled telemetry, and profile-scoped caches.
 [doc/TYPED_MEMORY.md](doc/TYPED_MEMORY.md) defines bounded regions, Word and
 Float32/Float64 storage, standalone byte reversal, byte-exact endian and
 unaligned semantics, diagnosed failures, live-value stack maps, native

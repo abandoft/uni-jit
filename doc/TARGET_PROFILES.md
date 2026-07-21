@@ -48,6 +48,46 @@ path. Cross-target code generation is not silently inferred from the build
 host; until object-level cross compilation is delivered, a different
 architecture or ABI is rejected.
 
+## Lowering capability preflight and telemetry
+
+`preflight_capabilities()` accepts either verified straight-line or CFG IR and
+an immutable target profile. It validates both inputs and classifies the
+complete typed operation set without allocating executable memory or emitting
+machine code. Unlike native compilation, preflight may inspect a valid AArch64,
+x86-64, or RISC-V 64 profile from any build host; it is therefore suitable for
+admission control, artifact planning, and fleet capability inventory, but it
+does not create a cross-target code object.
+
+The fixed-size `CapabilityReport` contains:
+
+- status, the exact target profile and its stable key;
+- the overall `native`, `legalized`, `scalarized`, `helper`, or `unsupported`
+  decision and a count for every strategy;
+- the union of feature bits actually required by the supplied operation set,
+  the required vector width, and whether execution needs an
+  `ExecutionContext`;
+- per-class decisions for vector memory, construction, lane movement, integer
+  and floating arithmetic, bitwise logic, comparison, selection, lane-sign
+  masks, shuffles, and widening;
+- per-vector-class operation counts, feature requirements, and a resource mask
+  for Word, floating, and vector registers plus aligned vector stack storage.
+
+`native` means the target baseline has a direct vector lowering;
+`legalized` means a bounded inlined target sequence is required;
+`scalarized` identifies the bounded RV64IMD lane fallback; `helper` records an
+explicit runtime-helper call; and `unsupported` fails the report closed.
+Callers must check a vector class's operation count before interpreting its
+default entry because an unused class makes no capability claim.
+
+Compilation runs the same classifier after optimization. Consequently a
+public preflight describes the IR supplied by the caller, while
+`CompiledFunction::capabilities()` describes only the operations that survive
+optimization and reach lowering. The compiler also incorporates assumptions
+and trusted-object bindings into the final execution-context requirement.
+`CodeHandle::capabilities()` retains the same immutable report for the exact
+leased generation. A prior successful preflight never bypasses compiler
+verification or host compatibility checks.
+
 ## Cache identity
 
 A `CodeCache` is scoped to one exact target profile. It rejects publication of

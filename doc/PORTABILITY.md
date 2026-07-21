@@ -169,6 +169,17 @@ native results and region bytes with both interpreters. The installed-package
 consumer executes the public big-endian I32x4 round trip on each product
 architecture, and Linux plus local AArch64 ASan/UBSan qualification passes.
 
+At commit `e22dcd1`, target-profile lowering capability preflight and immutable
+compiled telemetry passed warnings-as-errors core and installed-package
+qualification on local Darwin AArch64, Darwin x86-64 through Rosetta, a
+separate real Ubuntu GCC 13.3 x86-64 host, and the real Bianbu GCC 14.2 RISC-V
+64 host. The complete hosted quality workflow also passed Linux GCC/Clang,
+Windows MSVC x86-64, macOS AArch64/x86-64, Linux and Windows sanitizer lanes,
+deterministic fuzz/stress, and all three stock-language baselines. Cross-target
+unit coverage preflights AArch64, System V x86-64, and RISC-V 64 from one
+process without emitting code; native compilation still requires a compatible
+configured backend and host.
+
 The native test suite checks full-width constants, all bootstrap arithmetic
 operations, forced register spilling, invocation validation, and 5,000 seeded
 random comparisons against the interpreter oracle. It also checks helper calls

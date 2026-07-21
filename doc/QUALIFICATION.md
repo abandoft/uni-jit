@@ -53,6 +53,29 @@ Ubuntu GCC/Clang x86-64, macOS x86-64, and Windows MSVC x86-64. The identical
 gate is replayed on real RISC-V 64 hardware, where lowering must identify
 itself as `scalarized`.
 
+## Lowering capability qualification
+
+Core tests construct one verified operation set containing vector
+construction, lane movement, I64x2 multiplication, comparison, selection,
+lane-sign extraction, shuffle, widening, and big-endian bounded vector memory,
+then preflight it independently for AArch64, x86-64, and RISC-V 64. The report
+must distinguish direct, legalized, and scalarized classes, retain feature and
+register/stack resource masks, count every classified node, and request an
+execution context for bounded memory. Separate fixtures cover helper
+classification, FP64 comparisons whose Word result must not hide their input
+feature requirement, CFG parity, invalid profiles, malformed IR, and
+straight-line safepoints.
+
+Baseline compilation must publish the same decision as preflight for unchanged
+IR. An optimized constant-vector fixture must instead publish a scalar-only
+post-optimization report after every vector operation is folded away. Cache
+leases retain the target-keyed report, and the external installed-package
+consumer repeats preflight plus compiled telemetry through exported public
+headers. At commit `e22dcd1`, this matrix passed warnings-as-errors core and
+package qualification on local AArch64 and Rosetta x86-64, real Ubuntu GCC
+13.3 x86-64, real Bianbu GCC 14.2 RISC-V 64, and the complete hosted workflow
+including Windows MSVC x86-64, sanitizers, stress/fuzz, and language baselines.
+
 ## Concurrent code-cache stress
 
 `unijit_code_cache_stress` runs configurable reader and writer populations over

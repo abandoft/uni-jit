@@ -10,12 +10,11 @@ interpreters, optimizer folding, deterministic differential generator, table
 limits, allocation, legalizers, and encoders are implemented independently of
 SLJIT or another JIT backend.
 
-This is a three-backend execution claim for the current explicit operation
-surface, not yet a vector-memory, RVV, telemetry, or complete-loop performance
-claim. RISC-V 64 does not require or claim RVV: it keeps each vector in an
-aligned two-word stack slot and emits a finite RV64IMD scalar sequence. Bounded
-vector memory, target-scoped capability reporting, cross-host performance
-gates, and an optional RVV fast path remain P0 work.
+This is a three-backend execution, bounded-vector-memory, complete-loop
+performance, and target-scoped capability-reporting claim for the current
+explicit operation surface. RISC-V 64 does not require or claim RVV: it keeps
+each vector in an aligned two-word stack slot and emits a finite RV64IMD scalar
+sequence. An optional profile-specific RVV fast path remains follow-on work.
 
 ## Representation and lane order
 
@@ -177,6 +176,9 @@ lane insert/extract, sign masks, constant shuffles, and signed/unsigned
 widening. I64x2 multiplication is deliberately scalar-legalized per lane
 because the architectural 128-bit NEON floor has no matching two-lane multiply
 instruction. No operation silently selects relaxed floating-point semantics.
+Lane-sign-mask extraction is also reported as a bounded legalization because
+the AArch64 baseline expands it into explicit lane extraction and scalar mask
+assembly.
 
 The x86-64 encoder uses the mandatory SSE2 baseline directly for packed
 integer add/subtract and I16x8 multiplication, packed Float32/Float64
@@ -227,9 +229,16 @@ Ubuntu GCC/Clang and Windows MSVC x86-64, hosted macOS x86-64, and real Bianbu
 RISC-V 64 all pass; per-host JSON records are retained by the platform
 workflow, and RISC-V explicitly reports `scalarized` rather than `native`.
 
-The remaining profile-specific SIMD work is:
+The remaining profile-specific SIMD work is optional RVV lowering selected
+only by an explicit compatible target profile and proven against the same
+scalar oracle and real-host matrix.
 
-1. target-profile-scoped `native`/`legalized`/`scalarized`/`unsupported`
-   preflight and compilation telemetry;
-2. optional RVV lowering selected only by an explicit compatible target
-   profile and proven against the same scalar oracle and real-host matrix.
+`preflight_capabilities()` now validates either IR form and an immutable target
+profile, then classifies the complete typed operation set without allocating
+executable memory or emitting code. Reports include `native`, `legalized`,
+`scalarized`, `helper`, and `unsupported` counts, required feature bits, the
+fixed vector width, execution-context need, and per-vector-class resource
+masks for Word, floating, and vector registers plus aligned vector stack
+storage. Compilation runs the same classifier after optimization, so published
+telemetry describes operations that actually reach lowering; the immutable
+report is retained by `CompiledFunction` and every `CodeHandle` lease.
