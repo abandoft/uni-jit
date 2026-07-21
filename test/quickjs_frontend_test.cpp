@@ -124,8 +124,9 @@ int main() {
       "  }"
       "  return result;"
       "}";
-  constexpr std::array<std::uint64_t, 4> kNegateSamples = {
+  constexpr std::array<std::uint64_t, 6> kNegateSamples = {
       UINT64_C(0x0000000000000000), UINT64_C(0x8000000000000000),
+      UINT64_C(0x7ff0000000000000), UINT64_C(0xfff0000000000000),
       UINT64_C(0x7ff8000000001234), UINT64_C(0xfff8000000005678)};
   for (const auto level : {unijit::jit::OptimizationLevel::kBaseline,
                            unijit::jit::OptimizationLevel::kOptimized}) {
