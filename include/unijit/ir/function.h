@@ -58,6 +58,10 @@ enum class Opcode : std::uint8_t {
   kShiftLeft,
   kFloorDivide,
   kFloorModulo,
+  kLessThan,
+  kLessEqual,
+  kEqual,
+  kNotEqual,
   kNegate,
   kBitwiseNot,
   kFloatAdd,
@@ -149,6 +153,10 @@ class FunctionBuilder final {
   Value shift_left(Value value, Value amount);
   Value floor_divide(Value lhs, Value rhs);
   Value floor_modulo(Value lhs, Value rhs);
+  Value less_than(Value lhs, Value rhs);
+  Value less_equal(Value lhs, Value rhs);
+  Value equal(Value lhs, Value rhs);
+  Value not_equal(Value lhs, Value rhs);
   Value negate(Value value);
   Value bitwise_not(Value value);
   Value float64_add(Value lhs, Value rhs);

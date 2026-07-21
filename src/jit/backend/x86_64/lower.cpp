@@ -59,6 +59,13 @@ enum class FloatCondition : std::uint8_t {
   kNotEqual,
 };
 
+enum class WordCondition : std::uint8_t {
+  kLessThan,
+  kLessEqual,
+  kEqual,
+  kNotEqual,
+};
+
 class Assembler final {
  public:
   void move_register(int destination, int source) {
@@ -384,13 +391,21 @@ class Assembler final {
     return status;
   }
 
-  void compare(int destination, int lhs, int rhs, bool or_equal) {
+  void compare(int destination, int lhs, int rhs, WordCondition condition) {
     emit_rex(rhs, lhs);
     buffer_.emit_u8(0x39U);
     emit_modrm(3, rhs, lhs);
     emit_rex(0, destination);
     buffer_.emit_u8(0x0FU);
-    buffer_.emit_u8(or_equal ? 0x9EU : 0x9CU);
+    std::uint8_t set_opcode = 0x9CU;
+    if (condition == WordCondition::kLessEqual) {
+      set_opcode = 0x9EU;
+    } else if (condition == WordCondition::kEqual) {
+      set_opcode = 0x94U;
+    } else if (condition == WordCondition::kNotEqual) {
+      set_opcode = 0x95U;
+    }
+    buffer_.emit_u8(set_opcode);
     emit_modrm(3, 0, destination);
     emit_rex(destination, destination);
     buffer_.emit_u8(0x0FU);
@@ -841,7 +856,11 @@ LoweringResult lower_impl(const ir::Function& function,
       case ir::Opcode::kBitwiseXor:
       case ir::Opcode::kShiftLeft:
       case ir::Opcode::kFloorDivide:
-      case ir::Opcode::kFloorModulo: {
+      case ir::Opcode::kFloorModulo:
+      case ir::Opcode::kLessThan:
+      case ir::Opcode::kLessEqual:
+      case ir::Opcode::kEqual:
+      case ir::Opcode::kNotEqual: {
         const int lhs = load_operand(
             &assembler, allocation.locations[node.lhs.id()], kScratch0);
         const int rhs = load_operand(
@@ -875,6 +894,19 @@ LoweringResult lower_impl(const ir::Function& function,
           if (target != kReturnRegister) {
             assembler.move_register(target, kReturnRegister);
           }
+        } else if (node.opcode == ir::Opcode::kLessThan ||
+                   node.opcode == ir::Opcode::kLessEqual ||
+                   node.opcode == ir::Opcode::kEqual ||
+                   node.opcode == ir::Opcode::kNotEqual) {
+          WordCondition condition = WordCondition::kLessThan;
+          if (node.opcode == ir::Opcode::kLessEqual) {
+            condition = WordCondition::kLessEqual;
+          } else if (node.opcode == ir::Opcode::kEqual) {
+            condition = WordCondition::kEqual;
+          } else if (node.opcode == ir::Opcode::kNotEqual) {
+            condition = WordCondition::kNotEqual;
+          }
+          assembler.compare(target, lhs, rhs, condition);
         } else {
           assembler.bitwise_xor(target, lhs, rhs);
         }
@@ -1789,6 +1821,8 @@ LoweringResult lower_control_flow_impl(
         case ir::ControlOpcode::kFloorModulo:
         case ir::ControlOpcode::kLessThan:
         case ir::ControlOpcode::kLessEqual:
+        case ir::ControlOpcode::kEqual:
+        case ir::ControlOpcode::kNotEqual:
           const int lhs = load_control_word(
               &assembler, allocation, node.lhs, block_index, kScratch0);
           const int rhs = load_control_word(
@@ -1823,8 +1857,15 @@ LoweringResult lower_control_flow_impl(
               assembler.move_register(word_destination, kReturnRegister);
             }
           } else {
-            assembler.compare(word_destination, lhs, rhs,
-                              node.opcode == ir::ControlOpcode::kLessEqual);
+            WordCondition condition = WordCondition::kLessThan;
+            if (node.opcode == ir::ControlOpcode::kLessEqual) {
+              condition = WordCondition::kLessEqual;
+            } else if (node.opcode == ir::ControlOpcode::kEqual) {
+              condition = WordCondition::kEqual;
+            } else if (node.opcode == ir::ControlOpcode::kNotEqual) {
+              condition = WordCondition::kNotEqual;
+            }
+            assembler.compare(word_destination, lhs, rhs, condition);
           }
           if (allocated_word < 0 ||
               allocation.requires_stack[value.id()]) {

@@ -42,6 +42,8 @@ bool is_binary(ControlOpcode opcode) {
   case ControlOpcode::kFloatNotEqual:
   case ControlOpcode::kLessThan:
   case ControlOpcode::kLessEqual:
+  case ControlOpcode::kEqual:
+  case ControlOpcode::kNotEqual:
     return true;
   case ControlOpcode::kParameter:
   case ControlOpcode::kBlockParameter:
@@ -510,7 +512,13 @@ Word evaluate_node(ControlOpcode opcode, Word lhs, Word rhs) noexcept {
   if (opcode == ControlOpcode::kLessThan) {
     return lhs < rhs ? 1 : 0;
   }
-  return lhs <= rhs ? 1 : 0;
+  if (opcode == ControlOpcode::kLessEqual) {
+    return lhs <= rhs ? 1 : 0;
+  }
+  if (opcode == ControlOpcode::kEqual) {
+    return lhs == rhs ? 1 : 0;
+  }
+  return lhs != rhs ? 1 : 0;
 }
 
 } // namespace
@@ -722,6 +730,14 @@ Value ControlFlowBuilder::less_than(Value lhs, Value rhs) {
 
 Value ControlFlowBuilder::less_equal(Value lhs, Value rhs) {
   return append_binary(ControlOpcode::kLessEqual, lhs, rhs);
+}
+
+Value ControlFlowBuilder::equal(Value lhs, Value rhs) {
+  return append_binary(ControlOpcode::kEqual, lhs, rhs);
+}
+
+Value ControlFlowBuilder::not_equal(Value lhs, Value rhs) {
+  return append_binary(ControlOpcode::kNotEqual, lhs, rhs);
 }
 
 Value ControlFlowBuilder::call(RuntimeHelper helper,

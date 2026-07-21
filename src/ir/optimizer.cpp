@@ -64,6 +64,18 @@ Word fold_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
   if (opcode == Opcode::kFloorModulo) {
     return floor_modulo_word(lhs, rhs);
   }
+  if (opcode == Opcode::kLessThan) {
+    return lhs < rhs ? 1 : 0;
+  }
+  if (opcode == Opcode::kLessEqual) {
+    return lhs <= rhs ? 1 : 0;
+  }
+  if (opcode == Opcode::kEqual) {
+    return lhs == rhs ? 1 : 0;
+  }
+  if (opcode == Opcode::kNotEqual) {
+    return lhs != rhs ? 1 : 0;
+  }
   return from_bits(lhs_bits ^ rhs_bits);
 }
 
@@ -99,7 +111,9 @@ bool is_binary(Opcode opcode) noexcept {
          opcode == Opcode::kMultiply || opcode == Opcode::kBitwiseAnd ||
          opcode == Opcode::kBitwiseOr || opcode == Opcode::kBitwiseXor ||
          opcode == Opcode::kShiftLeft || opcode == Opcode::kFloorDivide ||
-         opcode == Opcode::kFloorModulo ||
+         opcode == Opcode::kFloorModulo || opcode == Opcode::kLessThan ||
+         opcode == Opcode::kLessEqual || opcode == Opcode::kEqual ||
+         opcode == Opcode::kNotEqual ||
          opcode == Opcode::kFloatAdd ||
          opcode == Opcode::kFloatSubtract ||
          opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide ||
@@ -179,6 +193,8 @@ bool is_control_binary(ControlOpcode opcode) noexcept {
     case ControlOpcode::kFloatNotEqual:
     case ControlOpcode::kLessThan:
     case ControlOpcode::kLessEqual:
+    case ControlOpcode::kEqual:
+    case ControlOpcode::kNotEqual:
       return true;
     default:
       return false;
@@ -229,7 +245,9 @@ bool is_control_comparison(ControlOpcode opcode) noexcept {
          opcode == ControlOpcode::kFloatEqual ||
          opcode == ControlOpcode::kFloatNotEqual ||
          opcode == ControlOpcode::kLessThan ||
-         opcode == ControlOpcode::kLessEqual;
+         opcode == ControlOpcode::kLessEqual ||
+         opcode == ControlOpcode::kEqual ||
+         opcode == ControlOpcode::kNotEqual;
 }
 
 Word fold_control_binary(ControlOpcode opcode, Word lhs, Word rhs) noexcept {
@@ -294,7 +312,13 @@ Word fold_control_binary(ControlOpcode opcode, Word lhs, Word rhs) noexcept {
   if (opcode == ControlOpcode::kLessThan) {
     return lhs < rhs ? 1 : 0;
   }
-  return lhs <= rhs ? 1 : 0;
+  if (opcode == ControlOpcode::kLessEqual) {
+    return lhs <= rhs ? 1 : 0;
+  }
+  if (opcode == ControlOpcode::kEqual) {
+    return lhs == rhs ? 1 : 0;
+  }
+  return lhs != rhs ? 1 : 0;
 }
 
 Value emit_control_binary(ControlFlowBuilder* builder,
@@ -338,6 +362,10 @@ Value emit_control_binary(ControlFlowBuilder* builder,
       return builder->less_than(lhs, rhs);
     case ControlOpcode::kLessEqual:
       return builder->less_equal(lhs, rhs);
+    case ControlOpcode::kEqual:
+      return builder->equal(lhs, rhs);
+    case ControlOpcode::kNotEqual:
+      return builder->not_equal(lhs, rhs);
     default:
       return {};
   }
@@ -600,10 +628,23 @@ PassResult transform_once(
       continue;
     }
 
-    if (node.opcode == Opcode::kBitwiseXor && lhs_id == rhs_id) {
+    if ((node.opcode == Opcode::kBitwiseXor ||
+         node.opcode == Opcode::kLessThan ||
+         node.opcode == Opcode::kNotEqual) &&
+        lhs_id == rhs_id) {
       mapped[index] = builder.constant(0);
       known_constant[index] = true;
       constant_value[index] = 0;
+      ++simplified;
+      changed = true;
+      continue;
+    }
+    if ((node.opcode == Opcode::kLessEqual ||
+         node.opcode == Opcode::kEqual) &&
+        lhs_id == rhs_id) {
+      mapped[index] = builder.constant(1);
+      known_constant[index] = true;
+      constant_value[index] = 1;
       ++simplified;
       changed = true;
       continue;
@@ -694,6 +735,14 @@ PassResult transform_once(
       mapped[index] = builder.floor_divide(mapped[lhs_id], mapped[rhs_id]);
     } else if (node.opcode == Opcode::kFloorModulo) {
       mapped[index] = builder.floor_modulo(mapped[lhs_id], mapped[rhs_id]);
+    } else if (node.opcode == Opcode::kLessThan) {
+      mapped[index] = builder.less_than(mapped[lhs_id], mapped[rhs_id]);
+    } else if (node.opcode == Opcode::kLessEqual) {
+      mapped[index] = builder.less_equal(mapped[lhs_id], mapped[rhs_id]);
+    } else if (node.opcode == Opcode::kEqual) {
+      mapped[index] = builder.equal(mapped[lhs_id], mapped[rhs_id]);
+    } else if (node.opcode == Opcode::kNotEqual) {
+      mapped[index] = builder.not_equal(mapped[lhs_id], mapped[rhs_id]);
     } else {
       mapped[index] = builder.bitwise_xor(mapped[lhs_id], mapped[rhs_id]);
     }
@@ -1256,6 +1305,18 @@ ControlFlowOptimizationResult Optimizer::run(
         if (known_constant[lhs_id] && known_constant[rhs_id]) {
           constant_value[index] = fold_control_binary(
               node.opcode, constant_value[lhs_id], constant_value[rhs_id]);
+          known_constant[index] = true;
+          folded_node[index] = true;
+        } else if (lhs_id == rhs_id &&
+                   (node.opcode == ControlOpcode::kLessThan ||
+                    node.opcode == ControlOpcode::kLessEqual ||
+                    node.opcode == ControlOpcode::kEqual ||
+                    node.opcode == ControlOpcode::kNotEqual)) {
+          constant_value[index] =
+              node.opcode == ControlOpcode::kLessEqual ||
+                      node.opcode == ControlOpcode::kEqual
+                  ? 1
+                  : 0;
           known_constant[index] = true;
           folded_node[index] = true;
         } else if (node.opcode == ControlOpcode::kAdd) {

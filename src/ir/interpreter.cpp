@@ -54,6 +54,14 @@ Word evaluate_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
       return floor_divide_word(lhs, rhs);
     case Opcode::kFloorModulo:
       return floor_modulo_word(lhs, rhs);
+    case Opcode::kLessThan:
+      return lhs < rhs ? 1 : 0;
+    case Opcode::kLessEqual:
+      return lhs <= rhs ? 1 : 0;
+    case Opcode::kEqual:
+      return lhs == rhs ? 1 : 0;
+    case Opcode::kNotEqual:
+      return lhs != rhs ? 1 : 0;
     case Opcode::kNegate:
       return from_bits(UINT64_C(0) - lhs_bits);
     case Opcode::kBitwiseNot:
@@ -175,6 +183,10 @@ EvaluationResult Interpreter::evaluate(const Function& function,
         case Opcode::kShiftLeft:
         case Opcode::kFloorDivide:
         case Opcode::kFloorModulo:
+        case Opcode::kLessThan:
+        case Opcode::kLessEqual:
+        case Opcode::kEqual:
+        case Opcode::kNotEqual:
         case Opcode::kNegate:
         case Opcode::kBitwiseNot:
         case Opcode::kFloatAdd:

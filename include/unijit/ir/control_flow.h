@@ -61,6 +61,8 @@ enum class ControlOpcode : std::uint8_t {
   kFloatNotEqual,
   kLessThan,
   kLessEqual,
+  kEqual,
+  kNotEqual,
   kCall,
   kGuardWordNonzero,
   kGuardFloatNonzero,
@@ -183,6 +185,8 @@ public:
   Value float64_not_equal(Value lhs, Value rhs);
   Value less_than(Value lhs, Value rhs);
   Value less_equal(Value lhs, Value rhs);
+  Value equal(Value lhs, Value rhs);
+  Value not_equal(Value lhs, Value rhs);
   Value call(RuntimeHelper helper, std::vector<Value> arguments,
              ValueType result_type = ValueType::kWord);
   Value guard_word_nonzero(Value value, std::size_t site);

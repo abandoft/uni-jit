@@ -15,7 +15,9 @@ bool is_binary(Opcode opcode) {
          opcode == Opcode::kMultiply || opcode == Opcode::kBitwiseAnd ||
          opcode == Opcode::kBitwiseOr || opcode == Opcode::kBitwiseXor ||
          opcode == Opcode::kShiftLeft || opcode == Opcode::kFloorDivide ||
-         opcode == Opcode::kFloorModulo ||
+         opcode == Opcode::kFloorModulo || opcode == Opcode::kLessThan ||
+         opcode == Opcode::kLessEqual || opcode == Opcode::kEqual ||
+         opcode == Opcode::kNotEqual ||
          opcode == Opcode::kFloatAdd ||
          opcode == Opcode::kFloatSubtract ||
          opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide ||

@@ -165,6 +165,22 @@ Value FunctionBuilder::floor_modulo(Value lhs, Value rhs) {
   return append_binary(Opcode::kFloorModulo, lhs, rhs);
 }
 
+Value FunctionBuilder::less_than(Value lhs, Value rhs) {
+  return append_binary(Opcode::kLessThan, lhs, rhs);
+}
+
+Value FunctionBuilder::less_equal(Value lhs, Value rhs) {
+  return append_binary(Opcode::kLessEqual, lhs, rhs);
+}
+
+Value FunctionBuilder::equal(Value lhs, Value rhs) {
+  return append_binary(Opcode::kEqual, lhs, rhs);
+}
+
+Value FunctionBuilder::not_equal(Value lhs, Value rhs) {
+  return append_binary(Opcode::kNotEqual, lhs, rhs);
+}
+
 Value FunctionBuilder::negate(Value value) {
   if (function_.nodes_.size() >= Value::kInvalidId) {
     return {};
