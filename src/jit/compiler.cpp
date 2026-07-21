@@ -11,6 +11,7 @@
 #include "jit/executable_memory.h"
 #include "jit/stack_map_requirements.h"
 #include "unijit/ir/optimizer.h"
+#include "ir/object_access.h"
 
 #if defined(UNIJIT_TARGET_AARCH64)
 #include "jit/backend/aarch64/lower.h"
@@ -56,6 +57,11 @@ bool is_memory(ir::Opcode opcode) noexcept {
          opcode == ir::Opcode::kLoadFloat || opcode == ir::Opcode::kStoreFloat;
 }
 
+bool is_object(ir::Opcode opcode) noexcept {
+  return opcode == ir::Opcode::kLoadObject ||
+         opcode == ir::Opcode::kStoreObject;
+}
+
 bool is_nonzero_guard(ir::ControlOpcode opcode) noexcept {
   return opcode == ir::ControlOpcode::kGuardWordNonzero ||
          opcode == ir::ControlOpcode::kGuardFloatNonzero;
@@ -66,6 +72,11 @@ bool is_memory(ir::ControlOpcode opcode) noexcept {
          opcode == ir::ControlOpcode::kStoreWord ||
          opcode == ir::ControlOpcode::kLoadFloat ||
          opcode == ir::ControlOpcode::kStoreFloat;
+}
+
+bool is_object(ir::ControlOpcode opcode) noexcept {
+  return opcode == ir::ControlOpcode::kLoadObject ||
+         opcode == ir::ControlOpcode::kStoreObject;
 }
 
 bool has_guard_site(const ir::Function& function, std::size_t site) noexcept {
@@ -702,6 +713,29 @@ std::vector<ir::ValueType> copy_parameter_types(
   return result;
 }
 
+std::vector<bool> trusted_object_writes(const ir::Function& function) {
+  std::vector<bool> result(function.trusted_objects().size(), false);
+  for (const ir::Node& node : function.nodes()) {
+    if (node.opcode == ir::Opcode::kStoreObject &&
+        node.trusted_object < result.size()) {
+      result[node.trusted_object] = true;
+    }
+  }
+  return result;
+}
+
+std::vector<bool> trusted_object_writes(
+    const ir::ControlFlowFunction& function) {
+  std::vector<bool> result(function.trusted_objects().size(), false);
+  for (const ir::ControlNode& node : function.nodes()) {
+    if (node.opcode == ir::ControlOpcode::kStoreObject &&
+        node.trusted_object < result.size()) {
+      result[node.trusted_object] = true;
+    }
+  }
+  return result;
+}
+
 std::size_t stack_map_value_count(
     const std::vector<StackMapRecord>& records) noexcept {
   std::size_t result = 0;
@@ -718,6 +752,7 @@ Status validate_compilation_limits(const CompilationLimits& limits) {
       limits.maximum_memory_regions == 0 ||
       limits.maximum_memory_accesses == 0 ||
       limits.maximum_frame_slots == 0 ||
+      limits.maximum_trusted_objects == 0 ||
       limits.maximum_stack_maps == 0 ||
       limits.maximum_metadata_values == 0 ||
       limits.maximum_code_bytes == 0) {
@@ -843,6 +878,12 @@ Status validate_function_limits(
             "compilation exceeds the frame slot limit",
             function.frame_slots().size()};
   }
+  if (function.trusted_objects().size() >
+      limits.maximum_trusted_objects) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the trusted object limit",
+            function.trusted_objects().size()};
+  }
   return validate_requested_metadata(deoptimization_table, assumptions,
                                      function.parameter_count(), limits);
 }
@@ -886,6 +927,12 @@ Status validate_function_limits(
     return {StatusCode::kResourceExhausted,
             "compilation exceeds the CFG frame slot limit",
             function.frame_slots().size()};
+  }
+  if (function.trusted_objects().size() >
+      limits.maximum_trusted_objects) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the CFG trusted object limit",
+            function.trusted_objects().size()};
   }
   std::size_t arguments = function.call_arguments().size();
   if (arguments > limits.maximum_ir_arguments) {
@@ -984,6 +1031,9 @@ CompiledFunction::CompiledFunction(std::unique_ptr<Impl> impl,
                                    TargetProfile target_profile,
                                    CompilationStats stats,
                                    bool requires_context,
+                                   std::vector<ir::TrustedObjectDescriptor>
+                                       trusted_objects,
+                                   std::vector<bool> trusted_object_writable,
                                    runtime::DeoptimizationTable
                                        deoptimization_table,
                                    runtime::AssumptionSet assumptions,
@@ -997,6 +1047,8 @@ CompiledFunction::CompiledFunction(std::unique_ptr<Impl> impl,
           target_profile_contains(host_target_profile(), target_profile)),
       stats_(stats),
       requires_context_(requires_context),
+      trusted_objects_(std::move(trusted_objects)),
+      trusted_object_writable_(std::move(trusted_object_writable)),
       deoptimization_table_(std::move(deoptimization_table)),
       assumptions_(std::move(assumptions)),
       stack_maps_(std::move(stack_maps)) {}
@@ -1007,7 +1059,9 @@ CompiledFunction& CompiledFunction::operator=(CompiledFunction&&) noexcept =
     default;
 
 NativeEntry CompiledFunction::native_entry() const noexcept {
-  return impl_ == nullptr || !host_compatible_ ? nullptr : impl_->entry();
+  return impl_ == nullptr || !host_compatible_ || !trusted_objects_.empty()
+             ? nullptr
+             : impl_->entry();
 }
 
 StackMapCaptureResult CompiledFunction::reconstruct_stack_map(
@@ -1119,7 +1173,8 @@ ir::EvaluationResult CompiledFunction::invoke(
              "argument storage is null for a non-empty signature"},
             0};
   }
-  const NativeEntry entry = native_entry();
+  const NativeEntry entry =
+      impl_ == nullptr || !host_compatible_ ? nullptr : impl_->entry();
   if (entry == nullptr) {
     return {{StatusCode::kCodeGenerationFailed,
              "compiled function has no published entry point"},
@@ -1129,6 +1184,11 @@ ir::EvaluationResult CompiledFunction::invoke(
   runtime::ExecutionContext* active_context = context;
   if (active_context == nullptr && requires_context_) {
     active_context = &local_context;
+  }
+  const Status object_status = ir::detail::validate_trusted_object_bindings(
+      trusted_objects_, trusted_object_writable_, active_context);
+  if (!object_status.ok()) {
+    return {object_status, 0};
   }
   if (active_context != nullptr) {
     active_context->clear_exit();
@@ -1300,17 +1360,21 @@ CompilationResult Compiler::compile(
     CompilationStats stats{lowering.code.size(),
                            implementation->memory.mapping_size(),
                            lowering.spill_slots, function.frame_slots().size(),
+                           function.trusted_objects().size(),
                            function.nodes().size(),
                            lowered->nodes().size(), lowering.stack_maps.size(),
                            stack_map_value_count(lowering.stack_maps)};
-    const bool requires_context = !assumptions.empty() || std::any_of(
-        lowered->nodes().begin(), lowered->nodes().end(),
-        [](const ir::Node& node) {
-          return is_nonzero_guard(node.opcode) || is_memory(node.opcode);
-        });
+    const bool requires_context =
+        !assumptions.empty() || !function.trusted_objects().empty() ||
+        std::any_of(lowered->nodes().begin(), lowered->nodes().end(),
+                    [](const ir::Node& node) {
+                      return is_nonzero_guard(node.opcode) ||
+                             is_memory(node.opcode) || is_object(node.opcode);
+                    });
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
         std::move(implementation), copy_parameter_types(function),
         function.return_type(), options.target_profile, stats, requires_context,
+        function.trusted_objects(), trusted_object_writes(function),
         std::move(deoptimization.table), assumptions,
         StackMapTable(std::move(lowering.stack_maps))));
     return {Status::ok_status(), std::move(compiled)};
@@ -1496,18 +1560,22 @@ CompilationResult Compiler::compile(
     CompilationStats stats{lowering.code.size(),
                            implementation->memory.mapping_size(),
                            lowering.spill_slots, function.frame_slots().size(),
+                           function.trusted_objects().size(),
                            function.nodes().size(),
                            lowered->nodes().size(), lowering.stack_maps.size(),
                            stack_map_value_count(lowering.stack_maps)};
-  const bool requires_context = !assumptions.empty() || std::any_of(
-        lowered->nodes().begin(), lowered->nodes().end(),
-        [](const ir::ControlNode& node) {
-          return node.opcode == ir::ControlOpcode::kSafepoint ||
-                 is_nonzero_guard(node.opcode) || is_memory(node.opcode);
-        });
+    const bool requires_context =
+        !assumptions.empty() || !function.trusted_objects().empty() ||
+        std::any_of(lowered->nodes().begin(), lowered->nodes().end(),
+                    [](const ir::ControlNode& node) {
+                      return node.opcode == ir::ControlOpcode::kSafepoint ||
+                             is_nonzero_guard(node.opcode) ||
+                             is_memory(node.opcode) || is_object(node.opcode);
+                    });
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
         std::move(implementation), copy_parameter_types(function),
         function.return_type(), options.target_profile, stats, requires_context,
+        function.trusted_objects(), trusted_object_writes(function),
         std::move(deoptimization.table), assumptions,
         StackMapTable(std::move(lowering.stack_maps))));
     return {Status::ok_status(), std::move(compiled)};

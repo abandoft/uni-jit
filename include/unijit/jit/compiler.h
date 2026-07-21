@@ -27,6 +27,7 @@ struct CompilationStats final {
   std::size_t executable_mapping_size{0};
   std::size_t spill_slots{0};
   std::size_t frame_slots{0};
+  std::size_t trusted_objects{0};
   std::size_t input_ir_nodes{0};
   std::size_t optimized_ir_nodes{0};
   std::size_t stack_map_count{0};
@@ -46,6 +47,7 @@ struct CompilationLimits final {
   std::size_t maximum_memory_regions{64};
   std::size_t maximum_memory_accesses{64U * 1024U};
   std::size_t maximum_frame_slots{256};
+  std::size_t maximum_trusted_objects{64};
   std::size_t maximum_stack_maps{4096};
   std::size_t maximum_metadata_values{256U * 1024U};
   std::size_t maximum_code_bytes{16U * 1024U * 1024U};
@@ -100,6 +102,10 @@ class CompiledFunction final {
     return jit::target_profile_key(target_profile_);
   }
   bool requires_context() const noexcept { return requires_context_; }
+  const std::vector<ir::TrustedObjectDescriptor>& trusted_objects()
+      const noexcept {
+    return trusted_objects_;
+  }
   const runtime::AssumptionSet& assumptions() const noexcept {
     return assumptions_;
   }
@@ -140,6 +146,8 @@ class CompiledFunction final {
                    ir::ValueType return_type, TargetProfile target_profile,
                    CompilationStats stats,
                    bool requires_context,
+                   std::vector<ir::TrustedObjectDescriptor> trusted_objects,
+                   std::vector<bool> trusted_object_writable,
                    runtime::DeoptimizationTable deoptimization_table,
                    runtime::AssumptionSet assumptions,
                    StackMapTable stack_maps) noexcept;
@@ -152,6 +160,8 @@ class CompiledFunction final {
   bool host_compatible_{false};
   CompilationStats stats_;
   bool requires_context_{false};
+  std::vector<ir::TrustedObjectDescriptor> trusted_objects_;
+  std::vector<bool> trusted_object_writable_;
   runtime::DeoptimizationTable deoptimization_table_;
   runtime::AssumptionSet assumptions_;
   StackMapTable stack_maps_;
