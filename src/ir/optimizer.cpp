@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <new>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -480,6 +481,345 @@ PassResult transform_once(
           std::move(mapped_exit_states), folded, simplified, changed};
 }
 
+struct ControlValueKey final {
+  ControlOpcode opcode{ControlOpcode::kConstant};
+  ValueType type{ValueType::kWord};
+  std::uint32_t lhs{Value::kInvalidId};
+  std::uint32_t rhs{Value::kInvalidId};
+  Word immediate{0};
+
+  bool operator==(const ControlValueKey& other) const noexcept {
+    return opcode == other.opcode && type == other.type && lhs == other.lhs &&
+           rhs == other.rhs && immediate == other.immediate;
+  }
+};
+
+struct ControlValueKeyHash final {
+  std::size_t operator()(const ControlValueKey& key) const noexcept {
+    std::size_t result = static_cast<std::size_t>(key.opcode);
+    const auto combine = [&result](std::uint64_t value) {
+      result ^= static_cast<std::size_t>(
+          value + 0x9E3779B97F4A7C15ULL + (result << 6U) + (result >> 2U));
+    };
+    combine(static_cast<std::uint64_t>(key.type));
+    combine(key.lhs);
+    combine(key.rhs);
+    combine(to_bits(key.immediate));
+    return result;
+  }
+};
+
+struct ControlFlowCanonicalizationResult final {
+  Status status;
+  ControlFlowFunction function;
+  std::vector<Value> mapping;
+  std::size_t common_subexpressions{0};
+  std::size_t branches_folded{0};
+};
+
+ControlFlowCanonicalizationResult canonicalize_control_flow(
+    const ControlFlowFunction& input,
+    const std::vector<OptimizationExitState>& exit_states) {
+  const std::size_t node_count = input.nodes().size();
+  const std::size_t block_count = input.blocks().size();
+  const std::size_t no_owner = block_count;
+  std::vector<std::size_t> owners(node_count, no_owner);
+  for (std::size_t block_index = 0; block_index < block_count;
+       ++block_index) {
+    for (const Value instruction : input.blocks()[block_index].instructions) {
+      owners[instruction.id()] = block_index;
+    }
+  }
+
+  const auto constant_branch_edge = [&input](
+                                        const ControlTerminator& terminator)
+      -> const ControlEdge* {
+    if (terminator.opcode != TerminatorOpcode::kBranch) {
+      return nullptr;
+    }
+    const ControlNode& condition = input.nodes()[terminator.value.id()];
+    if (condition.opcode != ControlOpcode::kConstant) {
+      return nullptr;
+    }
+    return condition.immediate != 0 ? &terminator.true_edge
+                                    : &terminator.false_edge;
+  };
+
+  std::vector<bool> reachable(block_count, false);
+  reachable[input.entry_block().id()] = true;
+  bool changed = true;
+  while (changed) {
+    changed = false;
+    for (std::size_t block_index = 0; block_index < block_count;
+         ++block_index) {
+      if (!reachable[block_index]) {
+        continue;
+      }
+      const ControlTerminator& terminator =
+          input.blocks()[block_index].terminator;
+      const ControlEdge* folded_edge = constant_branch_edge(terminator);
+      const auto mark = [&](const ControlEdge& edge) {
+        if (!reachable[edge.target.id()]) {
+          reachable[edge.target.id()] = true;
+          changed = true;
+        }
+      };
+      if (folded_edge != nullptr) {
+        mark(*folded_edge);
+      } else if (terminator.opcode == TerminatorOpcode::kJump) {
+        mark(terminator.true_edge);
+      } else if (terminator.opcode == TerminatorOpcode::kBranch) {
+        mark(terminator.true_edge);
+        mark(terminator.false_edge);
+      }
+    }
+  }
+
+  std::vector<ValueType> parameter_types;
+  parameter_types.reserve(input.parameter_count());
+  for (std::size_t index = 0; index < input.parameter_count(); ++index) {
+    parameter_types.push_back(input.parameter_type(index));
+  }
+  ControlFlowBuilder builder(std::move(parameter_types));
+  std::vector<Block> blocks(block_count);
+  blocks[input.entry_block().id()] = builder.entry_block();
+  std::vector<Value> mapped(node_count);
+  const BasicBlock& input_entry = input.blocks()[input.entry_block().id()];
+  for (std::size_t index = 0; index < input_entry.parameters.size(); ++index) {
+    mapped[input_entry.parameters[index].id()] = builder.parameter(index);
+  }
+  for (std::size_t block_index = 1; block_index < block_count; ++block_index) {
+    if (!reachable[block_index]) {
+      continue;
+    }
+    const BasicBlock& input_block = input.blocks()[block_index];
+    std::vector<ValueType> block_parameter_types;
+    block_parameter_types.reserve(input_block.parameters.size());
+    for (const Value parameter : input_block.parameters) {
+      block_parameter_types.push_back(input.value_type(parameter));
+    }
+    blocks[block_index] =
+        builder.create_block(std::move(block_parameter_types));
+    if (!blocks[block_index].valid()) {
+      return {{StatusCode::kCodeGenerationFailed,
+               "optimizer could not retain a reachable CFG block",
+               block_index},
+              {}, {}, 0, 0};
+    }
+    for (std::size_t index = 0; index < input_block.parameters.size();
+         ++index) {
+      mapped[input_block.parameters[index].id()] =
+          builder.block_parameter(blocks[block_index], index);
+    }
+  }
+
+  std::vector<bool> live(node_count, false);
+  for (std::size_t index = 0; index < node_count; ++index) {
+    const ControlOpcode opcode = input.nodes()[index].opcode;
+    const bool reachable_owner =
+        owners[index] != no_owner && reachable[owners[index]];
+    live[index] = reachable_owner &&
+                  (opcode == ControlOpcode::kParameter ||
+                   opcode == ControlOpcode::kBlockParameter ||
+                   opcode == ControlOpcode::kCall ||
+                   opcode == ControlOpcode::kGuardFloatNonzero ||
+                   opcode == ControlOpcode::kSafepoint);
+  }
+  const auto mark_edge = [&live](const ControlEdge& edge) {
+    for (const Value argument : edge.arguments) {
+      live[argument.id()] = true;
+    }
+  };
+  std::size_t branches_folded = 0;
+  for (std::size_t block_index = 0; block_index < block_count; ++block_index) {
+    if (!reachable[block_index]) {
+      continue;
+    }
+    const ControlTerminator& terminator = input.blocks()[block_index].terminator;
+    const ControlEdge* folded_edge = constant_branch_edge(terminator);
+    if (folded_edge != nullptr) {
+      ++branches_folded;
+      mark_edge(*folded_edge);
+    } else {
+      if (terminator.opcode == TerminatorOpcode::kReturn ||
+          terminator.opcode == TerminatorOpcode::kBranch) {
+        live[terminator.value.id()] = true;
+      }
+      if (terminator.opcode == TerminatorOpcode::kJump) {
+        mark_edge(terminator.true_edge);
+      } else if (terminator.opcode == TerminatorOpcode::kBranch) {
+        mark_edge(terminator.true_edge);
+        mark_edge(terminator.false_edge);
+      }
+    }
+  }
+  for (const OptimizationExitState& exit_state : exit_states) {
+    if (exit_state.exit.valid() &&
+        owners[exit_state.exit.id()] != no_owner &&
+        reachable[owners[exit_state.exit.id()]]) {
+      for (const Value value : exit_state.live_values) {
+        live[value.id()] = true;
+      }
+    }
+  }
+  for (std::size_t reverse = node_count; reverse > 0; --reverse) {
+    const std::size_t index = reverse - 1;
+    if (!live[index]) {
+      continue;
+    }
+    const ControlNode& node = input.nodes()[index];
+    if (node.opcode == ControlOpcode::kCall) {
+      for (std::size_t argument_index = 0;
+           argument_index < node.argument_count; ++argument_index) {
+        const Value argument = input.call_arguments()[
+            static_cast<std::size_t>(node.argument_begin) + argument_index];
+        live[argument.id()] = true;
+      }
+    } else if (node.opcode == ControlOpcode::kGuardFloatNonzero) {
+      live[node.lhs.id()] = true;
+    } else if (is_control_binary(node.opcode)) {
+      live[node.lhs.id()] = true;
+      live[node.rhs.id()] = true;
+    }
+  }
+
+  std::vector<std::unordered_map<ControlValueKey, Value, ControlValueKeyHash>>
+      available(block_count);
+  std::size_t common_subexpressions = 0;
+  for (std::size_t index = 0; index < node_count; ++index) {
+    const ControlNode& node = input.nodes()[index];
+    if (node.opcode == ControlOpcode::kParameter ||
+        node.opcode == ControlOpcode::kBlockParameter || !live[index]) {
+      continue;
+    }
+    const std::size_t owner = owners[index];
+    if (owner == no_owner || !reachable[owner] ||
+        !builder.set_insertion_block(blocks[owner]).ok()) {
+      return {{StatusCode::kCodeGenerationFailed,
+               "optimizer lost a reachable CFG node", index},
+              {}, {}, 0, 0};
+    }
+
+    ControlValueKey key;
+    bool reusable = false;
+    if (node.opcode == ControlOpcode::kConstant) {
+      key = {node.opcode, node.type, Value::kInvalidId, Value::kInvalidId,
+             node.immediate};
+      reusable = true;
+    } else if (is_control_binary(node.opcode)) {
+      key = {node.opcode, node.type, mapped[node.lhs.id()].id(),
+             mapped[node.rhs.id()].id(), 0};
+      reusable = true;
+    }
+    if (reusable) {
+      const auto existing = available[owner].find(key);
+      if (existing != available[owner].end()) {
+        mapped[index] = existing->second;
+        ++common_subexpressions;
+        continue;
+      }
+    }
+
+    if (node.opcode == ControlOpcode::kConstant) {
+      mapped[index] = node.type == ValueType::kFloat64
+                          ? builder.float64_constant_bits(node.immediate)
+                          : builder.constant(node.immediate);
+    } else if (node.opcode == ControlOpcode::kCall) {
+      std::vector<Value> arguments;
+      arguments.reserve(node.argument_count);
+      for (std::size_t argument_index = 0;
+           argument_index < node.argument_count; ++argument_index) {
+        const Value argument = input.call_arguments()[
+            static_cast<std::size_t>(node.argument_begin) + argument_index];
+        arguments.push_back(mapped[argument.id()]);
+      }
+      mapped[index] = builder.call(unpack_runtime_helper(node.immediate),
+                                   std::move(arguments), node.type);
+    } else if (node.opcode == ControlOpcode::kSafepoint) {
+      mapped[index] =
+          builder.safepoint(static_cast<std::size_t>(node.immediate));
+    } else if (node.opcode == ControlOpcode::kGuardFloatNonzero) {
+      mapped[index] = builder.guard_float64_nonzero(
+          mapped[node.lhs.id()], static_cast<std::size_t>(node.immediate));
+    } else if (is_control_binary(node.opcode)) {
+      mapped[index] = emit_control_binary(
+          &builder, node.opcode, mapped[node.lhs.id()], mapped[node.rhs.id()]);
+    }
+    if (!mapped[index].valid()) {
+      return {{StatusCode::kCodeGenerationFailed,
+               "optimizer could not canonicalize a CFG node", index},
+              {}, {}, 0, 0};
+    }
+    if (node.opcode == ControlOpcode::kCall ||
+        node.opcode == ControlOpcode::kGuardFloatNonzero ||
+        node.opcode == ControlOpcode::kSafepoint) {
+      available[owner].clear();
+    }
+    if (reusable) {
+      available[owner].emplace(key, mapped[index]);
+    }
+  }
+
+  const auto map_edge_values = [&mapped](const ControlEdge& edge) {
+    std::vector<Value> values;
+    values.reserve(edge.arguments.size());
+    for (const Value argument : edge.arguments) {
+      values.push_back(mapped[argument.id()]);
+    }
+    return values;
+  };
+  for (std::size_t block_index = 0; block_index < block_count; ++block_index) {
+    if (!reachable[block_index]) {
+      continue;
+    }
+    const Status insertion = builder.set_insertion_block(blocks[block_index]);
+    if (!insertion.ok()) {
+      return {insertion, {}, {}, 0, 0};
+    }
+    const ControlTerminator& terminator = input.blocks()[block_index].terminator;
+    const ControlEdge* folded_edge = constant_branch_edge(terminator);
+    Status status;
+    if (folded_edge != nullptr) {
+      status = builder.jump(blocks[folded_edge->target.id()],
+                            map_edge_values(*folded_edge));
+    } else if (terminator.opcode == TerminatorOpcode::kReturn) {
+      status = builder.set_return(mapped[terminator.value.id()]);
+    } else if (terminator.opcode == TerminatorOpcode::kJump) {
+      status = builder.jump(blocks[terminator.true_edge.target.id()],
+                            map_edge_values(terminator.true_edge));
+    } else if (terminator.opcode == TerminatorOpcode::kBranch) {
+      status = builder.branch(
+          mapped[terminator.value.id()],
+          blocks[terminator.true_edge.target.id()],
+          map_edge_values(terminator.true_edge),
+          blocks[terminator.false_edge.target.id()],
+          map_edge_values(terminator.false_edge));
+    } else {
+      return {{StatusCode::kCodeGenerationFailed,
+               "optimizer encountered an unterminated reachable CFG block",
+               block_index},
+              {}, {}, 0, 0};
+    }
+    if (!status.ok()) {
+      return {{StatusCode::kCodeGenerationFailed,
+               "optimizer could not canonicalize a CFG terminator",
+               block_index},
+              {}, {}, 0, 0};
+    }
+  }
+
+  ControlFlowFunction output = std::move(builder).build();
+  const Status output_verification = verify(output);
+  if (!output_verification.ok()) {
+    return {{StatusCode::kCodeGenerationFailed,
+             "optimizer produced invalid canonical CFG",
+             output_verification.location()},
+            {}, {}, 0, 0};
+  }
+  return {Status::ok_status(), std::move(output), std::move(mapped),
+          common_subexpressions, branches_folded};
+}
+
 }  // namespace
 
 OptimizationResult Optimizer::run(
@@ -841,9 +1181,44 @@ ControlFlowOptimizationResult Optimizer::run(
                output_verification.location()},
               {}, {}, {}};
     }
-    const std::size_t output_nodes = output.nodes().size();
-    return {Status::ok_status(), std::move(output),
-            {node_count, output_nodes, folded, simplified},
+    std::vector<OptimizationExitState> mapped_exit_states;
+    mapped_exit_states.reserve(exit_states.size());
+    for (const OptimizationExitState& exit_state : exit_states) {
+      const Value mapped_exit = mapped[exit_state.exit.id()];
+      if (!mapped_exit.valid() ||
+          output.nodes()[mapped_exit.id()].opcode !=
+              ControlOpcode::kGuardFloatNonzero) {
+        continue;
+      }
+      OptimizationExitState mapped_state;
+      mapped_state.exit = mapped_exit;
+      mapped_state.live_values.reserve(exit_state.live_values.size());
+      for (const Value value : exit_state.live_values) {
+        const Value mapped_value = mapped[value.id()];
+        if (mapped_value.valid() &&
+            std::find(mapped_state.live_values.begin(),
+                      mapped_state.live_values.end(), mapped_value) ==
+                mapped_state.live_values.end()) {
+          mapped_state.live_values.push_back(mapped_value);
+        }
+      }
+      mapped_exit_states.push_back(std::move(mapped_state));
+    }
+
+    ControlFlowCanonicalizationResult canonical =
+        canonicalize_control_flow(output, mapped_exit_states);
+    if (!canonical.status.ok()) {
+      return {canonical.status, {}, {}, {}};
+    }
+    for (Value& value : mapped) {
+      value = value.valid() && value.id() < canonical.mapping.size()
+                  ? canonical.mapping[value.id()]
+                  : Value{};
+    }
+    const std::size_t output_nodes = canonical.function.nodes().size();
+    return {Status::ok_status(), std::move(canonical.function),
+            {node_count, output_nodes, folded, simplified,
+             canonical.common_subexpressions, canonical.branches_folded},
             std::move(mapped)};
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,

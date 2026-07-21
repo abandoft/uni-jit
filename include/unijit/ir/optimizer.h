@@ -15,6 +15,8 @@ struct OptimizationStats final {
   std::size_t output_nodes{0};
   std::size_t constants_folded{0};
   std::size_t algebraic_simplifications{0};
+  std::size_t common_subexpressions{0};
+  std::size_t branches_folded{0};
 };
 
 struct OptimizationExitState final {
