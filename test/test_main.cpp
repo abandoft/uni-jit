@@ -27,6 +27,10 @@
 #include "unijit/jit/tiering.h"
 #include "jit/register_allocator.h"
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+#include "jit/atomic_fallback.h"
+#endif
+
 #if defined(__aarch64__) || defined(_M_ARM64) || defined(__x86_64__) || \
     defined(_M_X64) || (defined(__riscv) && __riscv_xlen == 64)
 #define UNIJIT_TEST_NATIVE_SIMD 1
@@ -1018,6 +1022,42 @@ void test_bounded_atomic_semantics() {
   expect(context.bind_memory_regions(&region, 1).ok(),
          "atomic fixture must bind naturally aligned storage");
 
+#if defined(__aarch64__) || defined(_M_ARM64)
+  const auto fallback_call = [](std::uint64_t* storage,
+                                unijit::jit::detail::AtomicFallbackOperation op,
+                                std::size_t width, Word operand,
+                                Word desired = 0) {
+    const auto address = reinterpret_cast<std::uintptr_t>(storage);
+    std::array<Word, 5> arguments = {
+        static_cast<Word>(address), static_cast<Word>(op),
+        static_cast<Word>(width), operand, desired};
+    return unijit::jit::detail::execute_atomic_fallback(
+        arguments.data(), arguments.size());
+  };
+  std::uint64_t fallback_cell = 0xf0;
+  using FallbackOperation =
+      unijit::jit::detail::AtomicFallbackOperation;
+  const Word fallback_exchange = fallback_call(
+      &fallback_cell, FallbackOperation::kExchange, 8, 0x0f);
+  const Word fallback_failed_compare = fallback_call(
+      &fallback_cell, FallbackOperation::kCompareExchange, 8, 0x10, 0x20);
+  const Word fallback_successful_compare = fallback_call(
+      &fallback_cell, FallbackOperation::kCompareExchange, 8, 0x0f, 0x33);
+  const Word fallback_add = fallback_call(
+      &fallback_cell, FallbackOperation::kFetchAdd, 8, 1);
+  const Word fallback_and = fallback_call(
+      &fallback_cell, FallbackOperation::kFetchAnd, 8, 0x3f);
+  const Word fallback_or = fallback_call(
+      &fallback_cell, FallbackOperation::kFetchOr, 8, 0x80);
+  const Word fallback_xor = fallback_call(
+      &fallback_cell, FallbackOperation::kFetchXor, 8, 0xff);
+  expect(fallback_exchange == 0xf0 && fallback_failed_compare == 0x0f &&
+             fallback_successful_compare == 0x0f && fallback_add == 0x33 &&
+             fallback_and == 0x34 && fallback_or == 0x34 &&
+             fallback_xor == 0xb4 && fallback_cell == 0x4b,
+         "AArch64 progress fallback must preserve atomic RMW observations");
+#endif
+
   FunctionBuilder builder(0, 1);
   const Value offset = builder.constant(0);
   builder.atomic_store(offset, builder.constant(0xf0),
@@ -1072,23 +1112,32 @@ void test_bounded_atomic_semantics() {
          "optimization must retain ordered atomic effects and descriptors");
 
   const auto baseline = unijit::jit::baseline_target_profile();
+  const bool has_native_atomic_lowering =
+      baseline.architecture == unijit::jit::TargetArchitecture::kX86_64 ||
+      baseline.architecture == unijit::jit::TargetArchitecture::kAArch64;
   const auto capability =
       unijit::jit::preflight_capabilities(function, baseline);
   const auto compilation = Compiler::compile(function);
-  if (baseline.architecture == unijit::jit::TargetArchitecture::kX86_64) {
+  if (has_native_atomic_lowering) {
     cell = 0;
     const auto native_result =
         compilation.ok()
             ? compilation.function->invoke(nullptr, 0, &context)
             : unijit::ir::EvaluationResult{compilation.status, 0};
+    const bool expected_strategy =
+        baseline.architecture == unijit::jit::TargetArchitecture::kX86_64
+            ? capability.overall_strategy == LoweringStrategy::kLegalized &&
+                  capability.operation_count(LoweringStrategy::kLegalized) ==
+                      3
+            : capability.overall_strategy == LoweringStrategy::kHelper &&
+                  capability.operation_count(LoweringStrategy::kHelper) == 6;
     expect(capability.ok() && capability.requires_execution_context &&
-               capability.overall_strategy == LoweringStrategy::kLegalized &&
-               capability.operation_count(LoweringStrategy::kLegalized) == 3 &&
+               expected_strategy &&
                capability.operation_count(LoweringStrategy::kUnsupported) ==
                    0 &&
                compilation.ok() && native_result.ok() &&
                native_result.value == 1 && read_word(cell) == 0x1234,
-           "x86-64 atomics must preflight and execute through native bounded "
+           "supported atomics must preflight and execute through bounded "
            "lowering");
     cell = 0;
     const auto baseline_compilation = Compiler::compile(
@@ -1101,7 +1150,7 @@ void test_bounded_atomic_semantics() {
             : unijit::ir::EvaluationResult{baseline_compilation.status, 0};
     expect(baseline_result.ok() && baseline_result.value == 1 &&
                read_word(cell) == 0x1234,
-           "x86-64 baseline atomic lowering must match optimized execution");
+           "baseline atomic lowering must match optimized execution");
   } else {
     expect(!capability.ok() && capability.requires_execution_context &&
                capability.overall_strategy ==
@@ -1112,6 +1161,46 @@ void test_bounded_atomic_semantics() {
                compilation.status.code() ==
                    unijit::StatusCode::kCodeGenerationFailed,
            "atomics must fail closed on targets without native lowering");
+  }
+
+  const auto host = unijit::jit::host_target_profile();
+  const bool has_lse =
+      host.architecture == unijit::jit::TargetArchitecture::kAArch64 &&
+      unijit::jit::has_target_feature(
+          host, unijit::jit::TargetFeature::kAarch64Lse);
+  if (has_lse) {
+    unijit::jit::CompilationOptions lse_options;
+    lse_options.target_profile = host;
+    const auto lse_capability =
+        unijit::jit::preflight_capabilities(function, host);
+    const auto lse_compilation = Compiler::compile(function, lse_options);
+    cell = 0;
+    const auto lse_result =
+        lse_compilation.ok()
+            ? lse_compilation.function->invoke(nullptr, 0, &context)
+            : unijit::ir::EvaluationResult{lse_compilation.status, 0};
+    expect(lse_capability.ok() &&
+               lse_capability.overall_strategy == LoweringStrategy::kNative &&
+               lse_capability.required_features ==
+                   unijit::jit::target_feature_bit(
+                       unijit::jit::TargetFeature::kAarch64Lse) &&
+               lse_capability.operation_count(LoweringStrategy::kHelper) ==
+                   0 &&
+               lse_compilation.ok() && lse_result.ok() &&
+               lse_result.value == 1 && read_word(cell) == 0x1234,
+           "AArch64 LSE profile must use native lowering for the complete "
+           "atomic surface");
+    lse_options.optimization_level =
+        unijit::jit::OptimizationLevel::kBaseline;
+    const auto lse_baseline = Compiler::compile(function, lse_options);
+    cell = 0;
+    const auto lse_baseline_result =
+        lse_baseline.ok()
+            ? lse_baseline.function->invoke(nullptr, 0, &context)
+            : unijit::ir::EvaluationResult{lse_baseline.status, 0};
+    expect(lse_baseline_result.ok() && lse_baseline_result.value == 1 &&
+               read_word(cell) == 0x1234,
+           "AArch64 LSE baseline lowering must match optimized execution");
   }
 
   const std::array<MemoryWidth, 4> widths = {
@@ -1141,7 +1230,7 @@ void test_bounded_atomic_semantics() {
                (read_word(cell) & ~mask) == (initial & ~mask),
            "8/16/32/64-bit atomics must zero-extend observations and update "
            "exactly one cell");
-    if (baseline.architecture == unijit::jit::TargetArchitecture::kX86_64) {
+    if (has_native_atomic_lowering) {
       cell = initial;
       const auto width_compilation = Compiler::compile(width_function);
       const auto native_width_result =
@@ -1153,8 +1242,25 @@ void test_bounded_atomic_semantics() {
                      (initial & mask) &&
                  (read_word(cell) & mask) == (replacement & mask) &&
                  (read_word(cell) & ~mask) == (initial & ~mask),
-             "x86-64 native atomics must preserve exact narrow-cell "
+             "native atomics must preserve exact narrow-cell "
              "semantics");
+    }
+    if (has_lse) {
+      unijit::jit::CompilationOptions lse_options;
+      lse_options.target_profile = host;
+      cell = initial;
+      const auto width_compilation =
+          Compiler::compile(width_function, lse_options);
+      const auto native_width_result =
+          width_compilation.ok()
+              ? width_compilation.function->invoke(nullptr, 0, &context)
+              : unijit::ir::EvaluationResult{width_compilation.status, 0};
+      expect(native_width_result.ok() &&
+                 static_cast<std::uint64_t>(native_width_result.value) ==
+                     (initial & mask) &&
+                 (read_word(cell) & mask) == (replacement & mask) &&
+                 (read_word(cell) & ~mask) == (initial & ~mask),
+             "AArch64 LSE atomics must preserve every narrow-cell width");
     }
   }
 
@@ -1192,7 +1298,7 @@ void test_bounded_atomic_semantics() {
              failed_compare_optimized_again.function.atomic_accesses().size() ==
                  1,
          "narrow CAS normalization must reach a stable optimized form");
-  if (baseline.architecture == unijit::jit::TargetArchitecture::kX86_64) {
+  if (has_native_atomic_lowering) {
     cell = UINT64_C(0x11223344aabbccdd);
     const auto failed_compare_compilation =
         Compiler::compile(failed_compare_function);
@@ -1205,8 +1311,25 @@ void test_bounded_atomic_semantics() {
                static_cast<std::uint64_t>(native_failed_compare.value) ==
                    UINT64_C(0xaabbccdd) &&
                read_word(cell) == UINT64_C(0x11223344aabbccdd),
-           "x86-64 narrow CAS failure must return the zero-extended observed "
+           "native narrow CAS failure must return the zero-extended observed "
            "cell without writing");
+  }
+  if (has_lse) {
+    unijit::jit::CompilationOptions lse_options;
+    lse_options.target_profile = host;
+    cell = UINT64_C(0x11223344aabbccdd);
+    const auto failed_compare_compilation =
+        Compiler::compile(failed_compare_function, lse_options);
+    const auto native_failed_compare =
+        failed_compare_compilation.ok()
+            ? failed_compare_compilation.function->invoke(nullptr, 0, &context)
+            : unijit::ir::EvaluationResult{failed_compare_compilation.status,
+                                           0};
+    expect(native_failed_compare.ok() &&
+               static_cast<std::uint64_t>(native_failed_compare.value) ==
+                   UINT64_C(0xaabbccdd) &&
+               read_word(cell) == UINT64_C(0x11223344aabbccdd),
+           "AArch64 LSE narrow CAS failure must return the observed cell");
   }
 
   FunctionBuilder failure_builder(1, 1);
@@ -1238,7 +1361,7 @@ void test_bounded_atomic_semantics() {
   expect(!out_of_range_result.ok() && read_word(cell) == sentinel &&
              context.exit_site() == 221,
          "out-of-range atomic rejection must occur before any write");
-  if (baseline.architecture == unijit::jit::TargetArchitecture::kX86_64) {
+  if (has_native_atomic_lowering) {
     const auto failure_compilation = Compiler::compile(failure_function);
     const std::array<Word, 1> zero_offset = {0};
     const std::array<Word, 1> misaligned_offset = {1};
@@ -1255,7 +1378,7 @@ void test_bounded_atomic_semantics() {
                read_word(cell) == sentinel &&
                context.exit_site() == 221 && context.exit_value() == 0 &&
                failure_compilation.function->stack_map(221) != nullptr,
-           "x86-64 read-only atomic failure must preserve memory and publish "
+           "native read-only atomic failure must preserve memory and publish "
            "its stack map");
     expect(context.bind_memory_regions(&region, 1).ok(),
            "native writable atomic fixture must be restorable");
@@ -1274,7 +1397,7 @@ void test_bounded_atomic_semantics() {
     expect(!native_misaligned.ok() && !native_out_of_range.ok() &&
                read_word(cell) == sentinel && context.exit_site() == 221 &&
                context.exit_value() == 8,
-           "x86-64 atomic alignment and bounds failures must occur before "
+           "native atomic alignment and bounds failures must occur before "
            "their write");
   }
 
@@ -1377,7 +1500,7 @@ void test_bounded_atomic_semantics() {
     const Function ordered_function = std::move(valid).build();
     expect(unijit::ir::verify(ordered_function).ok(),
            "every declared RMW success order must verify");
-    if (baseline.architecture == unijit::jit::TargetArchitecture::kX86_64) {
+    if (has_native_atomic_lowering) {
       cell = 0;
       const auto ordered_compilation = Compiler::compile(ordered_function);
       const auto ordered_result =
@@ -1385,7 +1508,20 @@ void test_bounded_atomic_semantics() {
               ? ordered_compilation.function->invoke(nullptr, 0, &context)
               : unijit::ir::EvaluationResult{ordered_compilation.status, 0};
       expect(ordered_result.ok() && ordered_result.value == 1 && cell == 1,
-             "x86-64 CAS must execute every declared success order");
+             "native CAS must execute every declared success order");
+    }
+    if (has_lse) {
+      unijit::jit::CompilationOptions lse_options;
+      lse_options.target_profile = host;
+      cell = 0;
+      const auto ordered_compilation =
+          Compiler::compile(ordered_function, lse_options);
+      const auto ordered_result =
+          ordered_compilation.ok()
+              ? ordered_compilation.function->invoke(nullptr, 0, &context)
+              : unijit::ir::EvaluationResult{ordered_compilation.status, 0};
+      expect(ordered_result.ok() && ordered_result.value == 1 && cell == 1,
+             "AArch64 LSE CAS must execute every declared success order");
     }
   }
   const std::array<AtomicMemoryOrder, 3> load_orders = {
@@ -1400,7 +1536,7 @@ void test_bounded_atomic_semantics() {
     const Function ordered_function = std::move(valid).build();
     expect(unijit::ir::verify(ordered_function).ok(),
            "every declared atomic load order must verify");
-    if (baseline.architecture == unijit::jit::TargetArchitecture::kX86_64) {
+    if (has_native_atomic_lowering) {
       cell = 0x55;
       const auto ordered_compilation = Compiler::compile(ordered_function);
       const auto ordered_result =
@@ -1409,7 +1545,21 @@ void test_bounded_atomic_semantics() {
               : unijit::ir::EvaluationResult{ordered_compilation.status, 0};
       expect(ordered_result.ok() && ordered_result.value == 0x55 &&
                  cell == 0x55,
-             "x86-64 loads must execute every declared memory order");
+             "native loads must execute every declared memory order");
+    }
+    if (has_lse) {
+      unijit::jit::CompilationOptions lse_options;
+      lse_options.target_profile = host;
+      cell = 0x55;
+      const auto ordered_compilation =
+          Compiler::compile(ordered_function, lse_options);
+      const auto ordered_result =
+          ordered_compilation.ok()
+              ? ordered_compilation.function->invoke(nullptr, 0, &context)
+              : unijit::ir::EvaluationResult{ordered_compilation.status, 0};
+      expect(ordered_result.ok() && ordered_result.value == 0x55 &&
+                 cell == 0x55,
+             "AArch64 LSE profile loads must execute every memory order");
     }
   }
   const std::array<AtomicMemoryOrder, 3> store_orders = {
@@ -1425,7 +1575,7 @@ void test_bounded_atomic_semantics() {
     const Function ordered_function = std::move(valid).build();
     expect(unijit::ir::verify(ordered_function).ok(),
            "every declared atomic store order must verify");
-    if (baseline.architecture == unijit::jit::TargetArchitecture::kX86_64) {
+    if (has_native_atomic_lowering) {
       cell = 0;
       const auto ordered_compilation = Compiler::compile(ordered_function);
       const auto ordered_result =
@@ -1433,7 +1583,20 @@ void test_bounded_atomic_semantics() {
               ? ordered_compilation.function->invoke(nullptr, 0, &context)
               : unijit::ir::EvaluationResult{ordered_compilation.status, 0};
       expect(ordered_result.ok() && ordered_result.value == 1 && cell == 1,
-             "x86-64 stores must execute every declared memory order");
+             "native stores must execute every declared memory order");
+    }
+    if (has_lse) {
+      unijit::jit::CompilationOptions lse_options;
+      lse_options.target_profile = host;
+      cell = 0;
+      const auto ordered_compilation =
+          Compiler::compile(ordered_function, lse_options);
+      const auto ordered_result =
+          ordered_compilation.ok()
+              ? ordered_compilation.function->invoke(nullptr, 0, &context)
+              : unijit::ir::EvaluationResult{ordered_compilation.status, 0};
+      expect(ordered_result.ok() && ordered_result.value == 1 && cell == 1,
+             "AArch64 LSE profile stores must execute every memory order");
     }
   }
   const std::array<AtomicMemoryOrder, 4> fence_orders = {
@@ -1448,14 +1611,26 @@ void test_bounded_atomic_semantics() {
     const Function ordered_function = std::move(valid).build();
     expect(unijit::ir::verify(ordered_function).ok(),
            "every declared atomic fence order must verify");
-    if (baseline.architecture == unijit::jit::TargetArchitecture::kX86_64) {
+    if (has_native_atomic_lowering) {
       const auto ordered_compilation = Compiler::compile(ordered_function);
       const auto ordered_result =
           ordered_compilation.ok()
               ? ordered_compilation.function->invoke(nullptr, 0, nullptr)
               : unijit::ir::EvaluationResult{ordered_compilation.status, 0};
       expect(ordered_result.ok() && ordered_result.value == 0,
-             "x86-64 fences must execute every declared memory order");
+             "native fences must execute every declared memory order");
+    }
+    if (has_lse) {
+      unijit::jit::CompilationOptions lse_options;
+      lse_options.target_profile = host;
+      const auto ordered_compilation =
+          Compiler::compile(ordered_function, lse_options);
+      const auto ordered_result =
+          ordered_compilation.ok()
+              ? ordered_compilation.function->invoke(nullptr, 0, nullptr)
+              : unijit::ir::EvaluationResult{ordered_compilation.status, 0};
+      expect(ordered_result.ok() && ordered_result.value == 0,
+             "AArch64 LSE profile fences must execute every memory order");
     }
   }
 
@@ -1518,7 +1693,7 @@ void test_bounded_atomic_semantics() {
              read_word(cell) == kThreadCount * kIncrementsPerThread,
          "interpreter atomics must serialize concurrent read-modify-write "
          "operations without lost updates");
-  if (baseline.architecture == unijit::jit::TargetArchitecture::kX86_64) {
+  if (has_native_atomic_lowering) {
     const auto increment_compilation = Compiler::compile(increment_function);
     cell = 0;
     concurrent_failed.store(false, std::memory_order_relaxed);
@@ -1550,8 +1725,45 @@ void test_bounded_atomic_semantics() {
     expect(increment_compilation.ok() &&
                !concurrent_failed.load(std::memory_order_relaxed) &&
                read_word(cell) == kThreadCount * kIncrementsPerThread,
-           "x86-64 native fetch-add must not lose updates under concurrent "
+           "native fetch-add must not lose updates under concurrent "
            "execution");
+  }
+  if (has_lse) {
+    unijit::jit::CompilationOptions lse_options;
+    lse_options.target_profile = host;
+    const auto increment_compilation =
+        Compiler::compile(increment_function, lse_options);
+    cell = 0;
+    concurrent_failed.store(false, std::memory_order_relaxed);
+    threads.clear();
+    for (std::size_t thread_index = 0; thread_index < kThreadCount;
+         ++thread_index) {
+      threads.emplace_back([&] {
+        MemoryRegion thread_region{&cell, sizeof(cell), true};
+        ExecutionContext thread_context;
+        if (!thread_context.bind_memory_regions(&thread_region, 1).ok()) {
+          concurrent_failed.store(true, std::memory_order_relaxed);
+          return;
+        }
+        for (std::size_t iteration = 0; iteration < kIncrementsPerThread;
+             ++iteration) {
+          if (!increment_compilation.ok() ||
+              !increment_compilation.function
+                   ->invoke(nullptr, 0, &thread_context)
+                   .ok()) {
+            concurrent_failed.store(true, std::memory_order_relaxed);
+            return;
+          }
+        }
+      });
+    }
+    for (std::thread& thread : threads) {
+      thread.join();
+    }
+    expect(increment_compilation.ok() &&
+               !concurrent_failed.load(std::memory_order_relaxed) &&
+               read_word(cell) == kThreadCount * kIncrementsPerThread,
+           "AArch64 LSE fetch-add must not lose concurrent updates");
   }
 }
 
@@ -1616,7 +1828,8 @@ void test_bounded_atomic_control_flow() {
   const auto baseline = unijit::jit::baseline_target_profile();
   const auto capability =
       unijit::jit::preflight_capabilities(function, baseline);
-  if (baseline.architecture == unijit::jit::TargetArchitecture::kX86_64) {
+  if (baseline.architecture == unijit::jit::TargetArchitecture::kX86_64 ||
+      baseline.architecture == unijit::jit::TargetArchitecture::kAArch64) {
     cell = 3;
     const auto compilation = Compiler::compile(function);
     const std::array<Word, 1> arguments = {0};
@@ -1628,13 +1841,56 @@ void test_bounded_atomic_control_flow() {
     expect(capability.ok() && capability.requires_execution_context &&
                compilation.ok() && native_result.ok() &&
                native_result.value == 8 && cell == 7,
-           "x86-64 CFG atomics must preserve native effects across block "
+           "native CFG atomics must preserve effects across block "
            "edges");
+    cell = 3;
+    unijit::jit::CompilationOptions baseline_options{
+        unijit::jit::OptimizationLevel::kBaseline};
+    const auto baseline_compilation =
+        Compiler::compile(function, baseline_options);
+    const auto baseline_result =
+        baseline_compilation.ok()
+            ? baseline_compilation.function->invoke(
+                  arguments.data(), arguments.size(), &context)
+            : unijit::ir::EvaluationResult{baseline_compilation.status, 0};
+    expect(baseline_result.ok() && baseline_result.value == 8 && cell == 7,
+           "native CFG atomic baseline must match optimized execution");
   } else {
     expect(!capability.ok() && capability.requires_execution_context &&
                capability.overall_strategy ==
                    unijit::jit::LoweringStrategy::kUnsupported,
            "CFG atomics must fail closed on targets without native lowering");
+  }
+  const auto host = unijit::jit::host_target_profile();
+  if (host.architecture == unijit::jit::TargetArchitecture::kAArch64 &&
+      unijit::jit::has_target_feature(
+          host, unijit::jit::TargetFeature::kAarch64Lse)) {
+    unijit::jit::CompilationOptions lse_options;
+    lse_options.target_profile = host;
+    cell = 3;
+    const auto compilation = Compiler::compile(function, lse_options);
+    const std::array<Word, 1> arguments = {0};
+    const auto native_result =
+        compilation.ok()
+            ? compilation.function->invoke(arguments.data(), arguments.size(),
+                                           &context)
+            : unijit::ir::EvaluationResult{compilation.status, 0};
+    expect(compilation.ok() && native_result.ok() &&
+               native_result.value == 8 && cell == 7 &&
+               compilation.function->capabilities().overall_strategy ==
+                   unijit::jit::LoweringStrategy::kNative,
+           "AArch64 LSE CFG atomics must preserve effects across block edges");
+    lse_options.optimization_level =
+        unijit::jit::OptimizationLevel::kBaseline;
+    cell = 3;
+    const auto baseline_compilation = Compiler::compile(function, lse_options);
+    const auto baseline_result =
+        baseline_compilation.ok()
+            ? baseline_compilation.function->invoke(
+                  arguments.data(), arguments.size(), &context)
+            : unijit::ir::EvaluationResult{baseline_compilation.status, 0};
+    expect(baseline_result.ok() && baseline_result.value == 8 && cell == 7,
+           "AArch64 LSE CFG baseline must match optimized execution");
   }
 }
 
