@@ -66,10 +66,15 @@ The AArch64 scalar backend already exposes caller-clobbered `v0`–`v7` and
 does not allocate callee-preserved `v8`–`v15` until prologue/epilogue save
 selection is implemented. Live Float64 values are saved around runtime-helper
 calls, so widening this pool does not weaken the helper ABI. x86-64 currently
-uses the common volatile XMM floor that is valid on both System V and Windows;
-using XMM6–XMM15 requires target-specific nonvolatile save tracking. RV64 uses
-its existing caller-clobbered floating-point pool. These scalar decisions are
-prerequisites for SIMD but do not count as vector-IR delivery.
+allocates XMM1–XMM4 plus XMM6–XMM15 under System V while reserving XMM0/XMM5
+for lowering scratch. Windows retains the common volatile XMM1–XMM4 floor;
+using XMM6–XMM15 there requires target-specific nonvolatile save tracking.
+RV64 uses its existing caller-clobbered floating-point pool. These scalar
+decisions are prerequisites for SIMD but do not count as vector-IR delivery.
+CFG allocation lets a final-use Float64 left operand donate its physical
+register to the result, which maps recurrent SSA arithmetic to destructive
+two-address SSE2 instructions without an avoidable move while remaining valid
+for the three-address AArch64 and RISC-V lowerings.
 
 Qualification must force more simultaneously live scalar/vector values than
 each target's volatile pool, cross CFG edges and helper calls, and verify both
