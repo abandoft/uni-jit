@@ -92,15 +92,21 @@ bool fuzz_word_function(std::mt19937_64* random, const Options& options,
     }
     const Value lhs = values[(*random)() % values.size()];
     const Value rhs = values[(*random)() % values.size()];
-    switch ((*random)() % 3ULL) {
+    switch ((*random)() % 5ULL) {
       case 0:
         values.push_back(builder.add(lhs, rhs));
         break;
       case 1:
         values.push_back(builder.subtract(lhs, rhs));
         break;
-      default:
+      case 2:
         values.push_back(builder.multiply(lhs, rhs));
+        break;
+      case 3:
+        values.push_back(builder.negate(lhs));
+        break;
+      default:
+        values.push_back(builder.bitwise_not(lhs));
         break;
     }
   }
@@ -233,15 +239,21 @@ std::vector<Value> make_cfg_arm(ControlFlowBuilder* builder,
       const Word constant_value =
           static_cast<Word>(static_cast<std::int64_t>((*random)() % 17ULL) - 8);
       const Value constant = builder->constant(constant_value);
-      switch ((*random)() % 3ULL) {
+      switch ((*random)() % 5ULL) {
         case 0:
           result.push_back(builder->add(source, constant));
           break;
         case 1:
           result.push_back(builder->subtract(source, constant));
           break;
-        default:
+        case 2:
           result.push_back(builder->multiply(source, constant));
+          break;
+        case 3:
+          result.push_back(builder->negate(source));
+          break;
+        default:
+          result.push_back(builder->bitwise_not(source));
           break;
       }
     }

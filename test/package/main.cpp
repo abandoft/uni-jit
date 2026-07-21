@@ -196,6 +196,28 @@ int main() {
           (positive_nan ^ (UINT64_C(1) << 63U))) {
     return 47;
   }
+  unijit::ir::FunctionBuilder word_unary_builder(1);
+  if (!word_unary_builder
+           .set_return(word_unary_builder.add(
+               word_unary_builder.negate(word_unary_builder.parameter(0)),
+               word_unary_builder.bitwise_not(
+                   word_unary_builder.parameter(0))))
+           .ok()) {
+    return 50;
+  }
+  auto word_unary_compilation = unijit::jit::Compiler::compile(
+      std::move(word_unary_builder).build());
+  const unijit::ir::Word word_unary_argument =
+      std::numeric_limits<unijit::ir::Word>::min();
+  const auto word_unary_result =
+      word_unary_compilation.ok()
+          ? word_unary_compilation.function->invoke(&word_unary_argument, 1)
+          : unijit::ir::EvaluationResult{};
+  if (!word_unary_compilation.ok() || !word_unary_result.ok() ||
+      static_cast<std::uint64_t>(word_unary_result.value) !=
+          UINT64_C(0xffffffffffffffff)) {
+    return 51;
+  }
   unijit::jit::CompilationLimits package_limits;
   package_limits.maximum_ir_nodes = 2;
   const auto limited_compilation = unijit::jit::Compiler::compile(
@@ -295,6 +317,25 @@ int main() {
   if (!cfg_negate.ok() || !cfg_negate_result.ok() ||
       cfg_negate_result.value != unijit::ir::pack_float64(-0.0)) {
     return 49;
+  }
+  unijit::ir::ControlFlowBuilder cfg_word_unary_builder(1);
+  if (!cfg_word_unary_builder
+           .set_return(cfg_word_unary_builder.bitwise_not(
+               cfg_word_unary_builder.negate(
+                   cfg_word_unary_builder.parameter(0))))
+           .ok()) {
+    return 52;
+  }
+  auto cfg_word_unary = unijit::jit::Compiler::compile(
+      std::move(cfg_word_unary_builder).build());
+  const unijit::ir::Word cfg_word_unary_argument = 0;
+  const auto cfg_word_unary_result =
+      cfg_word_unary.ok()
+          ? cfg_word_unary.function->invoke(&cfg_word_unary_argument, 1)
+          : unijit::ir::EvaluationResult{};
+  if (!cfg_word_unary.ok() || !cfg_word_unary_result.ok() ||
+      cfg_word_unary_result.value != -1) {
+    return 53;
   }
   unijit::ir::FunctionBuilder safepoint_builder(0);
   if (!safepoint_builder.safepoint(23).valid() ||
