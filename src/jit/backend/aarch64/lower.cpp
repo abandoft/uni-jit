@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <new>
 #include <utility>
@@ -183,6 +184,200 @@ class Assembler final {
     const std::uint32_t instruction = width == 4 ? 0xBD000000U : 0xFD000000U;
     buffer_.emit_u32(instruction | (scaled_offset << 10U) | (reg(base) << 5U) |
                      reg(source));
+  }
+
+  void load_vector(int destination, int base, std::size_t byte_offset) {
+    const auto scaled_offset = static_cast<std::uint32_t>(byte_offset / 16U);
+    buffer_.emit_u32(0x3DC00000U | (scaled_offset << 10U) |
+                     (reg(base) << 5U) | reg(destination));
+  }
+
+  void store_vector(int source, int base, std::size_t byte_offset) {
+    const auto scaled_offset = static_cast<std::uint32_t>(byte_offset / 16U);
+    buffer_.emit_u32(0x3D800000U | (scaled_offset << 10U) |
+                     (reg(base) << 5U) | reg(source));
+  }
+
+  void move_vector_register(int destination, int source) {
+    buffer_.emit_u32(0x4EA01C00U | (reg(source) << 16U) |
+                     (reg(source) << 5U) | reg(destination));
+  }
+
+  void insert_vector_lane(int destination, int source,
+                          std::size_t lane_bits, std::size_t lane) {
+    const std::uint32_t lane_bytes =
+        static_cast<std::uint32_t>(lane_bits / 8U);
+    const std::uint32_t immediate =
+        (static_cast<std::uint32_t>(lane) * lane_bytes * 2U) | lane_bytes;
+    buffer_.emit_u32(0x4E001C00U | (immediate << 16U) |
+                     (reg(source) << 5U) | reg(destination));
+  }
+
+  void splat_vector(int destination, int source, std::size_t lane_bits) {
+    const std::uint32_t lane_bytes =
+        static_cast<std::uint32_t>(lane_bits / 8U);
+    buffer_.emit_u32(0x4E000C00U | (lane_bytes << 16U) |
+                     (reg(source) << 5U) | reg(destination));
+  }
+
+  void extract_vector_lane(int destination, int source,
+                           std::size_t lane_bits, std::size_t lane,
+                           bool sign_extend) {
+    const std::uint32_t lane_bytes =
+        static_cast<std::uint32_t>(lane_bits / 8U);
+    const std::uint32_t immediate =
+        (static_cast<std::uint32_t>(lane) * lane_bytes * 2U) | lane_bytes;
+    std::uint32_t instruction = 0x0E003C00U;
+    if (lane_bits == 64) {
+      instruction = 0x4E003C00U;
+    } else if (sign_extend) {
+      instruction = 0x4E002C00U;
+    }
+    buffer_.emit_u32(instruction | (immediate << 16U) |
+                     (reg(source) << 5U) | reg(destination));
+  }
+
+  void vector_not(int destination, int source) {
+    buffer_.emit_u32(0x6E205800U | (reg(source) << 5U) | reg(destination));
+  }
+
+  void vector_integer_binary(int destination, int lhs, int rhs,
+                             std::size_t lane_bits,
+                             ir::VectorBinaryOperation operation) {
+    const std::uint32_t size =
+        lane_bits == 8 ? 0U : lane_bits == 16 ? 1U : lane_bits == 32 ? 2U : 3U;
+    std::uint32_t instruction = 0x4E208400U;
+    if (operation == ir::VectorBinaryOperation::kSubtract) {
+      instruction = 0x6E208400U;
+    } else if (operation == ir::VectorBinaryOperation::kMultiply) {
+      instruction = 0x4E209C00U;
+    }
+    buffer_.emit_u32(instruction | (size << 22U) | (reg(rhs) << 16U) |
+                     (reg(lhs) << 5U) | reg(destination));
+  }
+
+  void vector_bitwise_binary(int destination, int lhs, int rhs,
+                             ir::VectorBinaryOperation operation) {
+    std::uint32_t instruction = 0x4E201C00U;
+    if (operation == ir::VectorBinaryOperation::kBitwiseOr) {
+      instruction = 0x4EA01C00U;
+    } else if (operation == ir::VectorBinaryOperation::kBitwiseXor) {
+      instruction = 0x6E201C00U;
+    }
+    buffer_.emit_u32(instruction | (reg(rhs) << 16U) | (reg(lhs) << 5U) |
+                     reg(destination));
+  }
+
+  void vector_float_binary(int destination, int lhs, int rhs,
+                           std::size_t lane_bits,
+                           ir::VectorBinaryOperation operation) {
+    std::uint32_t instruction = 0x4E20D400U;
+    if (operation == ir::VectorBinaryOperation::kSubtract) {
+      instruction = 0x4EA0D400U;
+    } else if (operation == ir::VectorBinaryOperation::kMultiply) {
+      instruction = 0x6E20DC00U;
+    } else if (operation == ir::VectorBinaryOperation::kDivide) {
+      instruction = 0x6E20FC00U;
+    }
+    if (lane_bits == 64) {
+      instruction |= 0x00400000U;
+    }
+    buffer_.emit_u32(instruction | (reg(rhs) << 16U) | (reg(lhs) << 5U) |
+                     reg(destination));
+  }
+
+  void vector_compare(int destination, int lhs, int rhs,
+                      std::size_t lane_bits,
+                      ir::VectorComparison comparison) {
+    const std::uint32_t size =
+        lane_bits == 8 ? 0U : lane_bits == 16 ? 1U : lane_bits == 32 ? 2U : 3U;
+    std::uint32_t instruction = 0x6E208C00U;
+    int encoded_lhs = lhs;
+    int encoded_rhs = rhs;
+    if (comparison == ir::VectorComparison::kSignedLessThan) {
+      instruction = 0x4E203400U;
+      encoded_lhs = rhs;
+      encoded_rhs = lhs;
+    } else if (comparison == ir::VectorComparison::kSignedLessEqual) {
+      instruction = 0x4E203C00U;
+      encoded_lhs = rhs;
+      encoded_rhs = lhs;
+    } else if (comparison == ir::VectorComparison::kUnsignedLessThan) {
+      instruction = 0x6E203400U;
+      encoded_lhs = rhs;
+      encoded_rhs = lhs;
+    } else if (comparison == ir::VectorComparison::kUnsignedLessEqual) {
+      instruction = 0x6E203C00U;
+      encoded_lhs = rhs;
+      encoded_rhs = lhs;
+    } else if (comparison == ir::VectorComparison::kOrderedFloatEqual) {
+      instruction = 0x4E20E400U;
+      if (lane_bits == 64) {
+        instruction |= 0x00400000U;
+      }
+    } else if (comparison == ir::VectorComparison::kOrderedFloatLessThan) {
+      instruction = 0x6EA0E400U;
+      if (lane_bits == 64) {
+        instruction |= 0x00400000U;
+      }
+      encoded_lhs = rhs;
+      encoded_rhs = lhs;
+    } else if (comparison == ir::VectorComparison::kOrderedFloatLessEqual) {
+      instruction = 0x6E20E400U;
+      if (lane_bits == 64) {
+        instruction |= 0x00400000U;
+      }
+      encoded_lhs = rhs;
+      encoded_rhs = lhs;
+    }
+    if (comparison <= ir::VectorComparison::kUnsignedLessEqual) {
+      instruction |= size << 22U;
+    }
+    buffer_.emit_u32(instruction | (reg(encoded_rhs) << 16U) |
+                     (reg(encoded_lhs) << 5U) | reg(destination));
+  }
+
+  void vector_select(int destination, int true_value, int false_value) {
+    buffer_.emit_u32(0x6E601C00U | (reg(false_value) << 16U) |
+                     (reg(true_value) << 5U) | reg(destination));
+  }
+
+  void vector_table_lookup(int destination, int source, int indices) {
+    buffer_.emit_u32(0x4E000000U | (reg(indices) << 16U) |
+                     (reg(source) << 5U) | reg(destination));
+  }
+
+  void widen_vector(int destination, int source, std::size_t source_lane_bits,
+                    ir::VectorExtension extension, ir::VectorHalf half) {
+    std::uint32_t instruction =
+        extension == ir::VectorExtension::kSign ? 0x0F00A400U : 0x2F00A400U;
+    if (half == ir::VectorHalf::kHigh) {
+      instruction |= 0x40000000U;
+    }
+    buffer_.emit_u32(instruction |
+                     (static_cast<std::uint32_t>(source_lane_bits) << 16U) |
+                     (reg(source) << 5U) | reg(destination));
+  }
+
+  void shift_left_immediate(int destination, int source,
+                            std::size_t amount) {
+    if (amount == 0) {
+      move_register(destination, source);
+      return;
+    }
+    const std::uint32_t shift = static_cast<std::uint32_t>(amount);
+    const std::uint32_t immediate_r = 64U - shift;
+    const std::uint32_t immediate_s = 63U - shift;
+    buffer_.emit_u32(0xD3400000U | (immediate_r << 16U) |
+                     (immediate_s << 10U) | (reg(source) << 5U) |
+                     reg(destination));
+  }
+
+  void shift_right_immediate(int destination, int source,
+                             std::size_t amount) {
+    const std::uint32_t shift = static_cast<std::uint32_t>(amount);
+    buffer_.emit_u32(0xD3400000U | (shift << 16U) | (63U << 10U) |
+                     (reg(source) << 5U) | reg(destination));
   }
 
   void convert_float32_to_float64(int destination, int source) {
@@ -540,6 +735,10 @@ int physical_float_register(const ValueLocation& location) noexcept {
   return kFloatAllocationRegisters[location.register_index];
 }
 
+int physical_vector_register(const ValueLocation& location) noexcept {
+  return kFloatAllocationRegisters[location.register_index];
+}
+
 std::size_t spill_offset(const ValueLocation& location) noexcept {
   return location.spill_slot * sizeof(ir::Word);
 }
@@ -592,6 +791,40 @@ int load_float_operand(Assembler* assembler, const ValueLocation& location,
   return scratch;
 }
 
+int load_vector_operand(Assembler* assembler, const ValueLocation& location,
+                        int scratch) {
+  if (location.in_register()) {
+    return physical_vector_register(location);
+  }
+  assembler->load_vector(scratch, kStackPointer, spill_offset(location));
+  return scratch;
+}
+
+ir::Word vector_half_word(const ir::Vector128& value,
+                          std::size_t half) noexcept {
+  std::uint64_t bits = 0;
+  std::memcpy(&bits, value.bytes.data() + half * sizeof(bits), sizeof(bits));
+  ir::Word result = 0;
+  std::memcpy(&result, &bits, sizeof(result));
+  return result;
+}
+
+void materialize_vector(Assembler* assembler, int destination,
+                        const ir::Vector128& value) {
+  assembler->move_immediate(kScratch0, vector_half_word(value, 0));
+  assembler->insert_vector_lane(destination, kScratch0, 64, 0);
+  assembler->move_immediate(kScratch0, vector_half_word(value, 1));
+  assembler->insert_vector_lane(destination, kScratch0, 64, 1);
+}
+
+void store_vector_if_spilled(Assembler* assembler,
+                             const ValueLocation& destination,
+                             int source) {
+  if (!destination.in_register()) {
+    assembler->store_vector(source, kStackPointer, spill_offset(destination));
+  }
+}
+
 void save_live_across_call(Assembler* assembler,
                            const ir::Function& function,
                            const RegisterAllocation& allocation,
@@ -602,7 +835,11 @@ void save_live_across_call(Assembler* assembler,
         allocation.last_uses[value_index] <= call_index) {
       continue;
     }
-    if (function.nodes()[value_index].type == ir::ValueType::kFloat64) {
+    const ir::ValueType type = function.nodes()[value_index].type;
+    if (ir::is_vector_value_type(type)) {
+      assembler->store_vector(physical_vector_register(location), kStackPointer,
+                              spill_offset(location));
+    } else if (type == ir::ValueType::kFloat64) {
       assembler->store_float(physical_float_register(location), kStackPointer,
                              spill_offset(location));
     } else {
@@ -622,7 +859,11 @@ void restore_live_across_call(Assembler* assembler,
         allocation.last_uses[value_index] <= call_index) {
       continue;
     }
-    if (function.nodes()[value_index].type == ir::ValueType::kFloat64) {
+    const ir::ValueType type = function.nodes()[value_index].type;
+    if (ir::is_vector_value_type(type)) {
+      assembler->load_vector(physical_vector_register(location), kStackPointer,
+                             spill_offset(location));
+    } else if (type == ir::ValueType::kFloat64) {
       assembler->load_float(physical_float_register(location), kStackPointer,
                             spill_offset(location));
     } else {
@@ -689,6 +930,204 @@ StackMapRecord make_stack_map_record(
          (stack_map_base + value.id()) * sizeof(ir::Word)});
   }
   return record;
+}
+
+ir::Vector128 vector_shuffle_indices(ir::ValueType type,
+                                     const ir::VectorShuffle& shuffle) {
+  ir::Vector128 indices;
+  const std::size_t lane_bytes = ir::vector_lane_bits(type) / 8U;
+  for (std::size_t lane = 0; lane < shuffle.lane_count; ++lane) {
+    for (std::size_t byte = 0; byte < lane_bytes; ++byte) {
+      indices.bytes[lane * lane_bytes + byte] = static_cast<std::uint8_t>(
+          static_cast<std::size_t>(shuffle.lanes[lane]) * lane_bytes + byte);
+    }
+  }
+  return indices;
+}
+
+Status lower_straight_vector(Assembler* assembler,
+                             const ir::Function& function,
+                             const RegisterAllocation& allocation,
+                             const ir::Node& node,
+                             const ValueLocation& destination) {
+  const int target = destination.in_register()
+                         ? physical_vector_register(destination)
+                         : kFloatScratch0;
+  if (node.opcode == ir::Opcode::kVectorConstant) {
+    materialize_vector(
+        assembler, target,
+        function.vector_constants()[static_cast<std::size_t>(node.immediate)]);
+    store_vector_if_spilled(assembler, destination, target);
+    return Status::ok_status();
+  }
+  if (node.opcode == ir::Opcode::kVectorSplat) {
+    const int source = load_operand(
+        assembler, allocation.locations[node.lhs.id()], kScratch0);
+    assembler->splat_vector(target, source, ir::vector_lane_bits(node.type));
+    store_vector_if_spilled(assembler, destination, target);
+    return Status::ok_status();
+  }
+  if (node.opcode == ir::Opcode::kVectorExtractLane) {
+    const ir::ValueType source_type = function.value_type(node.lhs);
+    const int source = load_vector_operand(
+        assembler, allocation.locations[node.lhs.id()], kFloatScratch0);
+    const int word_target = destination.in_register()
+                                ? physical_register(destination)
+                                : kScratch0;
+    assembler->extract_vector_lane(
+        word_target, source, ir::vector_lane_bits(source_type),
+        static_cast<std::size_t>(node.immediate) & UINT8_MAX,
+        (static_cast<std::uint64_t>(node.immediate) & (UINT64_C(1) << 8U)) != 0);
+    if (!destination.in_register()) {
+      assembler->store(word_target, kStackPointer, spill_offset(destination));
+    }
+    return Status::ok_status();
+  }
+  if (node.opcode == ir::Opcode::kVectorInsertLane) {
+    const int vector = load_vector_operand(
+        assembler, allocation.locations[node.lhs.id()], kFloatScratch0);
+    if (target != vector) {
+      assembler->move_vector_register(target, vector);
+    }
+    const int lane_bits = load_operand(
+        assembler, allocation.locations[node.rhs.id()], kScratch0);
+    assembler->insert_vector_lane(
+        target, lane_bits, ir::vector_lane_bits(node.type),
+        static_cast<std::size_t>(node.immediate));
+    store_vector_if_spilled(assembler, destination, target);
+    return Status::ok_status();
+  }
+  if (node.opcode == ir::Opcode::kVectorUnary) {
+    const int source = load_vector_operand(
+        assembler, allocation.locations[node.lhs.id()], kFloatScratch0);
+    assembler->vector_not(target, source);
+    store_vector_if_spilled(assembler, destination, target);
+    return Status::ok_status();
+  }
+  if (node.opcode == ir::Opcode::kVectorBinary) {
+    const auto operation =
+        static_cast<ir::VectorBinaryOperation>(node.immediate);
+    const int lhs = load_vector_operand(
+        assembler, allocation.locations[node.lhs.id()], kFloatScratch0);
+    const int rhs = load_vector_operand(
+        assembler, allocation.locations[node.rhs.id()], kFloatScratch1);
+    const std::size_t lane_bits = ir::vector_lane_bits(node.type);
+    if (operation == ir::VectorBinaryOperation::kBitwiseAnd ||
+        operation == ir::VectorBinaryOperation::kBitwiseOr ||
+        operation == ir::VectorBinaryOperation::kBitwiseXor) {
+      assembler->vector_bitwise_binary(target, lhs, rhs, operation);
+    } else if (ir::is_float_vector_type(node.type)) {
+      assembler->vector_float_binary(target, lhs, rhs, lane_bits, operation);
+    } else if (operation == ir::VectorBinaryOperation::kMultiply &&
+               lane_bits == 64) {
+      for (std::size_t lane = 0; lane < 2; ++lane) {
+        assembler->extract_vector_lane(kScratch0, lhs, 64, lane, false);
+        assembler->extract_vector_lane(kScratch1, rhs, 64, lane, false);
+        assembler->multiply(kScratch0, kScratch0, kScratch1);
+        assembler->insert_vector_lane(target, kScratch0, 64, lane);
+      }
+    } else {
+      assembler->vector_integer_binary(target, lhs, rhs, lane_bits, operation);
+    }
+    store_vector_if_spilled(assembler, destination, target);
+    return Status::ok_status();
+  }
+  if (node.opcode == ir::Opcode::kVectorCompare) {
+    const ir::ValueType input_type = function.value_type(node.lhs);
+    const int lhs = load_vector_operand(
+        assembler, allocation.locations[node.lhs.id()], kFloatScratch0);
+    const int rhs = load_vector_operand(
+        assembler, allocation.locations[node.rhs.id()], kFloatScratch1);
+    assembler->vector_compare(
+        target, lhs, rhs, ir::vector_lane_bits(input_type),
+        static_cast<ir::VectorComparison>(node.immediate));
+    store_vector_if_spilled(assembler, destination, target);
+    return Status::ok_status();
+  }
+  if (node.opcode == ir::Opcode::kVectorSelect) {
+    const ir::Value false_value = function.vector_select_arguments()[
+        static_cast<std::size_t>(node.immediate)];
+    const int mask = load_vector_operand(
+        assembler, allocation.locations[node.lhs.id()], kFloatScratch0);
+    if (destination.in_register()) {
+      if (target != mask) {
+        assembler->move_vector_register(target, mask);
+      }
+      const int true_value = load_vector_operand(
+          assembler, allocation.locations[node.rhs.id()], kFloatScratch0);
+      const int false_register = load_vector_operand(
+          assembler, allocation.locations[false_value.id()], kFloatScratch1);
+      assembler->vector_select(target, true_value, false_register);
+      return Status::ok_status();
+    }
+
+    const int true_value = load_vector_operand(
+        assembler, allocation.locations[node.rhs.id()], kFloatScratch1);
+    if (mask != target) {
+      assembler->move_vector_register(target, mask);
+    }
+    assembler->vector_bitwise_binary(
+        target, target, true_value, ir::VectorBinaryOperation::kBitwiseAnd);
+    assembler->store_vector(target, kStackPointer, spill_offset(destination));
+    const int reloaded_mask = load_vector_operand(
+        assembler, allocation.locations[node.lhs.id()], kFloatScratch0);
+    assembler->vector_not(target, reloaded_mask);
+    const int false_register = load_vector_operand(
+        assembler, allocation.locations[false_value.id()], kFloatScratch1);
+    assembler->vector_bitwise_binary(
+        target, target, false_register, ir::VectorBinaryOperation::kBitwiseAnd);
+    assembler->load_vector(kFloatScratch1, kStackPointer,
+                           spill_offset(destination));
+    assembler->vector_bitwise_binary(
+        target, target, kFloatScratch1, ir::VectorBinaryOperation::kBitwiseOr);
+    assembler->store_vector(target, kStackPointer, spill_offset(destination));
+    return Status::ok_status();
+  }
+  if (node.opcode == ir::Opcode::kVectorLaneSignMask) {
+    const ir::ValueType input_type = function.value_type(node.lhs);
+    const std::size_t lane_bits = ir::vector_lane_bits(input_type);
+    const int source = load_vector_operand(
+        assembler, allocation.locations[node.lhs.id()], kFloatScratch0);
+    const int word_target = destination.in_register()
+                                ? physical_register(destination)
+                                : kScratch0;
+    assembler->move_immediate(word_target, 0);
+    for (std::size_t lane = 0; lane < ir::vector_lane_count(input_type); ++lane) {
+      assembler->extract_vector_lane(kScratch1, source, lane_bits, lane, false);
+      assembler->shift_right_immediate(kScratch1, kScratch1, lane_bits - 1U);
+      assembler->shift_left_immediate(kScratch1, kScratch1, lane);
+      assembler->bitwise_or(word_target, word_target, kScratch1);
+    }
+    if (!destination.in_register()) {
+      assembler->store(word_target, kStackPointer, spill_offset(destination));
+    }
+    return Status::ok_status();
+  }
+  if (node.opcode == ir::Opcode::kVectorShuffle) {
+    const ir::VectorShuffle& shuffle = function.vector_shuffles()[
+        static_cast<std::size_t>(node.immediate)];
+    const int source = load_vector_operand(
+        assembler, allocation.locations[node.lhs.id()], kFloatScratch0);
+    materialize_vector(assembler, kFloatScratch1,
+                       vector_shuffle_indices(node.type, shuffle));
+    assembler->vector_table_lookup(target, source, kFloatScratch1);
+    store_vector_if_spilled(assembler, destination, target);
+    return Status::ok_status();
+  }
+  if (node.opcode == ir::Opcode::kVectorWiden) {
+    const ir::ValueType source_type = function.value_type(node.lhs);
+    const int source = load_vector_operand(
+        assembler, allocation.locations[node.lhs.id()], kFloatScratch0);
+    assembler->widen_vector(
+        target, source, ir::vector_lane_bits(source_type),
+        static_cast<ir::VectorExtension>(node.immediate & UINT8_MAX),
+        static_cast<ir::VectorHalf>(
+            (static_cast<std::uint64_t>(node.immediate) >> 8U) & UINT8_MAX));
+    store_vector_if_spilled(assembler, destination, target);
+    return Status::ok_status();
+  }
+  return {StatusCode::kCodeGenerationFailed,
+          "AArch64 received an unknown vector operation"};
 }
 
 LoweringResult lower_impl(const ir::Function& function,
@@ -1211,11 +1650,14 @@ LoweringResult lower_impl(const ir::Function& function,
       case ir::Opcode::kVectorSelect:
       case ir::Opcode::kVectorLaneSignMask:
       case ir::Opcode::kVectorShuffle:
-      case ir::Opcode::kVectorWiden:
-        return {{StatusCode::kCodeGenerationFailed,
-                 "AArch64 SIMD lowering requires the vector allocator"},
-                {},
-                0};
+      case ir::Opcode::kVectorWiden: {
+        const Status vector_status = lower_straight_vector(
+            &assembler, function, allocation, node, destination);
+        if (!vector_status.ok()) {
+          return {vector_status, {}, 0};
+        }
+        break;
+      }
       case ir::Opcode::kLoadWord:
       case ir::Opcode::kStoreWord:
       case ir::Opcode::kLoadFloat:
@@ -1559,6 +2001,16 @@ int control_float_register(
   return kFloatAllocationRegisters[allocation.register_indices[value.id()]];
 }
 
+int control_vector_register(
+    const ControlFlowRegisterAllocation& allocation, ir::Value value,
+    std::size_t current_block) noexcept {
+  if (allocation.owner_blocks[value.id()] != current_block ||
+      allocation.register_indices[value.id()] == ValueLocation::kNone) {
+    return -1;
+  }
+  return kFloatAllocationRegisters[allocation.register_indices[value.id()]];
+}
+
 int load_control_word(Assembler* assembler,
                       const ControlFlowRegisterAllocation& allocation,
                       ir::Value value, std::size_t current_block,
@@ -1584,6 +2036,20 @@ int load_control_float(Assembler* assembler,
   }
   assembler->load_float(scratch, kStackPointer,
                         control_value_offset(allocation, value));
+  return scratch;
+}
+
+int load_control_vector(Assembler* assembler,
+                        const ControlFlowRegisterAllocation& allocation,
+                        ir::Value value, std::size_t current_block,
+                        int scratch) {
+  const int allocated =
+      control_vector_register(allocation, value, current_block);
+  if (allocated >= 0) {
+    return allocated;
+  }
+  assembler->load_vector(scratch, kStackPointer,
+                         control_value_offset(allocation, value));
   return scratch;
 }
 
@@ -1618,7 +2084,12 @@ void save_control_live_across_call(
     const ControlFlowRegisterAllocation& allocation, ir::Value call,
     std::size_t current_block) {
   for (const ir::Value value : allocation.live_across_calls[call.id()]) {
-    if (function.value_type(value) == ir::ValueType::kFloat64) {
+    const ir::ValueType type = function.value_type(value);
+    if (ir::is_vector_value_type(type)) {
+      assembler->store_vector(
+          control_vector_register(allocation, value, current_block),
+          kStackPointer, control_value_offset(allocation, value));
+    } else if (type == ir::ValueType::kFloat64) {
       assembler->store_float(
           control_float_register(allocation, value, current_block),
           kStackPointer, control_value_offset(allocation, value));
@@ -1635,7 +2106,12 @@ void restore_control_live_across_call(
     const ControlFlowRegisterAllocation& allocation, ir::Value call,
     std::size_t current_block) {
   for (const ir::Value value : allocation.live_across_calls[call.id()]) {
-    if (function.value_type(value) == ir::ValueType::kFloat64) {
+    const ir::ValueType type = function.value_type(value);
+    if (ir::is_vector_value_type(type)) {
+      assembler->load_vector(
+          control_vector_register(allocation, value, current_block),
+          kStackPointer, control_value_offset(allocation, value));
+    } else if (type == ir::ValueType::kFloat64) {
       assembler->load_float(
           control_float_register(allocation, value, current_block),
           kStackPointer, control_value_offset(allocation, value));
@@ -1686,6 +2162,200 @@ StackMapRecord make_stack_map_record(
   return record;
 }
 
+Status lower_control_vector(
+    Assembler* assembler, const ir::ControlFlowFunction& function,
+    const ControlFlowRegisterAllocation& allocation, const ir::ControlNode& node,
+    ir::Value value, std::size_t current_block) {
+  const int allocated =
+      control_vector_register(allocation, value, current_block);
+  const int target = allocated >= 0 ? allocated : kFloatScratch0;
+  const std::size_t destination_offset =
+      allocation.stack_indices[value.id()] == ValueLocation::kNone
+          ? 0
+          : control_value_offset(allocation, value);
+  const auto store_result = [&]() {
+    if (allocated < 0 || allocation.requires_stack[value.id()]) {
+      assembler->store_vector(target, kStackPointer, destination_offset);
+    }
+  };
+
+  if (node.opcode == ir::ControlOpcode::kVectorConstant) {
+    materialize_vector(
+        assembler, target,
+        function.vector_constants()[static_cast<std::size_t>(node.immediate)]);
+    store_result();
+    return Status::ok_status();
+  }
+  if (node.opcode == ir::ControlOpcode::kVectorSplat) {
+    const int source = load_control_word(
+        assembler, allocation, node.lhs, current_block, kScratch0);
+    assembler->splat_vector(target, source, ir::vector_lane_bits(node.type));
+    store_result();
+    return Status::ok_status();
+  }
+  if (node.opcode == ir::ControlOpcode::kVectorExtractLane) {
+    const ir::ValueType source_type = function.value_type(node.lhs);
+    const int source = load_control_vector(
+        assembler, allocation, node.lhs, current_block, kFloatScratch0);
+    const int word_allocated =
+        control_word_register(allocation, value, current_block);
+    const int word_target = word_allocated >= 0 ? word_allocated : kScratch0;
+    assembler->extract_vector_lane(
+        word_target, source, ir::vector_lane_bits(source_type),
+        static_cast<std::size_t>(node.immediate) & UINT8_MAX,
+        (static_cast<std::uint64_t>(node.immediate) & (UINT64_C(1) << 8U)) != 0);
+    if (word_allocated < 0 || allocation.requires_stack[value.id()]) {
+      assembler->store(word_target, kStackPointer, destination_offset);
+    }
+    return Status::ok_status();
+  }
+  if (node.opcode == ir::ControlOpcode::kVectorInsertLane) {
+    const int vector = load_control_vector(
+        assembler, allocation, node.lhs, current_block, kFloatScratch0);
+    if (target != vector) {
+      assembler->move_vector_register(target, vector);
+    }
+    const int lane_bits = load_control_word(
+        assembler, allocation, node.rhs, current_block, kScratch0);
+    assembler->insert_vector_lane(
+        target, lane_bits, ir::vector_lane_bits(node.type),
+        static_cast<std::size_t>(node.immediate));
+    store_result();
+    return Status::ok_status();
+  }
+  if (node.opcode == ir::ControlOpcode::kVectorUnary) {
+    const int source = load_control_vector(
+        assembler, allocation, node.lhs, current_block, kFloatScratch0);
+    assembler->vector_not(target, source);
+    store_result();
+    return Status::ok_status();
+  }
+  if (node.opcode == ir::ControlOpcode::kVectorBinary) {
+    const auto operation =
+        static_cast<ir::VectorBinaryOperation>(node.immediate);
+    const int lhs = load_control_vector(
+        assembler, allocation, node.lhs, current_block, kFloatScratch0);
+    const int rhs = load_control_vector(
+        assembler, allocation, node.rhs, current_block, kFloatScratch1);
+    const std::size_t lane_bits = ir::vector_lane_bits(node.type);
+    if (operation == ir::VectorBinaryOperation::kBitwiseAnd ||
+        operation == ir::VectorBinaryOperation::kBitwiseOr ||
+        operation == ir::VectorBinaryOperation::kBitwiseXor) {
+      assembler->vector_bitwise_binary(target, lhs, rhs, operation);
+    } else if (ir::is_float_vector_type(node.type)) {
+      assembler->vector_float_binary(target, lhs, rhs, lane_bits, operation);
+    } else if (operation == ir::VectorBinaryOperation::kMultiply &&
+               lane_bits == 64) {
+      for (std::size_t lane = 0; lane < 2; ++lane) {
+        assembler->extract_vector_lane(kScratch0, lhs, 64, lane, false);
+        assembler->extract_vector_lane(kScratch1, rhs, 64, lane, false);
+        assembler->multiply(kScratch0, kScratch0, kScratch1);
+        assembler->insert_vector_lane(target, kScratch0, 64, lane);
+      }
+    } else {
+      assembler->vector_integer_binary(target, lhs, rhs, lane_bits, operation);
+    }
+    store_result();
+    return Status::ok_status();
+  }
+  if (node.opcode == ir::ControlOpcode::kVectorCompare) {
+    const ir::ValueType input_type = function.value_type(node.lhs);
+    const int lhs = load_control_vector(
+        assembler, allocation, node.lhs, current_block, kFloatScratch0);
+    const int rhs = load_control_vector(
+        assembler, allocation, node.rhs, current_block, kFloatScratch1);
+    assembler->vector_compare(
+        target, lhs, rhs, ir::vector_lane_bits(input_type),
+        static_cast<ir::VectorComparison>(node.immediate));
+    store_result();
+    return Status::ok_status();
+  }
+  if (node.opcode == ir::ControlOpcode::kVectorSelect) {
+    const ir::Value false_value = function.vector_select_arguments()[
+        static_cast<std::size_t>(node.immediate)];
+    const int mask = load_control_vector(
+        assembler, allocation, node.lhs, current_block, kFloatScratch0);
+    if (allocated >= 0) {
+      if (target != mask) {
+        assembler->move_vector_register(target, mask);
+      }
+      const int true_value = load_control_vector(
+          assembler, allocation, node.rhs, current_block, kFloatScratch0);
+      const int false_register = load_control_vector(
+          assembler, allocation, false_value, current_block, kFloatScratch1);
+      assembler->vector_select(target, true_value, false_register);
+      store_result();
+      return Status::ok_status();
+    }
+
+    const int true_value = load_control_vector(
+        assembler, allocation, node.rhs, current_block, kFloatScratch1);
+    if (mask != target) {
+      assembler->move_vector_register(target, mask);
+    }
+    assembler->vector_bitwise_binary(
+        target, target, true_value, ir::VectorBinaryOperation::kBitwiseAnd);
+    assembler->store_vector(target, kStackPointer, destination_offset);
+    const int reloaded_mask = load_control_vector(
+        assembler, allocation, node.lhs, current_block, kFloatScratch0);
+    assembler->vector_not(target, reloaded_mask);
+    const int false_register = load_control_vector(
+        assembler, allocation, false_value, current_block, kFloatScratch1);
+    assembler->vector_bitwise_binary(
+        target, target, false_register, ir::VectorBinaryOperation::kBitwiseAnd);
+    assembler->load_vector(kFloatScratch1, kStackPointer, destination_offset);
+    assembler->vector_bitwise_binary(
+        target, target, kFloatScratch1, ir::VectorBinaryOperation::kBitwiseOr);
+    assembler->store_vector(target, kStackPointer, destination_offset);
+    return Status::ok_status();
+  }
+  if (node.opcode == ir::ControlOpcode::kVectorLaneSignMask) {
+    const ir::ValueType input_type = function.value_type(node.lhs);
+    const std::size_t lane_bits = ir::vector_lane_bits(input_type);
+    const int source = load_control_vector(
+        assembler, allocation, node.lhs, current_block, kFloatScratch0);
+    const int word_allocated =
+        control_word_register(allocation, value, current_block);
+    const int word_target = word_allocated >= 0 ? word_allocated : kScratch0;
+    assembler->move_immediate(word_target, 0);
+    for (std::size_t lane = 0; lane < ir::vector_lane_count(input_type); ++lane) {
+      assembler->extract_vector_lane(kScratch1, source, lane_bits, lane, false);
+      assembler->shift_right_immediate(kScratch1, kScratch1, lane_bits - 1U);
+      assembler->shift_left_immediate(kScratch1, kScratch1, lane);
+      assembler->bitwise_or(word_target, word_target, kScratch1);
+    }
+    if (word_allocated < 0 || allocation.requires_stack[value.id()]) {
+      assembler->store(word_target, kStackPointer, destination_offset);
+    }
+    return Status::ok_status();
+  }
+  if (node.opcode == ir::ControlOpcode::kVectorShuffle) {
+    const ir::VectorShuffle& shuffle = function.vector_shuffles()[
+        static_cast<std::size_t>(node.immediate)];
+    const int source = load_control_vector(
+        assembler, allocation, node.lhs, current_block, kFloatScratch0);
+    materialize_vector(assembler, kFloatScratch1,
+                       vector_shuffle_indices(node.type, shuffle));
+    assembler->vector_table_lookup(target, source, kFloatScratch1);
+    store_result();
+    return Status::ok_status();
+  }
+  if (node.opcode == ir::ControlOpcode::kVectorWiden) {
+    const ir::ValueType source_type = function.value_type(node.lhs);
+    const int source = load_control_vector(
+        assembler, allocation, node.lhs, current_block, kFloatScratch0);
+    assembler->widen_vector(
+        target, source, ir::vector_lane_bits(source_type),
+        static_cast<ir::VectorExtension>(node.immediate & UINT8_MAX),
+        static_cast<ir::VectorHalf>(
+            (static_cast<std::uint64_t>(node.immediate) >> 8U) & UINT8_MAX));
+    store_result();
+    return Status::ok_status();
+  }
+  return {StatusCode::kCodeGenerationFailed,
+          "AArch64 received an unknown CFG vector operation"};
+}
+
 void copy_edge_arguments(Assembler* assembler,
                          const ir::ControlFlowFunction& function,
                          const ir::ControlEdge& edge,
@@ -1697,7 +2367,21 @@ void copy_edge_arguments(Assembler* assembler,
   const ir::BasicBlock& target = function.blocks()[edge.target.id()];
   if (moves.uses_registers) {
     for (const ControlFlowRegisterMove& move : moves.moves) {
-      if (move.type == ir::ValueType::kFloat64) {
+      if (ir::is_vector_value_type(move.type)) {
+        const int destination =
+            move.destination_index == ValueLocation::kNone
+                ? kFloatScratch0
+                : kFloatAllocationRegisters[move.destination_index];
+        if (move.source_kind == ControlFlowMoveSource::kRegister) {
+          assembler->move_vector_register(
+              destination, kFloatAllocationRegisters[move.source_index]);
+        } else if (move.source_kind == ControlFlowMoveSource::kStack) {
+          assembler->load_vector(destination, kStackPointer,
+                                 control_spill_offset(move.source_index));
+        } else {
+          assembler->move_vector_register(destination, kFloatScratch0);
+        }
+      } else if (move.type == ir::ValueType::kFloat64) {
         const int destination =
             move.destination_index == ValueLocation::kNone
                 ? kFloatScratch0
@@ -1729,7 +2413,13 @@ void copy_edge_arguments(Assembler* assembler,
     }
     for (const ir::Value parameter : target.parameters) {
       if (allocation.requires_stack[parameter.id()]) {
-        if (function.value_type(parameter) == ir::ValueType::kFloat64) {
+        const ir::ValueType type = function.value_type(parameter);
+        if (ir::is_vector_value_type(type)) {
+          const int source = control_vector_register(
+              allocation, parameter, edge.target.id());
+          assembler->store_vector(source, kStackPointer,
+                                  control_value_offset(allocation, parameter));
+        } else if (type == ir::ValueType::kFloat64) {
           const int source = control_float_register(
               allocation, parameter, edge.target.id());
           assembler->store_float(source, kStackPointer,
@@ -1745,29 +2435,60 @@ void copy_edge_arguments(Assembler* assembler,
     return;
   }
 
+  std::vector<std::size_t> temporary_slots(edge.arguments.size());
+  std::size_t next_temporary = temporary_base;
+  for (std::size_t index = 0; index < edge.arguments.size(); ++index) {
+    if (ir::is_vector_value_type(function.value_type(edge.arguments[index])) &&
+        (next_temporary & 1U) != 0U) {
+      ++next_temporary;
+    }
+    temporary_slots[index] = next_temporary;
+    next_temporary +=
+        ir::is_vector_value_type(function.value_type(edge.arguments[index]))
+            ? 2U
+            : 1U;
+  }
   for (std::size_t index = 0; index < edge.arguments.size(); ++index) {
     const ir::Value argument = edge.arguments[index];
-    if (function.value_type(argument) == ir::ValueType::kFloat64) {
+    const ir::ValueType type = function.value_type(argument);
+    if (ir::is_vector_value_type(type)) {
+      const int source = load_control_vector(
+          assembler, allocation, argument, current_block, kFloatScratch0);
+      assembler->store_vector(source, kStackPointer,
+                              control_spill_offset(temporary_slots[index]));
+    } else if (type == ir::ValueType::kFloat64) {
       const int source = load_control_float(
           assembler, allocation, argument, current_block, kFloatScratch0);
       assembler->store_float(source, kStackPointer,
-                             control_spill_offset(temporary_base + index));
+                             control_spill_offset(temporary_slots[index]));
     } else {
       const int source = load_control_word(
           assembler, allocation, argument, current_block, kScratch0);
       assembler->store(source, kStackPointer,
-                       control_spill_offset(temporary_base + index));
+                       control_spill_offset(temporary_slots[index]));
     }
   }
   for (std::size_t index = 0; index < edge.arguments.size(); ++index) {
     const ir::Value parameter = target.parameters[index];
-    if (function.value_type(parameter) == ir::ValueType::kFloat64) {
+    const ir::ValueType type = function.value_type(parameter);
+    if (ir::is_vector_value_type(type)) {
+      const int allocated =
+          control_vector_register(allocation, parameter, edge.target.id());
+      const int destination =
+          allocated >= 0 ? allocated : kFloatScratch0;
+      assembler->load_vector(destination, kStackPointer,
+                             control_spill_offset(temporary_slots[index]));
+      if (allocated < 0 || allocation.requires_stack[parameter.id()]) {
+        assembler->store_vector(destination, kStackPointer,
+                                control_value_offset(allocation, parameter));
+      }
+    } else if (type == ir::ValueType::kFloat64) {
       const int allocated =
           control_float_register(allocation, parameter, edge.target.id());
       const int destination =
           allocated >= 0 ? allocated : kFloatScratch0;
       assembler->load_float(destination, kStackPointer,
-                            control_spill_offset(temporary_base + index));
+                            control_spill_offset(temporary_slots[index]));
       if (allocated < 0 || allocation.requires_stack[parameter.id()]) {
         assembler->store_float(destination, kStackPointer,
                                control_value_offset(allocation, parameter));
@@ -1777,7 +2498,7 @@ void copy_edge_arguments(Assembler* assembler,
           control_word_register(allocation, parameter, edge.target.id());
       const int destination = allocated >= 0 ? allocated : kScratch0;
       assembler->load(destination, kStackPointer,
-                      control_spill_offset(temporary_base + index));
+                      control_spill_offset(temporary_slots[index]));
       if (allocated < 0 || allocation.requires_stack[parameter.id()]) {
         assembler->store(destination, kStackPointer,
                          control_value_offset(allocation, parameter));
@@ -1803,11 +2524,6 @@ LoweringResult lower_control_flow_impl(
             0};
   }
 
-  std::size_t maximum_block_parameters = 0;
-  for (const ir::BasicBlock& block : function.blocks()) {
-    maximum_block_parameters =
-        std::max(maximum_block_parameters, block.parameters.size());
-  }
   const bool has_context_operations = std::any_of(
       function.nodes().begin(), function.nodes().end(),
       [](const ir::ControlNode& node) {
@@ -1837,8 +2553,19 @@ LoweringResult lower_control_flow_impl(
   if (!allocation.status.ok()) {
     return {allocation.status, {}, 0, {}};
   }
-  const std::size_t spill_slots =
-      allocation.stack_slots + maximum_block_parameters;
+  std::size_t spill_slots = allocation.stack_slots;
+  for (const ir::BasicBlock& block : function.blocks()) {
+    std::size_t next_slot = allocation.stack_slots;
+    for (const ir::Value parameter : block.parameters) {
+      if (ir::is_vector_value_type(function.value_type(parameter)) &&
+          (next_slot & 1U) != 0U) {
+        ++next_slot;
+      }
+      next_slot +=
+          ir::is_vector_value_type(function.value_type(parameter)) ? 2U : 1U;
+    }
+    spill_slots = std::max(spill_slots, next_slot);
+  }
   const std::size_t frame_slot_base = spill_slots;
   const std::size_t context_slot =
       frame_slot_base + function.frame_slots().size();
@@ -1896,12 +2623,14 @@ LoweringResult lower_control_flow_impl(
               : control_value_offset(allocation, value);
       const bool destination_is_float =
           function.value_type(value) == ir::ValueType::kFloat64;
+      const bool destination_is_vector =
+          ir::is_vector_value_type(function.value_type(value));
       const int allocated_word =
-          destination_is_float
+          destination_is_float || destination_is_vector
               ? -1
               : control_word_register(allocation, value, block_index);
       const int allocated_float =
-          destination_is_float
+          destination_is_float && !destination_is_vector
               ? control_float_register(allocation, value, block_index)
               : -1;
       const int word_destination =
@@ -2178,11 +2907,14 @@ LoweringResult lower_control_flow_impl(
         case ir::ControlOpcode::kVectorSelect:
         case ir::ControlOpcode::kVectorLaneSignMask:
         case ir::ControlOpcode::kVectorShuffle:
-        case ir::ControlOpcode::kVectorWiden:
-          return {{StatusCode::kCodeGenerationFailed,
-                   "AArch64 CFG SIMD lowering requires the vector allocator"},
-                  {},
-                  0};
+        case ir::ControlOpcode::kVectorWiden: {
+          const Status vector_status = lower_control_vector(
+              &assembler, function, allocation, node, value, block_index);
+          if (!vector_status.ok()) {
+            return {vector_status, {}, 0};
+          }
+          break;
+        }
         case ir::ControlOpcode::kLoadWord:
         case ir::ControlOpcode::kStoreWord:
         case ir::ControlOpcode::kLoadFloat:
