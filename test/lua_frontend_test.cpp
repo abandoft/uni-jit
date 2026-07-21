@@ -124,6 +124,21 @@ end, {{}})
 compare_float(function()
   return 17 / 2
 end, {{}})
+
+local float_negate = function(value)
+  return -value
+end
+local native_float_negate = compare_float(
+    float_negate, {{0.0}, {-0.0}, {1.25}, {-17.5}, {math.huge}, {-math.huge}})
+assert(1.0 / native_float_negate(0.0) == -math.huge)
+assert(1.0 / native_float_negate(-0.0) == math.huge)
+for _ = 1, 64 do
+  assert(native_float_negate(17.5) == -17.5)
+end
+assert(unijit.wait(native_float_negate, 5000))
+assert(unijit.stats(native_float_negate).active_tier == "optimized")
+assert(1.0 / native_float_negate(0.0) == -math.huge)
+assert(1.0 / native_float_negate(-0.0) == math.huge)
 checkpoint("float arithmetic")
 
 local float_ok, float_message = pcall(native_float_recurrence, 1.0, 2, 3.0)
@@ -151,6 +166,20 @@ compare(function(value)
   return value + large
 end, {{0}, {807}, {-123456789}})
 checkpoint("integer large constant")
+
+local integer_unary_cases = {
+  {0}, {1}, {-1}, {42}, {-97}, {math.mininteger}, {math.maxinteger},
+}
+compare(function(value)
+  return -value
+end, integer_unary_cases)
+compare(function(value)
+  return ~value
+end, integer_unary_cases)
+compare(function(value)
+  return -(-value) + ~(~value)
+end, integer_unary_cases)
+checkpoint("integer unary arithmetic")
 
 compare(function()
   return 17
@@ -350,6 +379,30 @@ assert(not native_zero_ok and
        tostring(native_zero_message):find("'for' step is zero"))
 assert(unijit.stats(native_parameter_step_sum).invocations ==
        invocations_before_zero_step)
+
+local unary_loop = function(count, seed)
+  local value = seed
+  for index = 1, count do
+    value = -value
+    value = ~value
+  end
+  return value
+end
+local native_unary_loop = unijit.compile(unary_loop)
+for _, values in ipairs({{0, 0}, {1, 0}, {2, 1}, {17, -97},
+                          {31, math.mininteger}, {32, math.maxinteger}}) do
+  assert(native_unary_loop(table.unpack(values)) ==
+         unary_loop(table.unpack(values)))
+end
+assert(native_unary_loop(10000, math.mininteger) ==
+       unary_loop(10000, math.mininteger))
+assert(unijit.wait(native_unary_loop, 5000))
+assert(unijit.stats(native_unary_loop).active_tier == "optimized")
+for _, values in ipairs({{0, math.mininteger}, {1, math.mininteger},
+                          {9999, math.maxinteger}, {10000, -1}}) do
+  assert(native_unary_loop(table.unpack(values)) ==
+         unary_loop(table.unpack(values)))
+end
 
 checkpoint("numeric loops")
 
