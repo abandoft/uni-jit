@@ -34,7 +34,7 @@ constexpr std::uint64_t kQuickJsBaselineFingerprint =
 constexpr std::uint64_t kQuickJsOptimizedFingerprint =
     0x554A51534F505449ULL;
 constexpr unijit::jit::TieringThresholds kQuickJsTieringThresholds{
-    64, std::numeric_limits<std::uint64_t>::max(), 64};
+    64, 10000, 64};
 constexpr std::size_t kQuickJsSchedulerBytes = 8U * 1024U * 1024U;
 JSClassID compiled_function_class_id = JS_INVALID_CLASS_ID;
 std::once_flag compiled_function_class_once;
@@ -279,6 +279,7 @@ JSValue invoke_compiled_function(JSContext* context, JSValueConst, int argc,
             invocation.result.status.location()),
         invocation.result.status.message().c_str());
   }
+  state->code.record_backedges(execution_context.safepoint_polls());
   schedule_if_hot(state);
   if (state->result_kind == ResultKind::kBoolean) {
     return JS_NewBool(context, invocation.result.value != 0);
@@ -564,6 +565,7 @@ JSValue compiled_function_stats(JSContext* context, JSValueConst, int argc,
       set_flag(context, result, "tierable", state->tierable) &&
       set_metric(context, result, "generation", stats.generation) &&
       set_metric(context, result, "invocations", stats.hotness.invocations) &&
+      set_metric(context, result, "backedges", stats.hotness.backedges) &&
       set_metric(context, result, "compilation_attempts",
                  stats.hotness.compilation_attempts) &&
       set_metric(context, result, "successful_compilations",

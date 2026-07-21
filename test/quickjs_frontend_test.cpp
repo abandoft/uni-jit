@@ -366,6 +366,7 @@ int main() {
       "tieringStats.tierable === true &&"
       "tieringStats.active_tier === 'optimized' &&"
       "tieringStats.invocations >= 65 &&"
+      "tieringStats.backedges === 0 &&"
       "tieringStats.compilation_attempts === 1 &&"
       "tieringStats.successful_compilations === 1 &&"
       "tieringStats.failed_compilations === 0 &&"
@@ -428,17 +429,13 @@ int main() {
   JS_FreeValue(context, result);
 
   constexpr char kLoopStatsSource[] =
-      "let loopTieringValid = true;"
-      "for (let loopTieringIteration = 1; loopTieringIteration < 64;"
-      "     ++loopTieringIteration) {"
-      "  loopTieringValid = loopTieringValid &&"
-      "      typeof nativeLoop(10000) === 'number';"
-      "}"
       "const loopWaited = unijit.wait(nativeLoop, 5000);"
       "const loopStats = unijit.stats(nativeLoop);"
-      "loopTieringValid && loopWaited &&"
+      "loopWaited &&"
       "loopStats.tierable === true &&"
       "loopStats.active_tier === 'optimized' &&"
+      "loopStats.invocations === 1 &&"
+      "loopStats.backedges === 10000 &&"
       "loopStats.compilation_attempts === 1 &&"
       "loopStats.successful_compilations === 1 &&"
       "loopStats.failed_compilations === 0 &&"
@@ -448,7 +445,7 @@ int main() {
   result = JS_Eval(context, kLoopStatsSource, std::strlen(kLoopStatsSource),
                    "<unijit-quickjs-loop-stats>", JS_EVAL_TYPE_GLOBAL);
   if (JS_IsException(result) || JS_ToBool(context, result) != 1) {
-    std::cerr << "QuickJS reported invalid counted-loop tiering state\n";
+    std::cerr << "QuickJS did not tier a single long counted-loop call\n";
     JS_FreeValue(context, result);
     return EXIT_FAILURE;
   }

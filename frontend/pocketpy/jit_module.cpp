@@ -36,7 +36,7 @@ constexpr std::uint64_t kPocketPyBaselineFingerprint =
 constexpr std::uint64_t kPocketPyOptimizedFingerprint =
     0x554A504B4F505449ULL;
 constexpr unijit::jit::TieringThresholds kPocketPyTieringThresholds{
-    64, std::numeric_limits<std::uint64_t>::max(), 64};
+    64, 10000, 64};
 constexpr std::size_t kPocketPySchedulerBytes = 8U * 1024U * 1024U;
 
 struct CompiledFunctionState final {
@@ -367,6 +367,7 @@ bool invoke_compiled_function(int argc, py_Ref argv) {
                             invocation.result.status.location()),
                         invocation.result.status.message().c_str());
   }
+  state->code.record_backedges(context.safepoint_polls());
   schedule_if_hot(state);
   if (state->result_kind == ResultKind::kBoolean) {
     py_newbool(py_retval(), invocation.result.value != 0);
@@ -467,6 +468,7 @@ bool compiled_function_stats(int argc, py_Ref argv) {
          set_flag(py_retval(), "tierable", state->tierable) &&
          set_metric(py_retval(), "generation", stats.generation) &&
          set_metric(py_retval(), "invocations", stats.hotness.invocations) &&
+         set_metric(py_retval(), "backedges", stats.hotness.backedges) &&
          set_metric(py_retval(), "compilation_attempts",
                     stats.hotness.compilation_attempts) &&
          set_metric(py_retval(), "successful_compilations",

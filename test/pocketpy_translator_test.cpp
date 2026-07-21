@@ -429,6 +429,7 @@ int main() {
                "assert cold_tier['active_tier'] == 'baseline'\n"
                "assert cold_tier['tierable']\n"
                "assert cold_tier['invocations'] == 0\n"
+               "assert cold_tier['backedges'] == 0\n"
                "assert cold_tier['compilation_state'] == 'idle'\n"
                "assert cold_tier['scheduler_available']\n"
                "assert unijit.wait(native, 0)\n"
@@ -539,12 +540,12 @@ int main() {
     py_finalize();
     return EXIT_FAILURE;
   }
-  if (!py_exec("for loop_tier_iteration in range(63):\n"
-               "    loop_result = native_loop(10000)\n"
-               "assert unijit.wait(native_loop, 5000)\n"
+  if (!py_exec("assert unijit.wait(native_loop, 5000)\n"
                "loop_tier = unijit.stats(native_loop)\n"
                "assert loop_tier['active_tier'] == 'optimized'\n"
                "assert loop_tier['tierable']\n"
+               "assert loop_tier['invocations'] == 1\n"
+               "assert loop_tier['backedges'] == 10000\n"
                "assert loop_tier['compilation_attempts'] == 1\n"
                "assert loop_tier['successful_compilations'] == 1\n"
                "assert loop_tier['failed_compilations'] == 0\n"
@@ -616,6 +617,7 @@ int main() {
                "hot_tier = unijit.stats(native)\n"
                "assert hot_tier['active_tier'] == 'optimized'\n"
                "assert hot_tier['invocations'] == 64\n"
+               "assert hot_tier['backedges'] == 0\n"
                "assert hot_tier['compilation_attempts'] == 1\n"
                "assert hot_tier['successful_compilations'] == 1\n"
                "assert hot_tier['failed_compilations'] == 0\n"
