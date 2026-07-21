@@ -73,7 +73,8 @@ block-local pure values without crossing effect boundaries, and remaps
 guard-scoped captured values. Optimized compilation remains the default API.
 
 PocketPy retains exact accepted source, publishes a baseline immediately, and
-submits optimization after 64 successful invocations to a one-worker scheduler
+submits optimization after 64 successful invocations or 10,000 measured
+counted-loop safepoint polls to a one-worker scheduler
 with bounded task and byte queues. The background job never accesses PocketPy
 VM state, reuses an independent optimized cache, checks cancellation, and
 switches with an expected-generation check. PocketPy userdata cancels queued
@@ -83,8 +84,9 @@ background optimized lifecycle; CFG safepoints and checked-division exits remain
 active in both tiers, and captured loop state is remapped into optimized stack maps.
 
 QuickJS applies the same baseline and optimized split to accepted straight-line
-and counted-loop callables, but submits optimization to a bounded frontend-owned scheduler after
-64 calls. The worker never accesses `JSRuntime` or `JSContext`: it only
+and counted-loop callables, but submits optimization to a bounded frontend-owned
+scheduler after 64 calls or 10,000 measured counted-loop safepoint polls. The
+worker never accesses `JSRuntime` or `JSContext`: it only
 translates retained immutable source, publishes through the thread-safe cache,
 checks cancellation, and installs against the captured tier generation. The
 QuickJS class finalizer cancels outstanding work while the job's shared state

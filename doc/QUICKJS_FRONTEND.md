@@ -32,7 +32,9 @@ fixed-parameter behavior and are ignored. Results are returned as Numbers.
 
 Accepted straight-line and counted-loop callables publish verified baseline
 code synchronously and remain callable while a single bounded background worker
-compiles optimized code after 64 invocations. The worker retains immutable source and native state
+compiles optimized code after 64 invocations or 10,000 measured counted-loop
+safepoint polls. A single long loop can therefore become hot without waiting for
+repeated JavaScript calls. The worker retains immutable source and native state
 but never accesses QuickJS runtime objects. Optimized publication uses the
 baseline generation, so late work cannot replace a newer tier, and exact-source
 optimized cache entries converge duplicate source without sharing JavaScript
@@ -49,7 +51,8 @@ const cancelled = unijit.cancel(native);
 `wait` bounds only the caller's wait and returns whether the current task
 reached a terminal state. `cancel` immediately removes queued work or requests
 cooperative cancellation from a running compiler. `stats` reports the active
-tier and generation, hotness and compilation outcomes, promotions, current
+tier and generation, invocation and measured-backedge hotness, compilation
+outcomes, promotions, current
 task state, cancellation state, OSR attempts/entries/exits, scheduler load,
 native code size, and IR node counts. Garbage collection requests cancellation
 automatically; task-owned shared state remains valid until a running job

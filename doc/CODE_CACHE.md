@@ -96,4 +96,6 @@ uncached.
 
 All three adapters use backedge safepoints for compiled counted loops and safe
 managed invocation whenever the compiled function requires an execution
-context.
+context. QuickJS and PocketPy consume the exact call-scoped safepoint count as
+measured backedge hotness, while Lua retains its argument-derived iteration
+estimator for guarded numeric-loop exits.

@@ -20,11 +20,13 @@ when the caller does not provide one.
 One thread owns an `ExecutionContext` while compiled or interpreted code is
 executing with it. Another thread may call `request_interrupt()` or
 `clear_interrupt()`; the request flag is a lock-free 64-bit atomic. Exit reason,
-site, guarded value, and captured stack-map fields are written only by the
-executing thread and must be read after that invocation returns. A context must
-not be shared by concurrent invocations. The fixed 64-value capture area avoids
-allocation on native exits; compilation rejects any one stack map that cannot
-fit it.
+site, guarded value, captured stack-map fields, and the exact number of executed
+safepoint polls are written only by the executing thread and must be read after
+that invocation returns. Managed invocation resets the poll count at entry;
+interpreters and all three native backends increment it before testing each
+safepoint request. A context must not be shared by concurrent invocations. The
+fixed 64-value capture area avoids allocation on native exits; compilation
+rejects any one stack map that cannot fit it.
 
 Interruption is sticky until `clear_interrupt()` is called. Invocation clears
 stale exit diagnostics but deliberately does not clear the interrupt request,

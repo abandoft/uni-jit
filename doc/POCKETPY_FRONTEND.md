@@ -44,8 +44,9 @@ PocketPy `float`.
 
 Straight-line callables initially publish verified SSA through the explicit
 low-latency baseline compiler, without running the optimization pipeline. Each
-callable records saturating invocation hotness; after 64 successful calls, one
-atomic compilation claimant submits the retained exact source to a one-worker
+callable records saturating invocation and measured-backedge hotness; after 64
+successful calls or 10,000 counted-loop safepoint polls, one atomic compilation
+claimant submits the retained exact source to a one-worker
 background scheduler bounded to 64 queued tasks and 8 MiB of estimated queued
 input. The worker never accesses the PocketPy VM: it translates immutable
 source, checks cooperative cancellation, reuses the optimized cache, and
@@ -56,7 +57,7 @@ state. Failed compilation is not allowed to break an already successful
 invocation and is delayed before retry.
 
 `unijit.stats(native)` returns the active tier, whether the source supports
-tiering, generation, invocation and compilation counters, promotion and
+tiering, generation, invocation, measured-backedge and compilation counters, promotion and
 withdrawal counts, OSR attempts/entries/exits, compilation task state,
 cancellation state, scheduler queue and worker use, code size, and input/active
 IR node counts. `unijit.wait`
@@ -121,7 +122,7 @@ multi-statement control transfers, control guards with an `else`, calls, and
 nested loops remain rejected.
 
 Counted loops enter the low-latency CFG baseline first and report
-`tierable: true`. At the same 64-call threshold, the background worker compiles
+`tierable: true`. At the 64-call or 10,000 measured-backedge threshold, the background worker compiles
 an optimized CFG with constant folding, Word canonicalization, and dead-code
 elimination while retaining every call, guard, safepoint, and frame-state root.
 Checked counted-loop division therefore promotes through the normal generation
