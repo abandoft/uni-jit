@@ -9,6 +9,7 @@
 #include "unijit/ir/control_flow.h"
 #include "unijit/ir/function.h"
 #include "unijit/ir/interpreter.h"
+#include "unijit/jit/capability.h"
 #include "unijit/jit/stack_map.h"
 #include "unijit/jit/target.h"
 #include "unijit/runtime/assumption.h"
@@ -139,6 +140,9 @@ class CompiledFunction final {
       runtime::ExecutionContext* context = nullptr) const;
 
   const CompilationStats& stats() const noexcept { return stats_; }
+  const CapabilityReport &capabilities() const noexcept {
+    return capabilities_;
+  }
 
  private:
   struct Impl;
@@ -147,7 +151,7 @@ class CompiledFunction final {
   CompiledFunction(std::unique_ptr<Impl> impl,
                    std::vector<ir::ValueType> parameter_types,
                    ir::ValueType return_type, TargetProfile target_profile,
-                   CompilationStats stats,
+                   CompilationStats stats, CapabilityReport capabilities,
                    bool requires_context,
                    std::vector<ir::TrustedObjectDescriptor> trusted_objects,
                    std::vector<bool> trusted_object_writable,
@@ -162,6 +166,7 @@ class CompiledFunction final {
   TargetProfile target_profile_;
   bool host_compatible_{false};
   CompilationStats stats_;
+  CapabilityReport capabilities_;
   bool requires_context_{false};
   std::vector<ir::TrustedObjectDescriptor> trusted_objects_;
   std::vector<bool> trusted_object_writable_;

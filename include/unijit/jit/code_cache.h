@@ -50,6 +50,7 @@ class CodeHandle final {
   std::size_t assumption_count() const noexcept;
   bool assumptions_valid() const noexcept;
   const CompilationStats* compilation_stats() const noexcept;
+  const CapabilityReport *capabilities() const noexcept;
   const StackMapTable* stack_maps() const noexcept;
   const StackMapRecord* stack_map(std::size_t site) const noexcept;
   StackMapCaptureResult reconstruct_stack_map(

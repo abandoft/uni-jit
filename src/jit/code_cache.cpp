@@ -55,6 +55,10 @@ const CompilationStats* CodeHandle::compilation_stats() const noexcept {
   return function_ == nullptr ? nullptr : &function_->stats();
 }
 
+const CapabilityReport *CodeHandle::capabilities() const noexcept {
+  return function_ == nullptr ? nullptr : &function_->capabilities();
+}
+
 const StackMapTable* CodeHandle::stack_maps() const noexcept {
   return function_ == nullptr ? nullptr : &function_->stack_maps();
 }

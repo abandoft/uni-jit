@@ -59,11 +59,6 @@ bool is_memory(ir::Opcode opcode) noexcept {
          opcode == ir::Opcode::kStoreVector;
 }
 
-bool is_object(ir::Opcode opcode) noexcept {
-  return opcode == ir::Opcode::kLoadObject ||
-         opcode == ir::Opcode::kStoreObject;
-}
-
 bool is_nonzero_guard(ir::ControlOpcode opcode) noexcept {
   return opcode == ir::ControlOpcode::kGuardWordNonzero ||
          opcode == ir::ControlOpcode::kGuardFloatNonzero;
@@ -76,74 +71,6 @@ bool is_memory(ir::ControlOpcode opcode) noexcept {
          opcode == ir::ControlOpcode::kStoreFloat ||
          opcode == ir::ControlOpcode::kLoadVector ||
          opcode == ir::ControlOpcode::kStoreVector;
-}
-
-bool is_object(ir::ControlOpcode opcode) noexcept {
-  return opcode == ir::ControlOpcode::kLoadObject ||
-         opcode == ir::ControlOpcode::kStoreObject;
-}
-
-bool is_vector(ir::Opcode opcode) noexcept {
-  return opcode == ir::Opcode::kVectorConstant ||
-         opcode == ir::Opcode::kVectorSplat ||
-         opcode == ir::Opcode::kVectorExtractLane ||
-         opcode == ir::Opcode::kVectorInsertLane ||
-         opcode == ir::Opcode::kVectorUnary ||
-         opcode == ir::Opcode::kVectorBinary ||
-         opcode == ir::Opcode::kVectorCompare ||
-         opcode == ir::Opcode::kVectorSelect ||
-         opcode == ir::Opcode::kVectorLaneSignMask ||
-         opcode == ir::Opcode::kVectorShuffle ||
-         opcode == ir::Opcode::kVectorWiden;
-}
-
-bool is_vector(ir::ControlOpcode opcode) noexcept {
-  return opcode == ir::ControlOpcode::kVectorConstant ||
-         opcode == ir::ControlOpcode::kVectorSplat ||
-         opcode == ir::ControlOpcode::kVectorExtractLane ||
-         opcode == ir::ControlOpcode::kVectorInsertLane ||
-         opcode == ir::ControlOpcode::kVectorUnary ||
-         opcode == ir::ControlOpcode::kVectorBinary ||
-         opcode == ir::ControlOpcode::kVectorCompare ||
-         opcode == ir::ControlOpcode::kVectorSelect ||
-         opcode == ir::ControlOpcode::kVectorLaneSignMask ||
-         opcode == ir::ControlOpcode::kVectorShuffle ||
-         opcode == ir::ControlOpcode::kVectorWiden;
-}
-
-Status validate_native_operation_set(const ir::Function& function) {
-  for (std::size_t index = 0; index < function.nodes().size(); ++index) {
-    if (is_vector(function.nodes()[index].opcode)) {
-#if defined(UNIJIT_TARGET_AARCH64) || defined(UNIJIT_TARGET_X86_64) || \
-    defined(UNIJIT_TARGET_RISCV64)
-      continue;
-#else
-      return {StatusCode::kCodeGenerationFailed,
-              "strict SIMD IR is verified but native vector lowering is not "
-              "yet available",
-              index};
-#endif
-    }
-  }
-  return Status::ok_status();
-}
-
-Status validate_native_operation_set(
-    const ir::ControlFlowFunction& function) {
-  for (std::size_t index = 0; index < function.nodes().size(); ++index) {
-    if (is_vector(function.nodes()[index].opcode)) {
-#if defined(UNIJIT_TARGET_AARCH64) || defined(UNIJIT_TARGET_X86_64) || \
-    defined(UNIJIT_TARGET_RISCV64)
-      continue;
-#else
-      return {StatusCode::kCodeGenerationFailed,
-              "strict CFG SIMD IR is verified but native vector lowering is "
-              "not yet available",
-              index};
-#endif
-    }
-  }
-  return Status::ok_status();
 }
 
 bool has_guard_site(const ir::Function& function, std::size_t site) noexcept {
@@ -1129,33 +1056,27 @@ struct CompiledFunction::Impl final {
   }
 };
 
-CompiledFunction::CompiledFunction(std::unique_ptr<Impl> impl,
-                                   std::vector<ir::ValueType> parameter_types,
-                                   ir::ValueType return_type,
-                                   TargetProfile target_profile,
-                                   CompilationStats stats,
-                                   bool requires_context,
-                                   std::vector<ir::TrustedObjectDescriptor>
-                                       trusted_objects,
-                                   std::vector<bool> trusted_object_writable,
-                                   runtime::DeoptimizationTable
-                                       deoptimization_table,
-                                   runtime::AssumptionSet assumptions,
-                                   StackMapTable stack_maps) noexcept
-    : impl_(std::move(impl)),
-      parameter_count_(parameter_types.size()),
-      parameter_types_(std::move(parameter_types)),
-      return_type_(return_type),
+CompiledFunction::CompiledFunction(
+    std::unique_ptr<Impl> impl, std::vector<ir::ValueType> parameter_types,
+    ir::ValueType return_type, TargetProfile target_profile,
+    CompilationStats stats, CapabilityReport capabilities,
+    bool requires_context,
+    std::vector<ir::TrustedObjectDescriptor> trusted_objects,
+    std::vector<bool> trusted_object_writable,
+    runtime::DeoptimizationTable deoptimization_table,
+    runtime::AssumptionSet assumptions, StackMapTable stack_maps) noexcept
+    : impl_(std::move(impl)), parameter_count_(parameter_types.size()),
+      parameter_types_(std::move(parameter_types)), return_type_(return_type),
       target_profile_(target_profile),
       host_compatible_(
           target_profile_contains(host_target_profile(), target_profile)),
-      stats_(stats),
+      stats_(stats), capabilities_(std::move(capabilities)),
       requires_context_(requires_context),
       trusted_objects_(std::move(trusted_objects)),
       trusted_object_writable_(std::move(trusted_object_writable)),
       deoptimization_table_(std::move(deoptimization_table)),
-      assumptions_(std::move(assumptions)),
-      stack_maps_(std::move(stack_maps)) {}
+      assumptions_(std::move(assumptions)), stack_maps_(std::move(stack_maps)) {
+}
 
 CompiledFunction::~CompiledFunction() = default;
 CompiledFunction::CompiledFunction(CompiledFunction&&) noexcept = default;
@@ -1401,9 +1322,10 @@ CompilationResult Compiler::compile(
                "unknown compiler optimization level"},
               nullptr};
   }
-  const Status operation_status = validate_native_operation_set(*lowered);
-  if (!operation_status.ok()) {
-    return {operation_status, nullptr};
+  CapabilityReport capabilities =
+      preflight_capabilities(*lowered, options.target_profile);
+  if (!capabilities.ok()) {
+    return {capabilities.status, nullptr};
   }
 
   DeoptimizationPreparation deoptimization =
@@ -1471,19 +1393,16 @@ CompilationResult Compiler::compile(
                            function.nodes().size(),
                            lowered->nodes().size(), lowering.stack_maps.size(),
                            stack_map_value_count(lowering.stack_maps)};
-    const bool requires_context =
-        !assumptions.empty() || !function.trusted_objects().empty() ||
-        std::any_of(lowered->nodes().begin(), lowered->nodes().end(),
-                    [](const ir::Node& node) {
-                      return is_nonzero_guard(node.opcode) ||
-                             is_memory(node.opcode) || is_object(node.opcode);
-                    });
+    capabilities.requires_execution_context =
+        capabilities.requires_execution_context || !assumptions.empty() ||
+        !function.trusted_objects().empty();
+    const bool requires_context = capabilities.requires_execution_context;
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
         std::move(implementation), copy_parameter_types(function),
-        function.return_type(), options.target_profile, stats, requires_context,
-        function.trusted_objects(), trusted_object_writes(function),
-        std::move(deoptimization.table), assumptions,
-        StackMapTable(std::move(lowering.stack_maps))));
+        function.return_type(), options.target_profile, stats,
+        std::move(capabilities), requires_context, function.trusted_objects(),
+        trusted_object_writes(function), std::move(deoptimization.table),
+        assumptions, StackMapTable(std::move(lowering.stack_maps))));
     return {Status::ok_status(), std::move(compiled)};
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
@@ -1604,9 +1523,10 @@ CompilationResult Compiler::compile(
                "unknown compiler optimization level"},
               nullptr};
   }
-  const Status operation_status = validate_native_operation_set(*lowered);
-  if (!operation_status.ok()) {
-    return {operation_status, nullptr};
+  CapabilityReport capabilities =
+      preflight_capabilities(*lowered, options.target_profile);
+  if (!capabilities.ok()) {
+    return {capabilities.status, nullptr};
   }
 
   DeoptimizationPreparation deoptimization =
@@ -1674,20 +1594,16 @@ CompilationResult Compiler::compile(
                            function.nodes().size(),
                            lowered->nodes().size(), lowering.stack_maps.size(),
                            stack_map_value_count(lowering.stack_maps)};
-    const bool requires_context =
-        !assumptions.empty() || !function.trusted_objects().empty() ||
-        std::any_of(lowered->nodes().begin(), lowered->nodes().end(),
-                    [](const ir::ControlNode& node) {
-                      return node.opcode == ir::ControlOpcode::kSafepoint ||
-                             is_nonzero_guard(node.opcode) ||
-                             is_memory(node.opcode) || is_object(node.opcode);
-                    });
+    capabilities.requires_execution_context =
+        capabilities.requires_execution_context || !assumptions.empty() ||
+        !function.trusted_objects().empty();
+    const bool requires_context = capabilities.requires_execution_context;
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
         std::move(implementation), copy_parameter_types(function),
-        function.return_type(), options.target_profile, stats, requires_context,
-        function.trusted_objects(), trusted_object_writes(function),
-        std::move(deoptimization.table), assumptions,
-        StackMapTable(std::move(lowering.stack_maps))));
+        function.return_type(), options.target_profile, stats,
+        std::move(capabilities), requires_context, function.trusted_objects(),
+        trusted_object_writes(function), std::move(deoptimization.table),
+        assumptions, StackMapTable(std::move(lowering.stack_maps))));
     return {Status::ok_status(), std::move(compiled)};
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,

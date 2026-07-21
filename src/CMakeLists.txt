@@ -7,8 +7,9 @@ add_library(unijit
   ir/optimizer.cpp
   ir/vector.cpp
   ir/verifier.cpp
-  jit/compilation_scheduler.cpp
+  jit/capability.cpp
   jit/code_cache.cpp
+  jit/compilation_scheduler.cpp
   jit/compiler.cpp
   jit/executable_memory.cpp
   jit/register_allocator.cpp
