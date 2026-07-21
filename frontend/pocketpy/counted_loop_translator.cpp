@@ -740,7 +740,11 @@ private:
     }
     skip_expression_space();
     std::string_view operation;
-    if (expression_.substr(expression_position_, 2) == "<=") {
+    if (expression_.substr(expression_position_, 2) == "==" ||
+        expression_.substr(expression_position_, 2) == "!=") {
+      operation = expression_.substr(expression_position_, 2);
+      expression_position_ += 2;
+    } else if (expression_.substr(expression_position_, 2) == "<=") {
       operation = "<=";
       expression_position_ += 2;
     } else if (expression_.substr(expression_position_, 2) == ">=") {
@@ -750,7 +754,7 @@ private:
       operation = expression_.substr(expression_position_, 1);
       ++expression_position_;
     } else {
-      invalid_expression("expected an ordered Float64 comparison");
+      invalid_expression("expected a numeric Float64 comparison");
       return {};
     }
     const ir::Value rhs = parse_expression(0);
@@ -766,7 +770,13 @@ private:
     if (operation == ">") {
       return builder_->float64_less_than(rhs, lhs);
     }
-    return builder_->float64_less_equal(rhs, lhs);
+    if (operation == ">=") {
+      return builder_->float64_less_equal(rhs, lhs);
+    }
+    if (operation == "==") {
+      return builder_->float64_equal(lhs, rhs);
+    }
+    return builder_->float64_not_equal(lhs, rhs);
   }
 
   ir::Value parse_expression(std::size_t depth) {

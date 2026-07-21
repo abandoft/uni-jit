@@ -203,7 +203,11 @@ private:
     }
     skip_space();
     std::string_view operation;
-    if (source_.substr(position_, 2) == "<=") {
+    if (source_.substr(position_, 2) == "==" ||
+        source_.substr(position_, 2) == "!=") {
+      operation = source_.substr(position_, 2);
+      position_ += 2;
+    } else if (source_.substr(position_, 2) == "<=") {
       operation = "<=";
       position_ += 2;
     } else if (source_.substr(position_, 2) == ">=") {
@@ -229,7 +233,13 @@ private:
     if (operation == ">") {
       return builder_->float64_less_than(rhs, lhs);
     }
-    return builder_->float64_less_equal(rhs, lhs);
+    if (operation == ">=") {
+      return builder_->float64_less_equal(rhs, lhs);
+    }
+    if (operation == "==") {
+      return builder_->float64_equal(lhs, rhs);
+    }
+    return builder_->float64_not_equal(lhs, rhs);
   }
 
   ir::Value parse_expression(std::size_t depth) {

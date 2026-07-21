@@ -414,7 +414,17 @@ class CountedLoopParser final {
     skip_space();
     const std::size_t operation_site = position_;
     std::string_view operation;
-    if (source_.substr(position_, 2) == "<=") {
+    if (source_.substr(position_, 3) == "===") {
+      operation = "===";
+      position_ += 3;
+    } else if (source_.substr(position_, 3) == "!==") {
+      operation = "!==";
+      position_ += 3;
+    } else if (source_.substr(position_, 2) == "==" ||
+               source_.substr(position_, 2) == "!=") {
+      operation = source_.substr(position_, 2);
+      position_ += 2;
+    } else if (source_.substr(position_, 2) == "<=") {
       operation = "<=";
       position_ += 2;
     } else if (source_.substr(position_, 2) == ">=") {
@@ -424,7 +434,7 @@ class CountedLoopParser final {
       operation = source_.substr(position_, 1);
       ++position_;
     } else {
-      invalid("expected an ordered Float64 comparison");
+      invalid("expected a numeric Float64 comparison");
       return {};
     }
     const ir::Value rhs = parse_expression(0);
@@ -438,12 +448,16 @@ class CountedLoopParser final {
       result = builder_->float64_less_equal(lhs, rhs);
     } else if (operation == ">") {
       result = builder_->float64_less_than(rhs, lhs);
-    } else {
+    } else if (operation == ">=") {
       result = builder_->float64_less_equal(rhs, lhs);
+    } else if (operation == "==" || operation == "===") {
+      result = builder_->float64_equal(lhs, rhs);
+    } else {
+      result = builder_->float64_not_equal(lhs, rhs);
     }
     if (!result.valid()) {
       status_ = {StatusCode::kInvalidArgument,
-                 "unable to lower an ordered Float64 comparison",
+                 "unable to lower a numeric Float64 comparison",
                  operation_site};
     }
     return result;
