@@ -44,6 +44,7 @@ enum class TargetFeature : std::uint64_t {
   kRiscVFloat64 = UINT64_C(1) << 7U,
   kRiscVVector = UINT64_C(1) << 8U,
   kAarch64Lse = UINT64_C(1) << 9U,
+  kRiscVAtomic = UINT64_C(1) << 10U,
 };
 
 constexpr std::uint64_t target_feature_bit(TargetFeature feature) noexcept {

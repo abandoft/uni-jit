@@ -40,7 +40,8 @@ constexpr std::uint64_t kX86Allowed =
     target_feature_bit(TargetFeature::kAvx2) |
     target_feature_bit(TargetFeature::kFma);
 constexpr std::uint64_t kRiscVAllowed =
-    kRiscVFeatures | target_feature_bit(TargetFeature::kRiscVVector);
+    kRiscVFeatures | target_feature_bit(TargetFeature::kRiscVVector) |
+    target_feature_bit(TargetFeature::kRiscVAtomic);
 
 void discover_aarch64_features(TargetProfile* profile) noexcept {
 #if defined(UNIJIT_TARGET_AARCH64) && defined(__APPLE__)
@@ -134,7 +135,11 @@ void discover_riscv_features(TargetProfile* profile) noexcept {
 #if defined(UNIJIT_TARGET_RISCV64) && defined(__linux__) && defined(AT_HWCAP)
   // Linux RISC-V maps single-letter ISA extensions A..Z to HWCAP bits 0..25.
   const unsigned long capabilities = getauxval(AT_HWCAP);
+  constexpr unsigned long kAtomic = 1UL << ('A' - 'A');
   constexpr unsigned long kVector = 1UL << ('V' - 'A');
+  if ((capabilities & kAtomic) != 0) {
+    profile->features |= target_feature_bit(TargetFeature::kRiscVAtomic);
+  }
   if ((capabilities & kVector) != 0) {
     profile->features |= target_feature_bit(TargetFeature::kRiscVVector);
   }

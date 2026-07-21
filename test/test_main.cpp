@@ -376,6 +376,15 @@ void test_target_profiles() {
                     host, TargetFeature::kAarch64Lse) ||
                 unijit::jit::target_profile_contains(host, lse)),
            "AArch64 LSE discovery must be explicit and profile-compatible");
+  } else if (baseline.architecture == TargetArchitecture::kRiscV64) {
+    TargetProfile atomic = baseline;
+    atomic.features |=
+        unijit::jit::target_feature_bit(TargetFeature::kRiscVAtomic);
+    expect(unijit::jit::validate_target_profile(atomic).ok() &&
+               (!unijit::jit::has_target_feature(
+                    host, TargetFeature::kRiscVAtomic) ||
+                unijit::jit::target_profile_contains(host, atomic)),
+           "RISC-V A discovery must be explicit and profile-compatible");
   }
 
   TargetProfile malformed = baseline;
