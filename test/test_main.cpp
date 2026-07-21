@@ -535,6 +535,51 @@ void test_bounded_memory_interpreter() {
              optimized_store_result.value == store_arguments[1],
          "optimizer must retain effectful bounded memory descriptors");
 
+  auto native_store = Compiler::compile(store_function);
+  const std::array<Word, 2> native_store_arguments = {20, 0x12345678};
+  const auto native_store_result =
+      native_store.ok()
+          ? native_store.function->invoke(native_store_arguments.data(),
+                                          native_store_arguments.size(),
+                                          &context)
+          : unijit::ir::EvaluationResult{native_store.status, 0};
+  expect(native_store.ok() && native_store.function->requires_context() &&
+             native_store.function->stack_map(20) != nullptr &&
+             native_store_result.ok() &&
+             native_store_result.value == native_store_arguments[1] &&
+             bytes[20] == 0x78 && bytes[21] == 0x56 && bytes[22] == 0x34 &&
+             bytes[23] == 0x12,
+         "native bounded stores must preserve interpreter order and metadata");
+  if (native_store.ok()) {
+    const std::array<Word, 2> native_oob_arguments = {31, 0x55};
+    const auto native_oob = native_store.function->invoke(
+        native_oob_arguments.data(), native_oob_arguments.size(), &context);
+    expect(!native_oob.ok() &&
+               native_oob.status.code() ==
+                   unijit::StatusCode::kRuntimeExit &&
+               context.exit_site() == 20 && context.exit_value() == 31,
+           "native bounded stores must diagnose an overflowing width");
+    expect(native_store.function->native_entry()(native_store_arguments.data(),
+                                                 nullptr) == 0,
+           "direct native memory entry must fail closed without a context");
+  }
+
+  FunctionBuilder native_signed_builder(1, 1);
+  const Value native_signed_load = native_signed_builder.load_word(
+      native_signed_builder.parameter(0), signed8, 21);
+  expect(native_signed_builder.set_return(native_signed_load).ok(),
+         "native signed load fixture must have a return value");
+  auto native_signed =
+      Compiler::compile(std::move(native_signed_builder).build());
+  const std::array<Word, 1> signed_arguments = {0};
+  const auto native_signed_result =
+      native_signed.ok()
+          ? native_signed.function->invoke(signed_arguments.data(),
+                                           signed_arguments.size(), &context)
+          : unijit::ir::EvaluationResult{native_signed.status, 0};
+  expect(native_signed_result.ok() && native_signed_result.value == -128,
+         "native bounded loads must match signed extension semantics");
+
   MemoryAccessDescriptor aligned32 = little32;
   aligned32.alignment = 4;
   const auto misaligned = evaluate_load(aligned32, 1, 30);
@@ -623,6 +668,26 @@ void test_bounded_memory_control_flow_interpreter() {
              optimized.function.memory_accesses().size() == 2 &&
              optimized_result.ok() && optimized_result.value == 0x2468,
          "CFG optimization must retain ordered bounded memory effects");
+
+  auto native = Compiler::compile(function);
+  const auto native_result =
+      native.ok()
+          ? native.function->invoke(arguments.data(), arguments.size(),
+                                    &context)
+          : unijit::ir::EvaluationResult{native.status, 0};
+  expect(native.ok() && native.function->stack_map(50) != nullptr &&
+             native.function->stack_map(51) != nullptr &&
+             native_result.ok() && native_result.value == 0x2468 &&
+             bytes[3] == 0x12 && bytes[4] == 0x34,
+         "native CFG memory effects must match the reference interpreter");
+  if (native.ok()) {
+    const std::array<Word, 2> out_of_bounds = {15, 0x1234};
+    const auto failed = native.function->invoke(
+        out_of_bounds.data(), out_of_bounds.size(), &context);
+    expect(!failed.ok() && context.exit_site() == 50 &&
+               context.exit_value() == 15,
+           "native CFG stores must fail before an out-of-range write");
+  }
 }
 
 void test_code_cache_lifecycle() {

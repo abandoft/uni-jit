@@ -88,6 +88,55 @@ class Assembler final {
                      reg(source));
   }
 
+  void load_unsigned(int destination, int base, std::size_t byte_offset,
+                     std::size_t width) {
+    std::uint32_t instruction = 0x39400000U;
+    if (width == 2) {
+      instruction = 0x79400000U;
+    } else if (width == 4) {
+      instruction = 0xB9400000U;
+    } else if (width == 8) {
+      instruction = 0xF9400000U;
+    }
+    const auto scaled_offset =
+        static_cast<std::uint32_t>(byte_offset / width);
+    buffer_.emit_u32(instruction | (scaled_offset << 10U) |
+                     (reg(base) << 5U) | reg(destination));
+  }
+
+  void store_width(int source, int base, std::size_t byte_offset,
+                   std::size_t width) {
+    std::uint32_t instruction = 0x39000000U;
+    if (width == 2) {
+      instruction = 0x79000000U;
+    } else if (width == 4) {
+      instruction = 0xB9000000U;
+    } else if (width == 8) {
+      instruction = 0xF9000000U;
+    }
+    const auto scaled_offset =
+        static_cast<std::uint32_t>(byte_offset / width);
+    buffer_.emit_u32(instruction | (scaled_offset << 10U) |
+                     (reg(base) << 5U) | reg(source));
+  }
+
+  void reverse_bytes(int destination, int source, std::size_t width) {
+    std::uint32_t instruction = 0xDAC00400U;
+    if (width == 4) {
+      instruction = 0xDAC00800U;
+    } else if (width == 8) {
+      instruction = 0xDAC00C00U;
+    }
+    buffer_.emit_u32(instruction | (reg(source) << 5U) | reg(destination));
+  }
+
+  void sign_extend(int destination, int source, std::size_t width) {
+    const std::uint32_t highest_bit =
+        static_cast<std::uint32_t>(width * 8U - 1U);
+    buffer_.emit_u32(0x93400000U | (highest_bit << 10U) |
+                     (reg(source) << 5U) | reg(destination));
+  }
+
   void move_word_to_float(int destination, int source) {
     buffer_.emit_u32(0x9E670000U | (reg(source) << 5U) | reg(destination));
   }
@@ -331,6 +380,11 @@ class Assembler final {
   void compare_immediate(int source, std::uint32_t immediate) {
     buffer_.emit_u32(0xF100001FU | ((immediate & 0xFFFU) << 10U) |
                      (reg(source) << 5U));
+  }
+
+  void compare_registers(int lhs, int rhs) {
+    buffer_.emit_u32(0xEB00001FU | (reg(rhs) << 16U) |
+                     (reg(lhs) << 5U));
   }
 
   std::size_t branch_condition(std::uint32_t condition) {
@@ -614,7 +668,9 @@ LoweringResult lower_impl(const ir::Function& function,
                    static_cast<std::size_t>(node.argument_count));
     } else if (node.opcode == ir::Opcode::kSafepoint ||
                node.opcode == ir::Opcode::kGuardWordNonzero ||
-               node.opcode == ir::Opcode::kGuardFloatNonzero) {
+               node.opcode == ir::Opcode::kGuardFloatNonzero ||
+               node.opcode == ir::Opcode::kLoadWord ||
+               node.opcode == ir::Opcode::kStoreWord) {
       has_context_operations = true;
     }
   }
@@ -660,7 +716,9 @@ LoweringResult lower_impl(const ir::Function& function,
         stack_map_liveness.live_values_by_node[index];
     if (node.opcode == ir::Opcode::kSafepoint ||
         node.opcode == ir::Opcode::kGuardWordNonzero ||
-        node.opcode == ir::Opcode::kGuardFloatNonzero) {
+        node.opcode == ir::Opcode::kGuardFloatNonzero ||
+        node.opcode == ir::Opcode::kLoadWord ||
+        node.opcode == ir::Opcode::kStoreWord) {
       spill_straight_stack_map_values(&assembler, function, allocation,
                                       live_values, stack_map_base);
       stack_maps.push_back(make_stack_map_record(
@@ -975,10 +1033,161 @@ LoweringResult lower_impl(const ir::Function& function,
         break;
       }
       case ir::Opcode::kLoadWord:
-      case ir::Opcode::kStoreWord:
-        return {{StatusCode::kCodeGenerationFailed,
-                 "AArch64 bounded memory lowering is not available"},
-                {}, 0};
+      case ir::Opcode::kStoreWord: {
+        const ir::MemoryAccessDescriptor& access =
+            function.memory_accesses()[node.memory_access];
+        const std::size_t width = ir::memory_width_bytes(access.width);
+        const std::size_t region_offset =
+            static_cast<std::size_t>(access.region) *
+            sizeof(runtime::MemoryRegion);
+
+        assembler.load(kScratch0, kStackPointer,
+                       context_slot * sizeof(ir::Word));
+        const std::size_t no_context = assembler.branch_zero(kScratch0);
+        assembler.load(kScratch1, kScratch0,
+                       runtime::ExecutionContext::memory_regions_offset());
+        const std::size_t no_regions = assembler.branch_zero(kScratch1);
+        assembler.load(
+            kScratch2, kScratch0,
+            runtime::ExecutionContext::memory_region_count_offset());
+        assembler.compare_immediate(kScratch2, access.region + 1U);
+        const std::size_t missing_region = assembler.branch_condition(0x3U);
+        assembler.load(kReturnRegister, kScratch1,
+                       region_offset + runtime::MemoryRegion::data_offset());
+        const std::size_t null_base = assembler.branch_zero(kReturnRegister);
+        assembler.load(kScratch2, kScratch1,
+                       region_offset + runtime::MemoryRegion::size_offset());
+        assembler.compare_immediate(kScratch2,
+                                    static_cast<std::uint32_t>(width));
+        const std::size_t too_small = assembler.branch_condition(0x3U);
+        std::size_t read_only = 0;
+        if (node.opcode == ir::Opcode::kStoreWord) {
+          assembler.load_unsigned(
+              kScratch0, kScratch1,
+              region_offset + runtime::MemoryRegion::writable_offset(), 1);
+          read_only = assembler.branch_zero(kScratch0);
+        }
+
+        const int offset_source = load_operand(
+            &assembler, allocation.locations[node.lhs.id()], kScratch1);
+        if (offset_source != kScratch1) {
+          assembler.move_register(kScratch1, offset_source);
+        }
+        assembler.move_immediate(kScratch0,
+                                 static_cast<ir::Word>(width));
+        assembler.subtract(kScratch2, kScratch2, kScratch0);
+        assembler.compare_registers(kScratch1, kScratch2);
+        const std::size_t out_of_bounds = assembler.branch_condition(0x8U);
+        assembler.add(kReturnRegister, kReturnRegister, kScratch1);
+        std::size_t misaligned = 0;
+        if (access.alignment > 1) {
+          assembler.move_immediate(kScratch0,
+                                   static_cast<ir::Word>(access.alignment - 1));
+          assembler.bitwise_and(kScratch0, kReturnRegister, kScratch0);
+          misaligned = assembler.branch_nonzero(kScratch0);
+        }
+
+        if (node.opcode == ir::Opcode::kLoadWord) {
+          const int target = destination.in_register()
+                                 ? physical_register(destination)
+                                 : kScratch0;
+          assembler.load_unsigned(target, kReturnRegister, 0, width);
+          if (access.byte_order == ir::MemoryByteOrder::kBigEndian &&
+              width > 1) {
+            assembler.reverse_bytes(target, target, width);
+          }
+          if (access.sign_extend && width < sizeof(ir::Word)) {
+            assembler.sign_extend(target, target, width);
+          }
+          if (!destination.in_register()) {
+            assembler.store(target, kStackPointer, spill_offset(destination));
+          }
+        } else {
+          const int stored = load_operand(
+              &assembler, allocation.locations[node.rhs.id()], kScratch0);
+          assembler.move_register(kScratch1, stored);
+          if (access.byte_order == ir::MemoryByteOrder::kBigEndian &&
+              width > 1) {
+            assembler.reverse_bytes(kScratch1, kScratch1, width);
+          }
+          assembler.store_width(kScratch1, kReturnRegister, 0, width);
+          const int target = destination.in_register()
+                                 ? physical_register(destination)
+                                 : kScratch0;
+          assembler.move_register(target, stored);
+          if (!destination.in_register()) {
+            assembler.store(target, kStackPointer, spill_offset(destination));
+          }
+        }
+        const std::size_t completed = assembler.branch();
+
+        const std::size_t record_failure = assembler.size();
+        assembler.load(kScratch0, kStackPointer,
+                       context_slot * sizeof(ir::Word));
+        const int failed_offset = load_operand(
+            &assembler, allocation.locations[node.lhs.id()], kScratch1);
+        assembler.store(failed_offset, kScratch0,
+                        runtime::ExecutionContext::exit_value_offset());
+        capture_straight_stack_map_values(
+            &assembler, live_values, stack_map_base, kScratch0);
+        assembler.move_immediate(kScratch1, node.immediate);
+        assembler.store(kScratch1, kScratch0,
+                        runtime::ExecutionContext::exit_site_offset());
+        assembler.move_immediate(
+            kScratch1,
+            static_cast<ir::Word>(runtime::ExitReason::kRuntime));
+        assembler.store(kScratch1, kScratch0,
+                        runtime::ExecutionContext::exit_reason_offset());
+
+        const std::size_t exit = assembler.size();
+        assembler.move_immediate(kReturnRegister, 0);
+        if (has_calls) {
+          assembler.load(kReturnAddressRegister, kStackPointer,
+                         return_address_slot * sizeof(ir::Word));
+        }
+        if (stack_size != 0) {
+          assembler.release_stack(stack_size);
+        }
+        assembler.return_to_caller();
+        const std::size_t resume = assembler.size();
+
+        Status status = assembler.patch_zero_branch(no_context, exit);
+        if (status.ok()) {
+          status = assembler.patch_zero_branch(no_regions, record_failure,
+                                               kScratch1);
+        }
+        if (status.ok()) {
+          status = assembler.patch_condition_branch(missing_region,
+                                                    record_failure, 0x3U);
+        }
+        if (status.ok()) {
+          status = assembler.patch_zero_branch(null_base, record_failure,
+                                               kReturnRegister);
+        }
+        if (status.ok()) {
+          status = assembler.patch_condition_branch(too_small, record_failure,
+                                                    0x3U);
+        }
+        if (status.ok() && node.opcode == ir::Opcode::kStoreWord) {
+          status = assembler.patch_zero_branch(read_only, record_failure,
+                                               kScratch0);
+        }
+        if (status.ok()) {
+          status = assembler.patch_condition_branch(out_of_bounds,
+                                                    record_failure, 0x8U);
+        }
+        if (status.ok() && access.alignment > 1) {
+          status = assembler.patch_branch(misaligned, record_failure, true,
+                                          kScratch0);
+        }
+        if (status.ok()) {
+          status = assembler.patch_branch(completed, resume, false);
+        }
+        if (!status.ok()) {
+          return {status, {}, 0};
+        }
+        break;
+      }
       case ir::Opcode::kSafepoint: {
         assembler.load(kScratch0, kStackPointer,
                        context_slot * sizeof(ir::Word));
@@ -1360,7 +1569,9 @@ LoweringResult lower_control_flow_impl(
       [](const ir::ControlNode& node) {
         return node.opcode == ir::ControlOpcode::kSafepoint ||
                node.opcode == ir::ControlOpcode::kGuardWordNonzero ||
-               node.opcode == ir::ControlOpcode::kGuardFloatNonzero;
+               node.opcode == ir::ControlOpcode::kGuardFloatNonzero ||
+               node.opcode == ir::ControlOpcode::kLoadWord ||
+               node.opcode == ir::ControlOpcode::kStoreWord;
       });
   std::size_t maximum_call_arguments = 0;
   bool has_calls = false;
@@ -1450,7 +1661,9 @@ LoweringResult lower_control_flow_impl(
           stack_map_liveness.live_values_by_node[value.id()];
       if (node.opcode == ir::ControlOpcode::kSafepoint ||
           node.opcode == ir::ControlOpcode::kGuardWordNonzero ||
-          node.opcode == ir::ControlOpcode::kGuardFloatNonzero) {
+          node.opcode == ir::ControlOpcode::kGuardFloatNonzero ||
+          node.opcode == ir::ControlOpcode::kLoadWord ||
+          node.opcode == ir::ControlOpcode::kStoreWord) {
         spill_control_stack_map_values(&assembler, function, allocation,
                                        live_values, block_index);
         stack_maps.push_back(make_stack_map_record(
@@ -1618,10 +1831,159 @@ LoweringResult lower_control_flow_impl(
           break;
         }
         case ir::ControlOpcode::kLoadWord:
-        case ir::ControlOpcode::kStoreWord:
-          return {{StatusCode::kCodeGenerationFailed,
-                   "AArch64 CFG bounded memory lowering is not available"},
-                  {}, 0};
+        case ir::ControlOpcode::kStoreWord: {
+          const ir::MemoryAccessDescriptor& access =
+              function.memory_accesses()[node.memory_access];
+          const std::size_t width = ir::memory_width_bytes(access.width);
+          const std::size_t region_offset =
+              static_cast<std::size_t>(access.region) *
+              sizeof(runtime::MemoryRegion);
+
+          assembler.load(kScratch0, kStackPointer,
+                         context_slot * sizeof(ir::Word));
+          const std::size_t no_context = assembler.branch_zero(kScratch0);
+          assembler.load(kScratch1, kScratch0,
+                         runtime::ExecutionContext::memory_regions_offset());
+          const std::size_t no_regions = assembler.branch_zero(kScratch1);
+          assembler.load(
+              kScratch2, kScratch0,
+              runtime::ExecutionContext::memory_region_count_offset());
+          assembler.compare_immediate(kScratch2, access.region + 1U);
+          const std::size_t missing_region = assembler.branch_condition(0x3U);
+          assembler.load(
+              kReturnRegister, kScratch1,
+              region_offset + runtime::MemoryRegion::data_offset());
+          const std::size_t null_base = assembler.branch_zero(kReturnRegister);
+          assembler.load(kScratch2, kScratch1,
+                         region_offset + runtime::MemoryRegion::size_offset());
+          assembler.compare_immediate(kScratch2,
+                                      static_cast<std::uint32_t>(width));
+          const std::size_t too_small = assembler.branch_condition(0x3U);
+          std::size_t read_only = 0;
+          if (node.opcode == ir::ControlOpcode::kStoreWord) {
+            assembler.load_unsigned(
+                kScratch0, kScratch1,
+                region_offset + runtime::MemoryRegion::writable_offset(), 1);
+            read_only = assembler.branch_zero(kScratch0);
+          }
+
+          const int offset_source = load_control_word(
+              &assembler, allocation, node.lhs, block_index, kScratch1);
+          if (offset_source != kScratch1) {
+            assembler.move_register(kScratch1, offset_source);
+          }
+          assembler.move_immediate(kScratch0,
+                                   static_cast<ir::Word>(width));
+          assembler.subtract(kScratch2, kScratch2, kScratch0);
+          assembler.compare_registers(kScratch1, kScratch2);
+          const std::size_t out_of_bounds =
+              assembler.branch_condition(0x8U);
+          assembler.add(kReturnRegister, kReturnRegister, kScratch1);
+          std::size_t misaligned = 0;
+          if (access.alignment > 1) {
+            assembler.move_immediate(
+                kScratch0, static_cast<ir::Word>(access.alignment - 1));
+            assembler.bitwise_and(kScratch0, kReturnRegister, kScratch0);
+            misaligned = assembler.branch_nonzero(kScratch0);
+          }
+
+          if (node.opcode == ir::ControlOpcode::kLoadWord) {
+            assembler.load_unsigned(word_destination, kReturnRegister, 0,
+                                    width);
+            if (access.byte_order == ir::MemoryByteOrder::kBigEndian &&
+                width > 1) {
+              assembler.reverse_bytes(word_destination, word_destination,
+                                      width);
+            }
+            if (access.sign_extend && width < sizeof(ir::Word)) {
+              assembler.sign_extend(word_destination, word_destination, width);
+            }
+          } else {
+            const int stored = load_control_word(
+                &assembler, allocation, node.rhs, block_index, kScratch0);
+            assembler.move_register(kScratch1, stored);
+            if (access.byte_order == ir::MemoryByteOrder::kBigEndian &&
+                width > 1) {
+              assembler.reverse_bytes(kScratch1, kScratch1, width);
+            }
+            assembler.store_width(kScratch1, kReturnRegister, 0, width);
+            assembler.move_register(word_destination, stored);
+          }
+          if (allocated_word < 0 ||
+              allocation.requires_stack[value.id()]) {
+            assembler.store(word_destination, kStackPointer,
+                            destination_offset);
+          }
+          const std::size_t completed = assembler.branch();
+
+          const std::size_t record_failure = assembler.size();
+          assembler.load(kScratch0, kStackPointer,
+                         context_slot * sizeof(ir::Word));
+          const int failed_offset = load_control_word(
+              &assembler, allocation, node.lhs, block_index, kScratch1);
+          assembler.store(failed_offset, kScratch0,
+                          runtime::ExecutionContext::exit_value_offset());
+          capture_control_stack_map_values(&assembler, allocation,
+                                           live_values, kScratch0);
+          assembler.move_immediate(kScratch1, node.immediate);
+          assembler.store(kScratch1, kScratch0,
+                          runtime::ExecutionContext::exit_site_offset());
+          assembler.move_immediate(
+              kScratch1,
+              static_cast<ir::Word>(runtime::ExitReason::kRuntime));
+          assembler.store(kScratch1, kScratch0,
+                          runtime::ExecutionContext::exit_reason_offset());
+
+          const std::size_t exit = assembler.size();
+          assembler.move_immediate(kReturnRegister, 0);
+          if (has_calls) {
+            assembler.load(kReturnAddressRegister, kStackPointer,
+                           return_address_slot * sizeof(ir::Word));
+          }
+          if (stack_size != 0) {
+            assembler.release_stack(stack_size);
+          }
+          assembler.return_to_caller();
+          const std::size_t resume = assembler.size();
+
+          Status status = assembler.patch_zero_branch(no_context, exit);
+          if (status.ok()) {
+            status = assembler.patch_zero_branch(no_regions, record_failure,
+                                                 kScratch1);
+          }
+          if (status.ok()) {
+            status = assembler.patch_condition_branch(missing_region,
+                                                      record_failure, 0x3U);
+          }
+          if (status.ok()) {
+            status = assembler.patch_zero_branch(null_base, record_failure,
+                                                 kReturnRegister);
+          }
+          if (status.ok()) {
+            status = assembler.patch_condition_branch(
+                too_small, record_failure, 0x3U);
+          }
+          if (status.ok() &&
+              node.opcode == ir::ControlOpcode::kStoreWord) {
+            status = assembler.patch_zero_branch(read_only, record_failure,
+                                                 kScratch0);
+          }
+          if (status.ok()) {
+            status = assembler.patch_condition_branch(
+                out_of_bounds, record_failure, 0x8U);
+          }
+          if (status.ok() && access.alignment > 1) {
+            status = assembler.patch_branch(misaligned, record_failure, true,
+                                            kScratch0);
+          }
+          if (status.ok()) {
+            status = assembler.patch_branch(completed, resume, false);
+          }
+          if (!status.ok()) {
+            return {status, {}, 0};
+          }
+          break;
+        }
         case ir::ControlOpcode::kSafepoint: {
           assembler.load(kScratch0, kStackPointer,
                          context_slot * sizeof(ir::Word));

@@ -50,9 +50,19 @@ bool is_nonzero_guard(ir::Opcode opcode) noexcept {
          opcode == ir::Opcode::kGuardFloatNonzero;
 }
 
+bool is_memory(ir::Opcode opcode) noexcept {
+  return opcode == ir::Opcode::kLoadWord ||
+         opcode == ir::Opcode::kStoreWord;
+}
+
 bool is_nonzero_guard(ir::ControlOpcode opcode) noexcept {
   return opcode == ir::ControlOpcode::kGuardWordNonzero ||
          opcode == ir::ControlOpcode::kGuardFloatNonzero;
+}
+
+bool is_memory(ir::ControlOpcode opcode) noexcept {
+  return opcode == ir::ControlOpcode::kLoadWord ||
+         opcode == ir::ControlOpcode::kStoreWord;
 }
 
 bool has_guard_site(const ir::Function& function, std::size_t site) noexcept {
@@ -77,6 +87,7 @@ bool has_runtime_exit_site(const ir::Function& function,
   return std::any_of(function.nodes().begin(), function.nodes().end(),
                      [site](const ir::Node& node) {
                        return (is_nonzero_guard(node.opcode) ||
+                               is_memory(node.opcode) ||
                                node.opcode == ir::Opcode::kSafepoint) &&
                               static_cast<std::size_t>(node.immediate) == site;
                      });
@@ -87,6 +98,7 @@ bool has_runtime_exit_site(const ir::ControlFlowFunction& function,
   return std::any_of(function.nodes().begin(), function.nodes().end(),
                      [site](const ir::ControlNode& node) {
                        return (is_nonzero_guard(node.opcode) ||
+                               is_memory(node.opcode) ||
                                node.opcode ==
                                    ir::ControlOpcode::kSafepoint) &&
                               static_cast<std::size_t>(node.immediate) == site;
@@ -1279,7 +1291,7 @@ CompilationResult Compiler::compile(
     const bool requires_context = !assumptions.empty() || std::any_of(
         lowered->nodes().begin(), lowered->nodes().end(),
         [](const ir::Node& node) {
-          return is_nonzero_guard(node.opcode);
+          return is_nonzero_guard(node.opcode) || is_memory(node.opcode);
         });
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
         std::move(implementation), copy_parameter_types(function),
@@ -1475,7 +1487,7 @@ CompilationResult Compiler::compile(
         lowered->nodes().begin(), lowered->nodes().end(),
         [](const ir::ControlNode& node) {
           return node.opcode == ir::ControlOpcode::kSafepoint ||
-                 is_nonzero_guard(node.opcode);
+                 is_nonzero_guard(node.opcode) || is_memory(node.opcode);
         });
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
         std::move(implementation), copy_parameter_types(function),
