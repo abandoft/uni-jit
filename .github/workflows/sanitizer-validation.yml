@@ -23,6 +23,7 @@ jobs:
           cmake -S . -B build/sanitize -G Ninja
           -DCMAKE_BUILD_TYPE=Debug
           -DUNIJIT_BUILD_LUA_REFERENCE=ON
+          -DUNIJIT_BUILD_QUICKJS_REFERENCE=ON
           -DUNIJIT_BUILD_POCKETPY_REFERENCE=ON
           -DUNIJIT_WARNINGS_AS_ERRORS=ON
           -DCMAKE_C_FLAGS=-fsanitize=address,undefined
