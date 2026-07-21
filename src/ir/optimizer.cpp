@@ -58,6 +58,12 @@ Word fold_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
     }
     return rhs_bits >= 64U ? 0 : from_bits(lhs_bits << rhs_bits);
   }
+  if (opcode == Opcode::kFloorDivide) {
+    return floor_divide_word(lhs, rhs);
+  }
+  if (opcode == Opcode::kFloorModulo) {
+    return floor_modulo_word(lhs, rhs);
+  }
   return from_bits(lhs_bits ^ rhs_bits);
 }
 
@@ -92,7 +98,8 @@ bool is_binary(Opcode opcode) noexcept {
   return opcode == Opcode::kAdd || opcode == Opcode::kSubtract ||
          opcode == Opcode::kMultiply || opcode == Opcode::kBitwiseAnd ||
          opcode == Opcode::kBitwiseOr || opcode == Opcode::kBitwiseXor ||
-         opcode == Opcode::kShiftLeft ||
+         opcode == Opcode::kShiftLeft || opcode == Opcode::kFloorDivide ||
+         opcode == Opcode::kFloorModulo ||
          opcode == Opcode::kFloatAdd ||
          opcode == Opcode::kFloatSubtract ||
          opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide ||
@@ -141,6 +148,16 @@ bool is_float_comparison(Opcode opcode) noexcept {
          opcode == Opcode::kFloatNotEqual;
 }
 
+bool is_nonzero_guard(Opcode opcode) noexcept {
+  return opcode == Opcode::kGuardWordNonzero ||
+         opcode == Opcode::kGuardFloatNonzero;
+}
+
+bool is_nonzero_guard(ControlOpcode opcode) noexcept {
+  return opcode == ControlOpcode::kGuardWordNonzero ||
+         opcode == ControlOpcode::kGuardFloatNonzero;
+}
+
 bool is_control_binary(ControlOpcode opcode) noexcept {
   switch (opcode) {
     case ControlOpcode::kAdd:
@@ -150,6 +167,8 @@ bool is_control_binary(ControlOpcode opcode) noexcept {
     case ControlOpcode::kBitwiseOr:
     case ControlOpcode::kBitwiseXor:
     case ControlOpcode::kShiftLeft:
+    case ControlOpcode::kFloorDivide:
+    case ControlOpcode::kFloorModulo:
     case ControlOpcode::kFloatAdd:
     case ControlOpcode::kFloatSubtract:
     case ControlOpcode::kFloatMultiply:
@@ -266,6 +285,12 @@ Word fold_control_binary(ControlOpcode opcode, Word lhs, Word rhs) noexcept {
     }
     return rhs_bits >= 64U ? 0 : from_bits(to_bits(lhs) << rhs_bits);
   }
+  if (opcode == ControlOpcode::kFloorDivide) {
+    return floor_divide_word(lhs, rhs);
+  }
+  if (opcode == ControlOpcode::kFloorModulo) {
+    return floor_modulo_word(lhs, rhs);
+  }
   if (opcode == ControlOpcode::kLessThan) {
     return lhs < rhs ? 1 : 0;
   }
@@ -289,6 +314,10 @@ Value emit_control_binary(ControlFlowBuilder* builder,
       return builder->bitwise_xor(lhs, rhs);
     case ControlOpcode::kShiftLeft:
       return builder->shift_left(lhs, rhs);
+    case ControlOpcode::kFloorDivide:
+      return builder->floor_divide(lhs, rhs);
+    case ControlOpcode::kFloorModulo:
+      return builder->floor_modulo(lhs, rhs);
     case ControlOpcode::kFloatAdd:
       return builder->float64_add(lhs, rhs);
     case ControlOpcode::kFloatSubtract:
@@ -388,7 +417,7 @@ PassResult transform_once(
   live[input.return_value().id()] = true;
   for (std::size_t index = 0; index < node_count; ++index) {
     if (input.nodes()[index].opcode == Opcode::kCall ||
-        input.nodes()[index].opcode == Opcode::kGuardFloatNonzero ||
+        is_nonzero_guard(input.nodes()[index].opcode) ||
         input.nodes()[index].opcode == Opcode::kSafepoint) {
       live[index] = true;
     }
@@ -416,7 +445,7 @@ PassResult transform_once(
             static_cast<std::size_t>(node.argument_begin) + argument_index];
         live[argument.id()] = true;
       }
-    } else if (node.opcode == Opcode::kGuardFloatNonzero) {
+    } else if (is_nonzero_guard(node.opcode)) {
       live[node.lhs.id()] = true;
     }
   }
@@ -475,18 +504,28 @@ PassResult transform_once(
       continue;
     }
 
-    if (node.opcode == Opcode::kGuardFloatNonzero) {
+    if (is_nonzero_guard(node.opcode)) {
       const std::size_t guarded_id = node.lhs.id();
-      if (known_constant[guarded_id] &&
-          unpack_float64(constant_value[guarded_id]) != 0.0) {
+      const bool known_nonzero =
+          known_constant[guarded_id] &&
+          (node.opcode == Opcode::kGuardWordNonzero
+               ? constant_value[guarded_id] != 0
+               : unpack_float64(constant_value[guarded_id]) != 0.0);
+      if (known_nonzero) {
         mapped[index] = builder.constant(0);
         known_constant[index] = true;
         constant_value[index] = 0;
         ++simplified;
         changed = true;
       } else {
-        mapped[index] = builder.guard_float64_nonzero(
-            mapped[guarded_id], static_cast<std::size_t>(node.immediate));
+        mapped[index] =
+            node.opcode == Opcode::kGuardWordNonzero
+                ? builder.guard_word_nonzero(
+                      mapped[guarded_id],
+                      static_cast<std::size_t>(node.immediate))
+                : builder.guard_float64_nonzero(
+                      mapped[guarded_id],
+                      static_cast<std::size_t>(node.immediate));
       }
       continue;
     }
@@ -624,6 +663,10 @@ PassResult transform_once(
       } else if (known_constant[rhs_id] && constant_value[rhs_id] == 0) {
         replacement = lhs_id;
       }
+    } else if (node.opcode == Opcode::kFloorDivide) {
+      if (known_constant[rhs_id] && constant_value[rhs_id] == 1) {
+        replacement = lhs_id;
+      }
     }
 
     if (replacement != node_count) {
@@ -647,6 +690,10 @@ PassResult transform_once(
       mapped[index] = builder.bitwise_or(mapped[lhs_id], mapped[rhs_id]);
     } else if (node.opcode == Opcode::kShiftLeft) {
       mapped[index] = builder.shift_left(mapped[lhs_id], mapped[rhs_id]);
+    } else if (node.opcode == Opcode::kFloorDivide) {
+      mapped[index] = builder.floor_divide(mapped[lhs_id], mapped[rhs_id]);
+    } else if (node.opcode == Opcode::kFloorModulo) {
+      mapped[index] = builder.floor_modulo(mapped[lhs_id], mapped[rhs_id]);
     } else {
       mapped[index] = builder.bitwise_xor(mapped[lhs_id], mapped[rhs_id]);
     }
@@ -663,8 +710,7 @@ PassResult transform_once(
   for (const OptimizationExitState& exit_state : exit_states) {
     const Value mapped_exit = mapped[exit_state.exit.id()];
     if (!mapped_exit.valid() ||
-        output.nodes()[mapped_exit.id()].opcode !=
-            Opcode::kGuardFloatNonzero) {
+        !is_nonzero_guard(output.nodes()[mapped_exit.id()].opcode)) {
       continue;
     }
     OptimizationExitState mapped_state;
@@ -826,7 +872,7 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
                   (opcode == ControlOpcode::kParameter ||
                    opcode == ControlOpcode::kBlockParameter ||
                    opcode == ControlOpcode::kCall ||
-                   opcode == ControlOpcode::kGuardFloatNonzero ||
+                   is_nonzero_guard(opcode) ||
                    opcode == ControlOpcode::kSafepoint);
   }
   const auto mark_edge = [&live](const ControlEdge& edge) {
@@ -879,7 +925,7 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
             static_cast<std::size_t>(node.argument_begin) + argument_index];
         live[argument.id()] = true;
       }
-    } else if (node.opcode == ControlOpcode::kGuardFloatNonzero) {
+    } else if (is_nonzero_guard(node.opcode)) {
       live[node.lhs.id()] = true;
     } else if (is_control_unary(node.opcode)) {
       live[node.lhs.id()] = true;
@@ -948,9 +994,15 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
     } else if (node.opcode == ControlOpcode::kSafepoint) {
       mapped[index] =
           builder.safepoint(static_cast<std::size_t>(node.immediate));
-    } else if (node.opcode == ControlOpcode::kGuardFloatNonzero) {
-      mapped[index] = builder.guard_float64_nonzero(
-          mapped[node.lhs.id()], static_cast<std::size_t>(node.immediate));
+    } else if (is_nonzero_guard(node.opcode)) {
+      mapped[index] =
+          node.opcode == ControlOpcode::kGuardWordNonzero
+              ? builder.guard_word_nonzero(
+                    mapped[node.lhs.id()],
+                    static_cast<std::size_t>(node.immediate))
+              : builder.guard_float64_nonzero(
+                    mapped[node.lhs.id()],
+                    static_cast<std::size_t>(node.immediate));
     } else if (is_control_unary(node.opcode)) {
       mapped[index] =
           emit_control_unary(&builder, node.opcode, mapped[node.lhs.id()]);
@@ -964,7 +1016,7 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
               {}, {}, 0, 0};
     }
     if (node.opcode == ControlOpcode::kCall ||
-        node.opcode == ControlOpcode::kGuardFloatNonzero ||
+        is_nonzero_guard(node.opcode) ||
         node.opcode == ControlOpcode::kSafepoint) {
       available[owner].clear();
     }
@@ -1045,8 +1097,8 @@ OptimizationResult Optimizer::run(
   for (const OptimizationExitState& exit_state : exit_states) {
     if (!exit_state.exit.valid() ||
         exit_state.exit.id() >= function.nodes().size() ||
-        function.nodes()[exit_state.exit.id()].opcode !=
-            Opcode::kGuardFloatNonzero) {
+        !is_nonzero_guard(
+            function.nodes()[exit_state.exit.id()].opcode)) {
       return {{StatusCode::kInvalidArgument,
                "optimizer exit state does not identify a guard"},
               {}, {}, {}};
@@ -1161,8 +1213,8 @@ ControlFlowOptimizationResult Optimizer::run(
     for (const OptimizationExitState& exit_state : exit_states) {
       if (!exit_state.exit.valid() ||
           exit_state.exit.id() >= function.nodes().size() ||
-          function.nodes()[exit_state.exit.id()].opcode !=
-              ControlOpcode::kGuardFloatNonzero) {
+          !is_nonzero_guard(
+              function.nodes()[exit_state.exit.id()].opcode)) {
         return {{StatusCode::kInvalidArgument,
                  "CFG optimizer exit state does not identify a guard"},
                 {}, {}, {}};
@@ -1280,7 +1332,7 @@ ControlFlowOptimizationResult Optimizer::run(
       live[index] = opcode == ControlOpcode::kParameter ||
                     opcode == ControlOpcode::kBlockParameter ||
                     opcode == ControlOpcode::kCall ||
-                    opcode == ControlOpcode::kGuardFloatNonzero ||
+                    is_nonzero_guard(opcode) ||
                     opcode == ControlOpcode::kSafepoint;
     }
     const auto mark_edge = [&live](const ControlEdge& edge) {
@@ -1318,7 +1370,7 @@ ControlFlowOptimizationResult Optimizer::run(
               static_cast<std::size_t>(node.argument_begin) + argument_index];
           live[argument.id()] = true;
         }
-      } else if (node.opcode == ControlOpcode::kGuardFloatNonzero) {
+      } else if (is_nonzero_guard(node.opcode)) {
         live[node.lhs.id()] = true;
       } else if (is_control_unary(node.opcode)) {
         if (replacement[index] != node_count) {
@@ -1368,9 +1420,15 @@ ControlFlowOptimizationResult Optimizer::run(
       } else if (node.opcode == ControlOpcode::kSafepoint) {
         mapped[index] =
             builder.safepoint(static_cast<std::size_t>(node.immediate));
-      } else if (node.opcode == ControlOpcode::kGuardFloatNonzero) {
-        mapped[index] = builder.guard_float64_nonzero(
-            mapped[node.lhs.id()], static_cast<std::size_t>(node.immediate));
+      } else if (is_nonzero_guard(node.opcode)) {
+        mapped[index] =
+            node.opcode == ControlOpcode::kGuardWordNonzero
+                ? builder.guard_word_nonzero(
+                      mapped[node.lhs.id()],
+                      static_cast<std::size_t>(node.immediate))
+                : builder.guard_float64_nonzero(
+                      mapped[node.lhs.id()],
+                      static_cast<std::size_t>(node.immediate));
       } else if (is_control_unary(node.opcode)) {
         if (folded_node[index]) {
           mapped[index] = node.type == ValueType::kFloat64
@@ -1467,8 +1525,7 @@ ControlFlowOptimizationResult Optimizer::run(
     for (const OptimizationExitState& exit_state : exit_states) {
       const Value mapped_exit = mapped[exit_state.exit.id()];
       if (!mapped_exit.valid() ||
-          output.nodes()[mapped_exit.id()].opcode !=
-              ControlOpcode::kGuardFloatNonzero) {
+          !is_nonzero_guard(output.nodes()[mapped_exit.id()].opcode)) {
         continue;
       }
       OptimizationExitState mapped_state;

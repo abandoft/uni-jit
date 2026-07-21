@@ -24,6 +24,8 @@ void visit_control_operands(const ir::ControlFlowFunction& function,
     case ir::ControlOpcode::kBitwiseOr:
     case ir::ControlOpcode::kBitwiseXor:
     case ir::ControlOpcode::kShiftLeft:
+    case ir::ControlOpcode::kFloorDivide:
+    case ir::ControlOpcode::kFloorModulo:
     case ir::ControlOpcode::kFloatAdd:
     case ir::ControlOpcode::kFloatSubtract:
     case ir::ControlOpcode::kFloatMultiply:
@@ -40,6 +42,7 @@ void visit_control_operands(const ir::ControlFlowFunction& function,
     case ir::ControlOpcode::kNegate:
     case ir::ControlOpcode::kBitwiseNot:
     case ir::ControlOpcode::kFloatNegate:
+    case ir::ControlOpcode::kGuardWordNonzero:
     case ir::ControlOpcode::kGuardFloatNonzero:
       visitor(node.lhs);
       break;
@@ -85,6 +88,8 @@ RegisterAllocation allocate_impl(const ir::Function& function,
         node.opcode == ir::Opcode::kBitwiseOr ||
         node.opcode == ir::Opcode::kBitwiseXor ||
         node.opcode == ir::Opcode::kShiftLeft ||
+        node.opcode == ir::Opcode::kFloorDivide ||
+        node.opcode == ir::Opcode::kFloorModulo ||
         node.opcode == ir::Opcode::kFloatAdd ||
         node.opcode == ir::Opcode::kFloatSubtract ||
         node.opcode == ir::Opcode::kFloatMultiply ||
@@ -98,6 +103,7 @@ RegisterAllocation allocate_impl(const ir::Function& function,
     } else if (node.opcode == ir::Opcode::kNegate ||
                node.opcode == ir::Opcode::kBitwiseNot ||
                node.opcode == ir::Opcode::kFloatNegate ||
+               node.opcode == ir::Opcode::kGuardWordNonzero ||
                node.opcode == ir::Opcode::kGuardFloatNonzero) {
       note_use(&last_use, node.lhs, index);
     } else if (node.opcode == ir::Opcode::kCall) {
@@ -111,6 +117,7 @@ RegisterAllocation allocate_impl(const ir::Function& function,
       }
     }
     if (node.opcode == ir::Opcode::kSafepoint ||
+        node.opcode == ir::Opcode::kGuardWordNonzero ||
         node.opcode == ir::Opcode::kGuardFloatNonzero) {
       const StackMapRequirement* requirement = find_stack_map_requirement(
           requirements, static_cast<std::size_t>(node.immediate));
@@ -238,6 +245,8 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kBitwiseOr:
         case ir::ControlOpcode::kBitwiseXor:
         case ir::ControlOpcode::kShiftLeft:
+        case ir::ControlOpcode::kFloorDivide:
+        case ir::ControlOpcode::kFloorModulo:
         case ir::ControlOpcode::kFloatAdd:
         case ir::ControlOpcode::kFloatSubtract:
         case ir::ControlOpcode::kFloatMultiply:
@@ -254,6 +263,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kNegate:
         case ir::ControlOpcode::kBitwiseNot:
         case ir::ControlOpcode::kFloatNegate:
+        case ir::ControlOpcode::kGuardWordNonzero:
         case ir::ControlOpcode::kGuardFloatNonzero:
           note_local_use(node.lhs);
           break;
@@ -272,6 +282,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
           break;
       }
       if (node.opcode == ir::ControlOpcode::kSafepoint ||
+          node.opcode == ir::ControlOpcode::kGuardWordNonzero ||
           node.opcode == ir::ControlOpcode::kGuardFloatNonzero) {
         const StackMapRequirement* requirement = find_stack_map_requirement(
             requirements, static_cast<std::size_t>(node.immediate));
@@ -380,6 +391,8 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kBitwiseOr:
         case ir::ControlOpcode::kBitwiseXor:
         case ir::ControlOpcode::kShiftLeft:
+        case ir::ControlOpcode::kFloorDivide:
+        case ir::ControlOpcode::kFloorModulo:
         case ir::ControlOpcode::kFloatAdd:
         case ir::ControlOpcode::kFloatSubtract:
         case ir::ControlOpcode::kFloatMultiply:
@@ -396,6 +409,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kNegate:
         case ir::ControlOpcode::kBitwiseNot:
         case ir::ControlOpcode::kFloatNegate:
+        case ir::ControlOpcode::kGuardWordNonzero:
         case ir::ControlOpcode::kGuardFloatNonzero:
           note_nonlocal_use(block_index, node.lhs);
           break;
@@ -416,6 +430,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
           break;
       }
       if (node.opcode == ir::ControlOpcode::kSafepoint ||
+          node.opcode == ir::ControlOpcode::kGuardWordNonzero ||
           node.opcode == ir::ControlOpcode::kGuardFloatNonzero) {
         const StackMapRequirement* requirement = find_stack_map_requirement(
             requirements, static_cast<std::size_t>(node.immediate));
@@ -542,6 +557,7 @@ StackMapLiveness plan_straight_stack_map_liveness_impl(
        ++node_index) {
     const ir::Opcode opcode = function.nodes()[node_index].opcode;
     if (opcode != ir::Opcode::kSafepoint &&
+        opcode != ir::Opcode::kGuardWordNonzero &&
         opcode != ir::Opcode::kGuardFloatNonzero) {
       continue;
     }
@@ -597,6 +613,7 @@ StackMapLiveness plan_control_stack_map_liveness_impl(
                                note_use(&uses[block_index], defined, operand);
                              });
       if (node.opcode == ir::ControlOpcode::kSafepoint ||
+          node.opcode == ir::ControlOpcode::kGuardWordNonzero ||
           node.opcode == ir::ControlOpcode::kGuardFloatNonzero) {
         const StackMapRequirement* requirement = find_stack_map_requirement(
             requirements, static_cast<std::size_t>(node.immediate));
@@ -699,6 +716,7 @@ StackMapLiveness plan_control_stack_map_liveness_impl(
                              [&](ir::Value operand) { live[operand.id()] = true; });
       const StackMapRequirement* requirement =
           node.opcode == ir::ControlOpcode::kSafepoint ||
+                  node.opcode == ir::ControlOpcode::kGuardWordNonzero ||
                   node.opcode == ir::ControlOpcode::kGuardFloatNonzero
               ? find_stack_map_requirement(
                     requirements, static_cast<std::size_t>(node.immediate))
@@ -709,6 +727,7 @@ StackMapLiveness plan_control_stack_map_liveness_impl(
         }
       }
       if (node.opcode != ir::ControlOpcode::kSafepoint &&
+          node.opcode != ir::ControlOpcode::kGuardWordNonzero &&
           node.opcode != ir::ControlOpcode::kGuardFloatNonzero) {
         continue;
       }

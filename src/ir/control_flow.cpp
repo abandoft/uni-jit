@@ -30,6 +30,8 @@ bool is_binary(ControlOpcode opcode) {
   case ControlOpcode::kBitwiseOr:
   case ControlOpcode::kBitwiseXor:
   case ControlOpcode::kShiftLeft:
+  case ControlOpcode::kFloorDivide:
+  case ControlOpcode::kFloorModulo:
   case ControlOpcode::kFloatAdd:
   case ControlOpcode::kFloatSubtract:
   case ControlOpcode::kFloatMultiply:
@@ -48,6 +50,7 @@ bool is_binary(ControlOpcode opcode) {
   case ControlOpcode::kBitwiseNot:
   case ControlOpcode::kFloatNegate:
   case ControlOpcode::kCall:
+  case ControlOpcode::kGuardWordNonzero:
   case ControlOpcode::kGuardFloatNonzero:
   case ControlOpcode::kSafepoint:
     return false;
@@ -275,17 +278,22 @@ Status verify_impl(const ControlFlowFunction &function) {
         }
         continue;
       }
-      if (node.opcode == ControlOpcode::kGuardFloatNonzero) {
+      if (node.opcode == ControlOpcode::kGuardWordNonzero ||
+          node.opcode == ControlOpcode::kGuardFloatNonzero) {
+        const bool is_float =
+            node.opcode == ControlOpcode::kGuardFloatNonzero;
         if (node.immediate < 0 || node.rhs.valid() ||
             node.type != ValueType::kWord ||
             node.argument_begin != 0 || node.argument_count != 0 ||
             !available(node.lhs, block_index, instruction_index) ||
-            function.value_type(node.lhs) != ValueType::kFloat64) {
+            function.value_type(node.lhs) !=
+                (is_float ? ValueType::kFloat64 : ValueType::kWord)) {
           return invalid_control_flow(
-              value.id(), "control-flow Float64 guard is malformed");
+              value.id(), "control-flow nonzero guard is malformed");
         }
         for (std::size_t previous = 0; previous < value.id(); ++previous) {
-          if ((nodes[previous].opcode ==
+          if ((nodes[previous].opcode == ControlOpcode::kGuardWordNonzero ||
+               nodes[previous].opcode ==
                    ControlOpcode::kGuardFloatNonzero ||
                nodes[previous].opcode == ControlOpcode::kSafepoint) &&
               nodes[previous].immediate == node.immediate) {
@@ -303,7 +311,8 @@ Status verify_impl(const ControlFlowFunction &function) {
                                       "control-flow safepoint is malformed");
         }
         for (std::size_t previous = 0; previous < value.id(); ++previous) {
-          if ((nodes[previous].opcode ==
+          if ((nodes[previous].opcode == ControlOpcode::kGuardWordNonzero ||
+               nodes[previous].opcode ==
                    ControlOpcode::kGuardFloatNonzero ||
                nodes[previous].opcode == ControlOpcode::kSafepoint) &&
               nodes[previous].immediate == node.immediate) {
@@ -458,6 +467,12 @@ Word evaluate_node(ControlOpcode opcode, Word lhs, Word rhs) noexcept {
     }
     return amount_bits >= 64U ? 0
                               : from_bits(to_bits(lhs) << amount_bits);
+  }
+  if (opcode == ControlOpcode::kFloorDivide) {
+    return floor_divide_word(lhs, rhs);
+  }
+  if (opcode == ControlOpcode::kFloorModulo) {
+    return floor_modulo_word(lhs, rhs);
   }
   if (opcode == ControlOpcode::kNegate) {
     return from_bits(UINT64_C(0) - to_bits(lhs));
@@ -640,6 +655,14 @@ Value ControlFlowBuilder::shift_left(Value value, Value amount) {
   return append_binary(ControlOpcode::kShiftLeft, value, amount);
 }
 
+Value ControlFlowBuilder::floor_divide(Value lhs, Value rhs) {
+  return append_binary(ControlOpcode::kFloorDivide, lhs, rhs);
+}
+
+Value ControlFlowBuilder::floor_modulo(Value lhs, Value rhs) {
+  return append_binary(ControlOpcode::kFloorModulo, lhs, rhs);
+}
+
 Value ControlFlowBuilder::negate(Value value) {
   return append_unary(ControlOpcode::kNegate, value, ValueType::kWord);
 }
@@ -729,6 +752,14 @@ Value ControlFlowBuilder::guard_float64_nonzero(Value value,
     return {};
   }
   return append_node(ControlNode{ControlOpcode::kGuardFloatNonzero, value, {},
+                                 static_cast<Word>(site), ValueType::kWord});
+}
+
+Value ControlFlowBuilder::guard_word_nonzero(Value value, std::size_t site) {
+  if (site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {
+    return {};
+  }
+  return append_node(ControlNode{ControlOpcode::kGuardWordNonzero, value, {},
                                  static_cast<Word>(site), ValueType::kWord});
 }
 
@@ -891,17 +922,22 @@ ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
           }
           values[value.id()] = unpack_runtime_helper(node.immediate)(
               helper_arguments.data(), helper_arguments.size());
-        } else if (node.opcode == ControlOpcode::kGuardFloatNonzero) {
+        } else if (node.opcode == ControlOpcode::kGuardWordNonzero ||
+                   node.opcode == ControlOpcode::kGuardFloatNonzero) {
           values[value.id()] = 0;
           const Word guarded = values[node.lhs.id()];
-          if (unpack_float64(guarded) == 0.0) {
+          const bool is_zero =
+              node.opcode == ControlOpcode::kGuardWordNonzero
+                  ? guarded == 0
+                  : unpack_float64(guarded) == 0.0;
+          if (is_zero) {
             const auto site = static_cast<std::size_t>(node.immediate);
             if (context != nullptr) {
               context->record_exit(runtime::ExitReason::kRuntime, site,
                                    guarded);
             }
             return {{StatusCode::kRuntimeExit,
-                     "control-flow Float64 guard requested a runtime exit",
+                     "control-flow nonzero guard requested a runtime exit",
                      site},
                     0};
           }

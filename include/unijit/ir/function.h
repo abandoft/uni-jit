@@ -17,6 +17,11 @@ Word pack_float64(double value) noexcept;
 double unpack_float64(Word bits) noexcept;
 Word pack_runtime_helper(RuntimeHelper helper) noexcept;
 RuntimeHelper unpack_runtime_helper(Word bits) noexcept;
+// Lua/Python-style signed floor arithmetic. Division by zero is totalized to
+// zero so malformed or speculative IR cannot raise a host hardware trap;
+// language frontends that require an error insert a Word nonzero guard.
+Word floor_divide_word(Word lhs, Word rhs) noexcept;
+Word floor_modulo_word(Word lhs, Word rhs) noexcept;
 
 class Value final {
  public:
@@ -51,6 +56,8 @@ enum class Opcode : std::uint8_t {
   kBitwiseOr,
   kBitwiseXor,
   kShiftLeft,
+  kFloorDivide,
+  kFloorModulo,
   kNegate,
   kBitwiseNot,
   kFloatAdd,
@@ -62,6 +69,7 @@ enum class Opcode : std::uint8_t {
   kFloatLessEqual,
   kFloatEqual,
   kFloatNotEqual,
+  kGuardWordNonzero,
   kGuardFloatNonzero,
   kCall,
   kSafepoint,
@@ -139,6 +147,8 @@ class FunctionBuilder final {
   // Shifts left for nonnegative amounts and logically right for negative
   // amounts. Magnitudes of 64 or more produce zero.
   Value shift_left(Value value, Value amount);
+  Value floor_divide(Value lhs, Value rhs);
+  Value floor_modulo(Value lhs, Value rhs);
   Value negate(Value value);
   Value bitwise_not(Value value);
   Value float64_add(Value lhs, Value rhs);
@@ -150,6 +160,7 @@ class FunctionBuilder final {
   Value float64_less_equal(Value lhs, Value rhs);
   Value float64_equal(Value lhs, Value rhs);
   Value float64_not_equal(Value lhs, Value rhs);
+  Value guard_word_nonzero(Value value, std::size_t site);
   Value guard_float64_nonzero(Value value, std::size_t site);
   Value call(RuntimeHelper helper, std::vector<Value> arguments,
              ValueType result_type = ValueType::kWord);

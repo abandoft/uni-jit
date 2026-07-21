@@ -14,7 +14,8 @@ bool is_binary(Opcode opcode) {
   return opcode == Opcode::kAdd || opcode == Opcode::kSubtract ||
          opcode == Opcode::kMultiply || opcode == Opcode::kBitwiseAnd ||
          opcode == Opcode::kBitwiseOr || opcode == Opcode::kBitwiseXor ||
-         opcode == Opcode::kShiftLeft ||
+         opcode == Opcode::kShiftLeft || opcode == Opcode::kFloorDivide ||
+         opcode == Opcode::kFloorModulo ||
          opcode == Opcode::kFloatAdd ||
          opcode == Opcode::kFloatSubtract ||
          opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide ||
@@ -95,15 +96,19 @@ Status verify(const Function& function) {
       expected_call_argument += node.argument_count;
       continue;
     }
-    if (node.opcode == Opcode::kGuardFloatNonzero) {
+    if (node.opcode == Opcode::kGuardWordNonzero ||
+        node.opcode == Opcode::kGuardFloatNonzero) {
+      const bool is_float = node.opcode == Opcode::kGuardFloatNonzero;
       if (node.immediate < 0 || node.type != ValueType::kWord ||
           !node.lhs.valid() || node.lhs.id() >= index || node.rhs.valid() ||
           node.argument_begin != 0 || node.argument_count != 0 ||
-          nodes[node.lhs.id()].type != ValueType::kFloat64) {
-        return invalid_node(index, "Float64 nonzero guard is malformed");
+          nodes[node.lhs.id()].type !=
+              (is_float ? ValueType::kFloat64 : ValueType::kWord)) {
+        return invalid_node(index, "nonzero guard is malformed");
       }
       for (std::size_t previous = 0; previous < index; ++previous) {
-        if ((nodes[previous].opcode == Opcode::kGuardFloatNonzero ||
+        if ((nodes[previous].opcode == Opcode::kGuardWordNonzero ||
+             nodes[previous].opcode == Opcode::kGuardFloatNonzero ||
              nodes[previous].opcode == Opcode::kSafepoint) &&
             nodes[previous].immediate == node.immediate) {
           return invalid_node(index, "runtime exit site is duplicated");
@@ -118,7 +123,8 @@ Status verify(const Function& function) {
         return invalid_node(index, "safepoint node is malformed");
       }
       for (std::size_t previous = 0; previous < index; ++previous) {
-        if ((nodes[previous].opcode == Opcode::kGuardFloatNonzero ||
+        if ((nodes[previous].opcode == Opcode::kGuardWordNonzero ||
+             nodes[previous].opcode == Opcode::kGuardFloatNonzero ||
              nodes[previous].opcode == Opcode::kSafepoint) &&
             nodes[previous].immediate == node.immediate) {
           return invalid_node(index, "runtime exit site is duplicated");

@@ -45,10 +45,20 @@ struct StackMapRequirementPreparation final {
   std::vector<CaptureBinding> bindings;
 };
 
+bool is_nonzero_guard(ir::Opcode opcode) noexcept {
+  return opcode == ir::Opcode::kGuardWordNonzero ||
+         opcode == ir::Opcode::kGuardFloatNonzero;
+}
+
+bool is_nonzero_guard(ir::ControlOpcode opcode) noexcept {
+  return opcode == ir::ControlOpcode::kGuardWordNonzero ||
+         opcode == ir::ControlOpcode::kGuardFloatNonzero;
+}
+
 bool has_guard_site(const ir::Function& function, std::size_t site) noexcept {
   return std::any_of(function.nodes().begin(), function.nodes().end(),
                      [site](const ir::Node& node) {
-                       return node.opcode == ir::Opcode::kGuardFloatNonzero &&
+                       return is_nonzero_guard(node.opcode) &&
                               static_cast<std::size_t>(node.immediate) == site;
                      });
 }
@@ -57,8 +67,7 @@ bool has_guard_site(const ir::ControlFlowFunction& function,
                     std::size_t site) noexcept {
   return std::any_of(function.nodes().begin(), function.nodes().end(),
                      [site](const ir::ControlNode& node) {
-                       return node.opcode ==
-                                  ir::ControlOpcode::kGuardFloatNonzero &&
+                       return is_nonzero_guard(node.opcode) &&
                               static_cast<std::size_t>(node.immediate) == site;
                      });
 }
@@ -67,8 +76,7 @@ bool has_runtime_exit_site(const ir::Function& function,
                            std::size_t site) noexcept {
   return std::any_of(function.nodes().begin(), function.nodes().end(),
                      [site](const ir::Node& node) {
-                       return (node.opcode ==
-                                   ir::Opcode::kGuardFloatNonzero ||
+                       return (is_nonzero_guard(node.opcode) ||
                                node.opcode == ir::Opcode::kSafepoint) &&
                               static_cast<std::size_t>(node.immediate) == site;
                      });
@@ -78,8 +86,7 @@ bool has_runtime_exit_site(const ir::ControlFlowFunction& function,
                            std::size_t site) noexcept {
   return std::any_of(function.nodes().begin(), function.nodes().end(),
                      [site](const ir::ControlNode& node) {
-                       return (node.opcode ==
-                                   ir::ControlOpcode::kGuardFloatNonzero ||
+                       return (is_nonzero_guard(node.opcode) ||
                                node.opcode ==
                                    ir::ControlOpcode::kSafepoint) &&
                               static_cast<std::size_t>(node.immediate) == site;
@@ -90,7 +97,7 @@ ir::Value guard_value(const ir::Function& function,
                       std::size_t site) noexcept {
   for (std::size_t index = 0; index < function.nodes().size(); ++index) {
     const ir::Node& node = function.nodes()[index];
-    if (node.opcode == ir::Opcode::kGuardFloatNonzero &&
+    if (is_nonzero_guard(node.opcode) &&
         static_cast<std::size_t>(node.immediate) == site) {
       return ir::Value{static_cast<std::uint32_t>(index)};
     }
@@ -102,7 +109,7 @@ ir::Value guard_value(const ir::ControlFlowFunction& function,
                       std::size_t site) noexcept {
   for (std::size_t index = 0; index < function.nodes().size(); ++index) {
     const ir::ControlNode& node = function.nodes()[index];
-    if (node.opcode == ir::ControlOpcode::kGuardFloatNonzero &&
+    if (is_nonzero_guard(node.opcode) &&
         static_cast<std::size_t>(node.immediate) == site) {
       return ir::Value{static_cast<std::uint32_t>(index)};
     }
@@ -353,7 +360,7 @@ DeoptimizationPreparation prepare_deoptimization(
   runtime::DeoptimizationTable result;
   try {
     for (const ir::Node& node : optimized.nodes()) {
-      if (node.opcode != ir::Opcode::kGuardFloatNonzero) {
+      if (!is_nonzero_guard(node.opcode)) {
         continue;
       }
       const std::size_t site = static_cast<std::size_t>(node.immediate);
@@ -374,7 +381,10 @@ DeoptimizationPreparation prepare_deoptimization(
       fallback.resume_offset = site;
       fallback.reason = runtime::DeoptimizationReason::kGuardFailed;
       fallback.recovery.push_back(runtime::RecoveryOperation::exit_value(
-          input.parameter_count(), ir::ValueType::kFloat64));
+          input.parameter_count(),
+          node.opcode == ir::Opcode::kGuardWordNonzero
+              ? ir::ValueType::kWord
+              : ir::ValueType::kFloat64));
       const Status addition = result.add(fallback);
       if (!addition.ok()) {
         return {addition, {}};
@@ -424,7 +434,7 @@ DeoptimizationPreparation prepare_deoptimization(
   runtime::DeoptimizationTable result;
   try {
     for (const ir::ControlNode& node : lowered.nodes()) {
-      if (node.opcode != ir::ControlOpcode::kGuardFloatNonzero) {
+      if (!is_nonzero_guard(node.opcode)) {
         continue;
       }
       const std::size_t site = static_cast<std::size_t>(node.immediate);
@@ -445,7 +455,10 @@ DeoptimizationPreparation prepare_deoptimization(
       fallback.resume_offset = site;
       fallback.reason = runtime::DeoptimizationReason::kGuardFailed;
       fallback.recovery.push_back(runtime::RecoveryOperation::exit_value(
-          input.parameter_count(), ir::ValueType::kFloat64));
+          input.parameter_count(),
+          node.opcode == ir::ControlOpcode::kGuardWordNonzero
+              ? ir::ValueType::kWord
+              : ir::ValueType::kFloat64));
       const Status addition = result.add(fallback);
       if (!addition.ok()) {
         return {addition, {}};
@@ -1214,7 +1227,7 @@ CompilationResult Compiler::compile(
     const bool requires_context = !assumptions.empty() || std::any_of(
         lowered->nodes().begin(), lowered->nodes().end(),
         [](const ir::Node& node) {
-          return node.opcode == ir::Opcode::kGuardFloatNonzero;
+          return is_nonzero_guard(node.opcode);
         });
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
         std::move(implementation), copy_parameter_types(function),
@@ -1405,7 +1418,7 @@ CompilationResult Compiler::compile(
         lowered->nodes().begin(), lowered->nodes().end(),
         [](const ir::ControlNode& node) {
           return node.opcode == ir::ControlOpcode::kSafepoint ||
-                 node.opcode == ir::ControlOpcode::kGuardFloatNonzero;
+                 is_nonzero_guard(node.opcode);
         });
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
         std::move(implementation), copy_parameter_types(function),

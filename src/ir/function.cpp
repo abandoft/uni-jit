@@ -34,6 +34,36 @@ RuntimeHelper unpack_runtime_helper(Word bits) noexcept {
   return helper;
 }
 
+Word floor_divide_word(Word lhs, Word rhs) noexcept {
+  if (rhs == 0) {
+    return 0;
+  }
+  if (rhs == -1) {
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &lhs, sizeof(bits));
+    bits = UINT64_C(0) - bits;
+    Word result = 0;
+    std::memcpy(&result, &bits, sizeof(result));
+    return result;
+  }
+  Word quotient = lhs / rhs;
+  if ((lhs ^ rhs) < 0 && lhs % rhs != 0) {
+    --quotient;
+  }
+  return quotient;
+}
+
+Word floor_modulo_word(Word lhs, Word rhs) noexcept {
+  if (rhs == 0 || rhs == -1) {
+    return 0;
+  }
+  Word remainder = lhs % rhs;
+  if (remainder != 0 && (remainder ^ rhs) < 0) {
+    remainder += rhs;
+  }
+  return remainder;
+}
+
 FunctionBuilder::FunctionBuilder(std::size_t parameter_count)
     : FunctionBuilder(std::vector<ValueType>(parameter_count,
                                              ValueType::kWord)) {}
@@ -127,6 +157,14 @@ Value FunctionBuilder::shift_left(Value value, Value amount) {
   return append_binary(Opcode::kShiftLeft, value, amount);
 }
 
+Value FunctionBuilder::floor_divide(Value lhs, Value rhs) {
+  return append_binary(Opcode::kFloorDivide, lhs, rhs);
+}
+
+Value FunctionBuilder::floor_modulo(Value lhs, Value rhs) {
+  return append_binary(Opcode::kFloorModulo, lhs, rhs);
+}
+
 Value FunctionBuilder::negate(Value value) {
   if (function_.nodes_.size() >= Value::kInvalidId) {
     return {};
@@ -196,6 +234,17 @@ Value FunctionBuilder::guard_float64_nonzero(Value value, std::size_t site) {
   }
   const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
   function_.nodes_.push_back(Node{Opcode::kGuardFloatNonzero, value, {},
+                                  static_cast<Word>(site)});
+  return Value{id};
+}
+
+Value FunctionBuilder::guard_word_nonzero(Value value, std::size_t site) {
+  if (function_.nodes_.size() >= Value::kInvalidId ||
+      site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {
+    return {};
+  }
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  function_.nodes_.push_back(Node{Opcode::kGuardWordNonzero, value, {},
                                   static_cast<Word>(site)});
   return Value{id};
 }

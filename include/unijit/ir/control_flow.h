@@ -46,6 +46,8 @@ enum class ControlOpcode : std::uint8_t {
   kBitwiseOr,
   kBitwiseXor,
   kShiftLeft,
+  kFloorDivide,
+  kFloorModulo,
   kNegate,
   kBitwiseNot,
   kFloatAdd,
@@ -60,6 +62,7 @@ enum class ControlOpcode : std::uint8_t {
   kLessThan,
   kLessEqual,
   kCall,
+  kGuardWordNonzero,
   kGuardFloatNonzero,
   kSafepoint,
 };
@@ -165,6 +168,8 @@ public:
   // Uses the same signed bidirectional, overshift-to-zero contract as the
   // straight-line builder.
   Value shift_left(Value value, Value amount);
+  Value floor_divide(Value lhs, Value rhs);
+  Value floor_modulo(Value lhs, Value rhs);
   Value negate(Value value);
   Value bitwise_not(Value value);
   Value float64_add(Value lhs, Value rhs);
@@ -180,6 +185,7 @@ public:
   Value less_equal(Value lhs, Value rhs);
   Value call(RuntimeHelper helper, std::vector<Value> arguments,
              ValueType result_type = ValueType::kWord);
+  Value guard_word_nonzero(Value value, std::size_t site);
   Value guard_float64_nonzero(Value value, std::size_t site);
   Value safepoint(std::size_t site);
 

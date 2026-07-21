@@ -50,6 +50,10 @@ Word evaluate_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
       return from_bits(lhs_bits ^ rhs_bits);
     case Opcode::kShiftLeft:
       return shift_left(lhs, rhs);
+    case Opcode::kFloorDivide:
+      return floor_divide_word(lhs, rhs);
+    case Opcode::kFloorModulo:
+      return floor_modulo_word(lhs, rhs);
     case Opcode::kNegate:
       return from_bits(UINT64_C(0) - lhs_bits);
     case Opcode::kBitwiseNot:
@@ -72,6 +76,7 @@ Word evaluate_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
       return unpack_float64(lhs) == unpack_float64(rhs) ? 1 : 0;
     case Opcode::kFloatNotEqual:
       return unpack_float64(lhs) != unpack_float64(rhs) ? 1 : 0;
+    case Opcode::kGuardWordNonzero:
     case Opcode::kGuardFloatNonzero:
     case Opcode::kParameter:
     case Opcode::kConstant:
@@ -131,16 +136,20 @@ EvaluationResult Interpreter::evaluate(const Function& function,
               helper_arguments.data(), helper_arguments.size());
           break;
         }
+        case Opcode::kGuardWordNonzero:
         case Opcode::kGuardFloatNonzero:
           values[index] = 0;
-          if (unpack_float64(values[node.lhs.id()]) == 0.0) {
+          if ((node.opcode == Opcode::kGuardWordNonzero &&
+               values[node.lhs.id()] == 0) ||
+              (node.opcode == Opcode::kGuardFloatNonzero &&
+               unpack_float64(values[node.lhs.id()]) == 0.0)) {
             const auto site = static_cast<std::size_t>(node.immediate);
             if (context != nullptr) {
               context->record_exit(runtime::ExitReason::kRuntime, site,
                                    values[node.lhs.id()]);
             }
             return {{StatusCode::kRuntimeExit,
-                     "Float64 nonzero guard requested a runtime exit", site},
+                     "nonzero guard requested a runtime exit", site},
                     0};
           }
           break;
@@ -164,6 +173,8 @@ EvaluationResult Interpreter::evaluate(const Function& function,
         case Opcode::kBitwiseOr:
         case Opcode::kBitwiseXor:
         case Opcode::kShiftLeft:
+        case Opcode::kFloorDivide:
+        case Opcode::kFloorModulo:
         case Opcode::kNegate:
         case Opcode::kBitwiseNot:
         case Opcode::kFloatAdd:
