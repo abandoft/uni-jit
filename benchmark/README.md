@@ -36,6 +36,23 @@ Hosted platform validation rejects fewer than seven samples, a narrower
 measurement boundary, less than a 5x interpreter speedup, or more than 400
 native code bytes, and retains the structured gate decision with the raw record.
 
+The bounded-memory benchmark measures one verified 64-bit store/load pair in
+the naturally aligned native-order fast path and the deliberately unaligned
+big-endian path. Both native cases use a bound execution context and are
+checksum- and byte-matched against the reference interpreter:
+
+```sh
+build/benchmark/benchmark/unijit_bounded_memory_benchmark \
+  --warmup 10000 --iterations 100000 --samples 7 \
+  > build/benchmark/bounded-memory.json
+```
+
+The versioned JSON records compilation latency, native code bytes, median
+latency, interpreter latency, speedup, and checksum for each path. Initial
+records establish architecture-specific baselines; a release-blocking floor is
+added only after the same boundary is stable on real AArch64, Ubuntu/Windows
+x86-64, and RISC-V 64 hosts.
+
 ## Lua reference baseline
 
 The pinned Lua 5.5 interpreter is compiled directly by CMake. LuaJIT's native
