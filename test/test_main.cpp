@@ -842,6 +842,30 @@ void test_word_unary_operations() {
     }
   }
 
+  unijit::ir::ControlFlowBuilder total_cfg_builder(2);
+  const Value total_cfg_divide = total_cfg_builder.floor_divide(
+      total_cfg_builder.parameter(0), total_cfg_builder.parameter(1));
+  const Value total_cfg_modulo = total_cfg_builder.floor_modulo(
+      total_cfg_builder.parameter(0), total_cfg_builder.parameter(1));
+  expect(total_cfg_builder
+             .set_return(total_cfg_builder.add(total_cfg_divide,
+                                               total_cfg_modulo))
+             .ok(),
+         "total CFG floor fixture must record its result");
+  const auto total_cfg_compilation = Compiler::compile(
+      std::move(total_cfg_builder).build(),
+      unijit::jit::CompilationOptions{
+          unijit::jit::OptimizationLevel::kBaseline});
+  const std::array<Word, 2> total_zero_arguments = {7, 0};
+  const auto total_zero_result =
+      total_cfg_compilation.ok()
+          ? total_cfg_compilation.function->invoke(total_zero_arguments.data(),
+                                                   total_zero_arguments.size())
+          : unijit::ir::EvaluationResult{};
+  expect(total_cfg_compilation.ok() && total_zero_result.ok() &&
+             total_zero_result.value == 0,
+         "native CFG floor arithmetic must totalize a zero divisor");
+
   unijit::ir::ControlFlowBuilder cfg_optimized_builder(1);
   const Value cfg_double_not = cfg_optimized_builder.bitwise_not(
       cfg_optimized_builder.bitwise_not(
@@ -1151,10 +1175,10 @@ void test_word_floor_arithmetic() {
   expect(divide_compilation.ok() && modulo_compilation.ok(),
          "Word floor arithmetic must compile to native code");
 
-  constexpr std::array<Word, 11> kValues = {
+  constexpr std::array<Word, 12> kValues = {
       std::numeric_limits<Word>::min(), -17, -7, -3, -1, 0,
       1,                                  2,   3,  7,
-      std::numeric_limits<Word>::max(),
+      std::numeric_limits<Word>::max(), 3776918176276767148LL,
   };
   for (const Word lhs : kValues) {
     for (const Word rhs : kValues) {
@@ -1228,14 +1252,21 @@ void test_word_floor_arithmetic() {
   const auto cfg_compilation = Compiler::compile(cfg_function);
   expect(cfg_compilation.ok(),
          "CFG Word guards and floor arithmetic must compile");
-  const std::array<Word, 2> cfg_arguments = {-17, 5};
   if (cfg_compilation.ok()) {
-    const auto native = cfg_compilation.function->invoke(
-        cfg_arguments.data(), cfg_arguments.size(), &context);
-    expect(native.ok() &&
-               native.value == unijit::ir::floor_divide_word(-17, 5) +
-                                   unijit::ir::floor_modulo_word(-17, 5),
-           "native CFG floor arithmetic must implement signed floor semantics");
+    for (const Word lhs : kValues) {
+      for (const Word rhs : kValues) {
+        if (rhs == 0) {
+          continue;
+        }
+        const std::array<Word, 2> cfg_arguments = {lhs, rhs};
+        const auto native = cfg_compilation.function->invoke(
+            cfg_arguments.data(), cfg_arguments.size(), &context);
+        expect(native.ok() &&
+                   native.value == unijit::ir::floor_divide_word(lhs, rhs) +
+                                       unijit::ir::floor_modulo_word(lhs, rhs),
+               "native CFG floor arithmetic must implement signed floor semantics");
+      }
+    }
   }
 
   FunctionBuilder malformed(
