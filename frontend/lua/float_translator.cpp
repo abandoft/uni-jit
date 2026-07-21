@@ -1,6 +1,5 @@
 #include "float_translator.h"
 
-#include <array>
 #include <cstddef>
 #include <cstdio>
 #include <new>
@@ -418,10 +417,39 @@ CompilationResult compile_float64_numeric_for_prototype(
                                "unable to guard a Float64 loop step");
     }
 
+    std::vector<bool> needed_registers(prototype.maxstacksize, false);
+    const auto note_register_reads = [&](int begin, int end) {
+      for (int pc = begin; pc < end; ++pc) {
+        const Instruction instruction = prototype.code[pc];
+        const OpCode opcode = GET_OPCODE(instruction);
+        const auto note = [&](int index) {
+          if (index >= 0 && index < prototype.maxstacksize) {
+            needed_registers[static_cast<std::size_t>(index)] = true;
+          }
+        };
+        if (opcode == OP_MOVE || opcode == OP_ADDI || opcode == OP_ADDK ||
+            opcode == OP_SUBK || opcode == OP_MULK || opcode == OP_DIVK ||
+            opcode == OP_UNM) {
+          note(GETARG_B(instruction));
+        } else if (opcode == OP_ADD || opcode == OP_SUB ||
+                   opcode == OP_MUL || opcode == OP_DIV) {
+          note(GETARG_B(instruction));
+          note(GETARG_C(instruction));
+        } else if (opcode == OP_RETURN || opcode == OP_RETURN1) {
+          note(GETARG_A(instruction));
+        }
+      }
+    };
+    note_register_reads(preparation_pc + 1, loop_pc);
+    note_register_reads(loop_pc + 1, prototype.sizecode);
+    for (int offset = 0; offset < 3; ++offset) {
+      needed_registers[static_cast<std::size_t>(state_base + offset)] = true;
+    }
+
     std::vector<std::size_t> carried_registers;
     std::vector<NumericKind> carried_kinds;
     for (std::size_t index = 0; index < registers.size(); ++index) {
-      if (!registers[index].valid()) {
+      if (!registers[index].valid() || !needed_registers[index]) {
         continue;
       }
       carried_registers.push_back(index);
@@ -436,21 +464,28 @@ CompilationResult compile_float64_numeric_for_prototype(
                                               ValueType::kFloat64);
     const ir::Block positive_entry = builder.create_block(0);
     const ir::Block nonpositive_entry = builder.create_block(0);
-    const ir::Block dispatch = builder.create_block(block_types);
     constexpr std::size_t kOptimizedUnrollFactor = 8;
-    const std::size_t emitted_iterations =
-        optimization_level == jit::OptimizationLevel::kBaseline
-            ? 1
-            : kOptimizedUnrollFactor;
-    std::array<ir::Block, kOptimizedUnrollFactor> iterations;
-    bool iterations_valid = true;
-    for (std::size_t index = 0; index < emitted_iterations; ++index) {
-      iterations[index] = builder.create_block(block_types);
-      iterations_valid = iterations_valid && iterations[index].valid();
-    }
+    const bool unroll_loop =
+        optimization_level != jit::OptimizationLevel::kBaseline;
+    std::vector<ValueType> unrolled_types = block_types;
+    unrolled_types.insert(unrolled_types.end(),
+                          kOptimizedUnrollFactor - 1,
+                          ValueType::kFloat64);
+    const ir::Block positive_dispatch = builder.create_block(block_types);
+    const ir::Block nonpositive_dispatch = builder.create_block(block_types);
+    const ir::Block positive_unrolled =
+        unroll_loop ? builder.create_block(unrolled_types) : ir::Block{};
+    const ir::Block nonpositive_unrolled =
+        unroll_loop ? builder.create_block(unrolled_types) : ir::Block{};
+    const ir::Block positive_scalar = builder.create_block(block_types);
+    const ir::Block nonpositive_scalar = builder.create_block(block_types);
     const ir::Block exit = builder.create_block(block_types);
     if (!positive_entry.valid() || !nonpositive_entry.valid() ||
-        !dispatch.valid() || !iterations_valid || !exit.valid()) {
+        !positive_dispatch.valid() || !nonpositive_dispatch.valid() ||
+        (unroll_loop &&
+         (!positive_unrolled.valid() || !nonpositive_unrolled.valid())) ||
+        !positive_scalar.valid() || !nonpositive_scalar.valid() ||
+        !exit.valid()) {
       return {{StatusCode::kResourceExhausted,
                "unable to allocate Float64 numeric-loop blocks"},
               nullptr};
@@ -488,7 +523,8 @@ CompilationResult compile_float64_numeric_for_prototype(
     }
     const Value positive_enters = builder.equal(
         builder.float64_less_than(limit, start), zero_word);
-    status = builder.branch(positive_enters, dispatch, initial_arguments, exit,
+    status = builder.branch(positive_enters, positive_dispatch,
+                            initial_arguments, exit,
                             skipped_arguments);
     if (!status.ok()) {
       return {status, nullptr};
@@ -500,8 +536,9 @@ CompilationResult compile_float64_numeric_for_prototype(
     }
     const Value nonpositive_enters = builder.equal(
         builder.float64_less_than(start, limit), zero_word);
-    status = builder.branch(nonpositive_enters, dispatch, initial_arguments,
-                            exit, skipped_arguments);
+    status = builder.branch(nonpositive_enters, nonpositive_dispatch,
+                            initial_arguments, exit,
+                            skipped_arguments);
     if (!status.ok()) {
       return {status, nullptr};
     }
@@ -545,46 +582,104 @@ CompilationResult compile_float64_numeric_for_prototype(
       return Status::ok_status();
     };
 
-    status = builder.set_insertion_block(dispatch);
+    const auto block_arguments = [&](ir::Block block) {
+      std::vector<Value> arguments;
+      arguments.reserve(carried_registers.size());
+      for (std::size_t index = 0; index < carried_registers.size(); ++index) {
+        arguments.push_back(builder.block_parameter(block, index));
+      }
+      return arguments;
+    };
+    const auto next_arguments = [&](const std::vector<Value>& completed,
+                                    Value next_index) {
+      std::vector<Value> arguments = completed;
+      for (std::size_t index = 0; index < carried_registers.size(); ++index) {
+        if (carried_registers[index] ==
+            static_cast<std::size_t>(state_base + 2)) {
+          arguments[index] = next_index;
+        }
+      }
+      return arguments;
+    };
+    const auto emit_dispatch = [&](ir::Block dispatch, ir::Block unrolled,
+                                   ir::Block scalar,
+                                   bool positive,
+                                   std::size_t safepoint_site) -> Status {
+      Status dispatch_status = builder.set_insertion_block(dispatch);
+      if (!dispatch_status.ok()) {
+        return dispatch_status;
+      }
+      if (!builder.safepoint(safepoint_site).valid()) {
+        return {StatusCode::kInvalidArgument,
+                "unable to insert a Float64 loop safepoint"};
+      }
+      std::vector<Value> arguments = block_arguments(dispatch);
+      if (!unroll_loop) {
+        return builder.jump(scalar, arguments);
+      }
+      const std::vector<Value> scalar_arguments = arguments;
+      const std::vector<Value> dispatch_registers = block_registers(dispatch);
+      const Value dispatch_limit =
+          dispatch_registers[static_cast<std::size_t>(state_base)];
+      const Value dispatch_step =
+          dispatch_registers[static_cast<std::size_t>(state_base + 1)];
+      Value last_index =
+          dispatch_registers[static_cast<std::size_t>(state_base + 2)];
+      for (std::size_t index = 1; index < kOptimizedUnrollFactor; ++index) {
+        last_index = builder.float64_add(last_index, dispatch_step);
+        arguments.push_back(last_index);
+      }
+      const Value has_full_group =
+          positive
+              ? builder.float64_less_equal(last_index, dispatch_limit)
+              : builder.float64_less_equal(dispatch_limit, last_index);
+      return builder.branch(has_full_group, unrolled, arguments, scalar,
+                            scalar_arguments);
+    };
+    status = emit_dispatch(positive_dispatch, positive_unrolled,
+                           positive_scalar, true,
+                           static_cast<std::size_t>(preparation_pc));
     if (!status.ok()) {
       return {status, nullptr};
     }
-    if (!builder.safepoint(static_cast<std::size_t>(preparation_pc)).valid()) {
-      return translation_error(static_cast<std::size_t>(preparation_pc),
-                               "unable to insert a Float64 loop safepoint");
-    }
-    std::vector<Value> dispatch_arguments;
-    dispatch_arguments.reserve(carried_registers.size());
-    for (std::size_t index = 0; index < carried_registers.size(); ++index) {
-      dispatch_arguments.push_back(builder.block_parameter(dispatch, index));
-    }
-    status = builder.jump(iterations[0], dispatch_arguments);
+    status = emit_dispatch(nonpositive_dispatch, nonpositive_unrolled,
+                           nonpositive_scalar, false,
+                           2 * static_cast<std::size_t>(prototype.sizecode) +
+                               static_cast<std::size_t>(preparation_pc));
     if (!status.ok()) {
       return {status, nullptr};
     }
 
-    for (std::size_t iteration = 0; iteration < emitted_iterations;
-         ++iteration) {
-      status = builder.set_insertion_block(iterations[iteration]);
-      if (!status.ok()) {
-        return {status, nullptr};
+    const auto emit_iteration = [&](ir::Block iteration,
+                                    ir::Block dispatch,
+                                    bool positive,
+                                    std::size_t count) -> Status {
+      Status iteration_status = builder.set_insertion_block(iteration);
+      if (!iteration_status.ok()) {
+        return iteration_status;
       }
-      std::vector<Value> iteration_registers =
-          block_registers(iterations[iteration]);
+      std::vector<Value> iteration_registers = block_registers(iteration);
       std::vector<NumericKind> iteration_kinds = block_kinds();
-      returned = false;
-      status = translate_float_range(
-          prototype, &builder, preparation_pc + 1, loop_pc, false, state_base,
-          &iteration_registers, &iteration_kinds, &returned);
-      if (!status.ok()) {
-        return {status, nullptr};
+      for (std::size_t index = 0; index < count; ++index) {
+        returned = false;
+        iteration_status = translate_float_range(
+            prototype, &builder, preparation_pc + 1, loop_pc, false,
+            state_base, &iteration_registers, &iteration_kinds, &returned);
+        if (!iteration_status.ok()) {
+          return iteration_status;
+        }
+        if (index + 1 < count) {
+          iteration_registers[static_cast<std::size_t>(state_base + 2)] =
+              builder.block_parameter(iteration,
+                                      carried_registers.size() + index);
+        }
       }
 
       std::vector<Value> completed;
-      status = collect_carried(iteration_registers, iteration_kinds,
-                               &completed);
-      if (!status.ok()) {
-        return {status, nullptr};
+      iteration_status =
+          collect_carried(iteration_registers, iteration_kinds, &completed);
+      if (!iteration_status.ok()) {
+        return iteration_status;
       }
       const Value current_index =
           iteration_registers[static_cast<std::size_t>(state_base + 2)];
@@ -592,36 +687,34 @@ CompilationResult compile_float64_numeric_for_prototype(
           iteration_registers[static_cast<std::size_t>(state_base)];
       const Value loop_step =
           iteration_registers[static_cast<std::size_t>(state_base + 1)];
-      const Value iteration_zero_float = builder.float64_constant(0.0);
-      const Value iteration_zero_word = builder.constant(0);
-      const Value iteration_step_positive =
-          builder.float64_less_than(iteration_zero_float, loop_step);
-      const Value iteration_step_nonpositive =
-          builder.equal(iteration_step_positive, iteration_zero_word);
       const Value next_index = builder.float64_add(current_index, loop_step);
-      const Value positive_continues =
-          builder.float64_less_equal(next_index, loop_limit);
-      const Value nonpositive_continues =
-          builder.float64_less_equal(loop_limit, next_index);
-      const Value continues = builder.bitwise_or(
-          builder.bitwise_and(iteration_step_positive, positive_continues),
-          builder.bitwise_and(iteration_step_nonpositive,
-                              nonpositive_continues));
-      std::vector<Value> next_arguments = completed;
-      for (std::size_t index = 0; index < carried_registers.size(); ++index) {
-        if (carried_registers[index] ==
-            static_cast<std::size_t>(state_base + 2)) {
-          next_arguments[index] = next_index;
-        }
-      }
-      const ir::Block continuation =
-          iteration + 1 < emitted_iterations ? iterations[iteration + 1]
-                                             : dispatch;
-      status = builder.branch(continues, continuation, next_arguments, exit,
-                              completed);
+      const Value continues =
+          positive ? builder.float64_less_equal(next_index, loop_limit)
+                   : builder.float64_less_equal(loop_limit, next_index);
+      return builder.branch(continues, dispatch,
+                            next_arguments(completed, next_index), exit,
+                            completed);
+    };
+    if (unroll_loop) {
+      status = emit_iteration(positive_unrolled, positive_dispatch, true,
+                              kOptimizedUnrollFactor);
       if (!status.ok()) {
         return {status, nullptr};
       }
+      status = emit_iteration(nonpositive_unrolled, nonpositive_dispatch,
+                              false, kOptimizedUnrollFactor);
+      if (!status.ok()) {
+        return {status, nullptr};
+      }
+    }
+    status = emit_iteration(positive_scalar, positive_dispatch, true, 1);
+    if (!status.ok()) {
+      return {status, nullptr};
+    }
+    status = emit_iteration(nonpositive_scalar, nonpositive_dispatch, false,
+                            1);
+    if (!status.ok()) {
+      return {status, nullptr};
     }
 
     status = builder.set_insertion_block(exit);

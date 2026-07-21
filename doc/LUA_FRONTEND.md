@@ -93,11 +93,23 @@ operand. `DIV` always produces Float64 and therefore also accepts two integer
 literals; other integer-only arithmetic and non-Float64 results are rejected
 rather than changing Lua's numeric tag semantics.
 
-Varargs, general branches, calls, tables, floating-point values, upvalue
-access, and all other opcodes are rejected at compile time with the bytecode
-position. This is an explicit capability boundary rather than a silent
-semantic fallback. Later frontend tiers will add guarded exits and
-deoptimization for the broader Lua language.
+The Float64 tier also accepts one structured numeric `for` loop with guarded
+Float64 start, limit, and step parameters. Entry and continuation comparisons
+match stock Lua 5.5 for positive, negative, fractional, infinite, NaN, and both
+signed-zero controls; a zero step raises Lua's error before native execution.
+The scalar baseline polls every source iteration. The optimized tier selects
+the direction once, carries only bytecode-live registers, computes each group
+index through the same ordered sequence of Float64 additions as Lua, executes
+up to eight bodies in one block, and retains a scalar 0–7-iteration tail. It
+therefore avoids reassociation while bounding cooperative-poll latency. A
+failed final continuation preserves Lua's current hidden index instead of
+publishing the rejected next value.
+
+Varargs, general Float64 branches, calls, tables, upvalue access, and all other
+opcodes outside the documented numeric subsets are rejected at compile time
+with the bytecode position. This is an explicit capability boundary rather
+than a silent semantic fallback. Later frontend tiers will add guarded exits
+and deoptimization for the broader Lua language.
 
 The first CFG path also accepts one structured numeric `for` loop when its
 start and step are integer constants or guarded function parameters and the
