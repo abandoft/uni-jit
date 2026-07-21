@@ -32,6 +32,25 @@ Mismatch diagnostics contain the tier, seed, program index, input index,
 statuses, and exact result bits. A hosted failure can therefore be replayed
 locally without preserving a mutable random corpus.
 
+## Strict SIMD complete-loop gate
+
+`unijit_cfg_simd_benchmark` measures a fixed I32x4 add/XOR/shuffle recurrence
+inside a generated CFG loop rather than timing isolated native calls. It runs
+the vector native function, an independently built four-lane scalar native
+equivalent, and the vector reference interpreter over the same inputs and
+requires the deterministic `0x15424b4ac53c353c` checksum from every path.
+
+The `unijit.cfg-simd-benchmark.v1` record includes architecture, operating
+system, `native` or `scalarized` lowering identity, compilation latency, code
+bytes, spill slots, seven median samples, and both speedup ratios. The hosted
+gate uses 1,000 loop iterations, 100 warmups, and 500 measured invocations and
+rejects less than 1.10x speedup over equivalent scalar generated code, less
+than 10x over interpretation, or more than 1,024 vector code bytes. Platform
+validation retains the benchmark and gate JSON separately for AArch64,
+Ubuntu GCC/Clang x86-64, macOS x86-64, and Windows MSVC x86-64. The identical
+gate is replayed on real RISC-V 64 hardware, where lowering must identify
+itself as `scalarized`.
+
 ## Concurrent code-cache stress
 
 `unijit_code_cache_stress` runs configurable reader and writer populations over

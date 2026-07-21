@@ -181,14 +181,24 @@ through the bounded scalar path, including baseline/optimized parity, stack
 pressure, helper crossings, typed CFG edges, the committed corpus, and both
 extended 512-program seeds.
 
+The `unijit_cfg_simd_benchmark` qualification boundary runs a fixed strict
+I32x4 add/XOR/shuffle recurrence entirely inside generated CFG loops. It
+bit-matches the vector native result with both an equivalent four-lane scalar
+native CFG and the vector interpreter, then reports compilation latency, code
+size, spill slots, median nanoseconds per source-loop iteration, speedup ratios,
+and a deterministic checksum. The machine-readable gate requires seven
+samples of 1,000-iteration loops across 500 measured invocations, at least
+1.10x speedup over equivalent scalar generated code, at least 10x over the
+interpreter, and at most 1,024 bytes of vector native code. Hosted AArch64,
+Ubuntu GCC/Clang and Windows MSVC x86-64, hosted macOS x86-64, and real Bianbu
+RISC-V 64 all pass; per-host JSON records are retained by the platform
+workflow, and RISC-V explicitly reports `scalarized` rather than `native`.
+
 The P0 feature remains incomplete until all of the following are delivered:
 
 1. bounded aligned and unaligned vector loads/stores using the existing memory
    provenance and diagnosed-exit model;
 2. target-profile-scoped `native`/`legalized`/`scalarized`/`unsupported`
    preflight and compilation telemetry;
-3. complete-loop SIMD performance evidence on real AArch64, Ubuntu and Windows
-   x86-64, and RISC-V 64 hosts, plus native differential, sanitizer, spill,
-   call, and edge-copy evidence for each newly enabled fast path;
-4. optional RVV lowering selected only by an explicit compatible target
+3. optional RVV lowering selected only by an explicit compatible target
    profile and proven against the same scalar oracle and real-host matrix.

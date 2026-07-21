@@ -19,7 +19,7 @@ qualifying the shared commercial contract on those three targets.
 | Capability | Current UniJIT state | Product decision | Priority |
 |---|---|---|---|
 | Scalar Word and Float64 operations | Implemented in both IR forms and all three backends | Continue expanding through the same typed contract | Delivered |
-| SIMD | The strict 128-bit type/operation contract, both IR forms, verifier, interpreters, CFG whole-vector edges, folding, limits, differential generation, typed shared-SIMD allocation, aligned two-word vector slots, mixed-bank parallel copies, complete AArch64 Advanced SIMD/NEON and x86-64 SSE2 lowering, and bounded stack-only RV64IMD scalar lowering for the current explicit surface are delivered | Complete bounded vector memory, capability telemetry, performance gates, and an optional profile-specific RVV fast path before wider profiles or loop vectorization | P0 partial |
+| SIMD | The strict 128-bit type/operation contract, both IR forms, verifier, interpreters, CFG whole-vector edges, folding, limits, differential generation, typed shared-SIMD allocation, aligned two-word vector slots, mixed-bank parallel copies, complete AArch64 Advanced SIMD/NEON and x86-64 SSE2 lowering, bounded stack-only RV64IMD scalar lowering, and a retained three-architecture complete-CFG-loop performance gate for the current explicit surface are delivered | Complete bounded vector memory, capability telemetry, and an optional profile-specific RVV fast path before wider profiles or loop vectorization | P0 partial |
 | Typed memory, unaligned access, byte reversal | Bounded 8/16/32/64-bit Word memory, Float32/Float64 storage, standalone 16/32/64-bit byte reversal, fixed Word/Float64 frame slots, and preflighted trusted Word/Float64 object layouts are delivered in both IR forms, the interpreter, optimizer, and all three native backends | Use the completed scalar provenance floor for SIMD, atomics, and later FFI lowering | Delivered scalar floor |
 | Generated-code atomics | Runtime control structures use C++ atomics; generated IR has none | Add typed atomic IR with explicit memory order and natural-alignment rules | P1 |
 | Fast internal calls | Calls currently use the portable runtime-helper ABI | Add a private JIT-to-JIT convention without weakening external ABI safety | P1 |
@@ -399,10 +399,12 @@ byte-identical packages for identical inputs and target profiles.
    spill plans, call liveness, mixed-bank edge-cycle planning, complete
    AArch64 lowering, complete x86-64 SSE2 lowering, and bounded stack-only
    RV64IMD scalar lowering for the current explicit surface are delivered;
-   vector memory, feature preflight and telemetry, and performance gates
-   remain.
-3. Add explicit SIMD and complete-loop performance gates on real AArch64,
-   Ubuntu/Windows x86-64, and RISC-V 64 hosts; emulation is supplemental only.
+   vector memory and feature preflight/telemetry remain.
+3. Retain explicit SIMD and complete-loop performance gates on real AArch64,
+   Ubuntu/Windows x86-64, and RISC-V 64 hosts. This gate is delivered with
+   vector/scalar/interpreter parity, target lowering identity, fixed workload
+   checksum, code-size ceiling, and minimum speedup ratios; emulation remains
+   supplemental only.
 4. Deliver atomic memory operations and data-only patch cells with concurrency,
    invalidation, sanitizer, and reclamation stress.
 5. Deliver the JIT-to-JIT convention, unwind-aware tail transfers, and

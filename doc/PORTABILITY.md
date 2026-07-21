@@ -137,6 +137,24 @@ differential corpus and two extended 512-program by 64-input seeds. The
 RISC-V backend keeps vectors in aligned two-word stack slots and emits finite
 RV64IMD scalar sequences; this evidence does not claim RVV instruction use.
 
+At commit `402f07e`, the fixed strict I32x4 complete-CFG-loop record produced
+the same `0x15424b4ac53c353c` checksum on every host. Each result passed the
+1.10x equivalent-scalar speedup, 10x interpreter speedup, and 1,024-byte code
+ceiling:
+
+| Native host | Lowering | Vector ns/iteration | Scalar ns/iteration | Vector/scalar | Vector/interpreter | Vector bytes |
+|---|---|---:|---:|---:|---:|---:|
+| Hosted macOS AArch64 | native | 2.719 | 9.205 | 3.386x | 64.300x | 428 |
+| Hosted Ubuntu GCC x86-64 | native | 1.285 | 7.095 | 5.522x | 113.771x | 725 |
+| Hosted Ubuntu Clang x86-64 | native | 1.447 | 7.764 | 5.366x | 118.470x | 725 |
+| Hosted Windows MSVC x86-64 | native | 1.000 | 4.002 | 4.000x | 223.889x | 725 |
+| Hosted macOS x86-64 | native | 1.548 | 8.973 | 5.798x | 286.451x | 725 |
+| Bianbu riscv64 | scalarized | 40.865 | 59.614 | 1.459x | 28.432x | 800 |
+
+The record measures the complete generated loop and compares semantically
+equivalent work; it is not an isolated-instruction throughput claim. Hosted
+artifacts retain the raw benchmark and machine-readable gate documents.
+
 The native test suite checks full-width constants, all bootstrap arithmetic
 operations, forced register spilling, invocation validation, and 5,000 seeded
 random comparisons against the interpreter oracle. It also checks helper calls

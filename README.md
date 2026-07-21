@@ -15,7 +15,9 @@ native AArch64 Advanced SIMD/NEON and x86-64 SSE2 lowering, plus bounded
 RV64IMD scalar lowering that does not require or claim RVV. Bounded Word
 memory supports byte-exact 8/16/32/64-bit loads and
 stores, explicit byte order, alignment and permission checks, diagnosed exits,
-and native lowering on all three backends.
+and native lowering on all three backends. A retained complete-CFG-loop SIMD
+gate requires speedup over both equivalent scalar generated code and the
+reference interpreter on every product architecture.
 See [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) for the design and delivery
 gates, [doc/PORTABILITY.md](doc/PORTABILITY.md) for verified platforms, and
 [doc/RUNTIME.md](doc/RUNTIME.md) for execution contexts, exits, and safepoints.
