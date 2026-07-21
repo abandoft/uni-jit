@@ -16,7 +16,8 @@ bool is_binary(Opcode opcode) {
          opcode == Opcode::kFloatSubtract ||
          opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide ||
          opcode == Opcode::kFloatLessThan ||
-         opcode == Opcode::kFloatLessEqual;
+         opcode == Opcode::kFloatLessEqual || opcode == Opcode::kFloatEqual ||
+         opcode == Opcode::kFloatNotEqual;
 }
 
 bool has_float_operands(Opcode opcode) {
@@ -24,12 +25,14 @@ bool has_float_operands(Opcode opcode) {
          opcode == Opcode::kFloatSubtract ||
          opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide ||
          opcode == Opcode::kFloatLessThan ||
-         opcode == Opcode::kFloatLessEqual;
+         opcode == Opcode::kFloatLessEqual || opcode == Opcode::kFloatEqual ||
+         opcode == Opcode::kFloatNotEqual;
 }
 
 bool is_float_comparison(Opcode opcode) {
   return opcode == Opcode::kFloatLessThan ||
-         opcode == Opcode::kFloatLessEqual;
+         opcode == Opcode::kFloatLessEqual || opcode == Opcode::kFloatEqual ||
+         opcode == Opcode::kFloatNotEqual;
 }
 
 }  // namespace

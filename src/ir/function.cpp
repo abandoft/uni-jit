@@ -135,6 +135,14 @@ Value FunctionBuilder::float64_less_equal(Value lhs, Value rhs) {
   return append_binary(Opcode::kFloatLessEqual, lhs, rhs);
 }
 
+Value FunctionBuilder::float64_equal(Value lhs, Value rhs) {
+  return append_binary(Opcode::kFloatEqual, lhs, rhs);
+}
+
+Value FunctionBuilder::float64_not_equal(Value lhs, Value rhs) {
+  return append_binary(Opcode::kFloatNotEqual, lhs, rhs);
+}
+
 Value FunctionBuilder::guard_float64_nonzero(Value value, std::size_t site) {
   if (function_.nodes_.size() >= Value::kInvalidId ||
       site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {

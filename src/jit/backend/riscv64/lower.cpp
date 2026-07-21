@@ -32,6 +32,13 @@ constexpr std::array<int, 8> kFloatAllocationRegisters = {10, 11, 12, 13,
 constexpr std::size_t kMaximumStackSize = 2032;
 constexpr std::size_t kMaximumAddressableParameters = 256;
 
+enum class FloatCondition : std::uint8_t {
+  kLessThan,
+  kLessEqual,
+  kEqual,
+  kNotEqual,
+};
+
 struct LiteralUse final {
   std::size_t instruction_offset{0};
   int destination{0};
@@ -95,8 +102,19 @@ class Assembler final {
     emit_r(0x0D, rhs, lhs, 0, destination, 0x53);
   }
 
-  void compare_float(int destination, int lhs, int rhs, bool or_equal) {
-    emit_r(0x51, rhs, lhs, or_equal ? 0 : 1, destination, 0x53);
+  void compare_float(int destination, int lhs, int rhs,
+                     FloatCondition condition) {
+    if (condition == FloatCondition::kEqual ||
+        condition == FloatCondition::kNotEqual) {
+      emit_r(0x51, rhs, lhs, 2, destination, 0x53);
+      if (condition == FloatCondition::kNotEqual) {
+        emit_i(1, destination, 4, destination, 0x13);
+      }
+      return;
+    }
+    emit_r(0x51, rhs, lhs,
+           condition == FloatCondition::kLessEqual ? 0 : 1, destination,
+           0x53);
   }
 
   void add(int destination, int lhs, int rhs) {
@@ -620,7 +638,9 @@ LoweringResult lower_impl(const ir::Function& function,
         break;
       }
       case ir::Opcode::kFloatLessThan:
-      case ir::Opcode::kFloatLessEqual: {
+      case ir::Opcode::kFloatLessEqual:
+      case ir::Opcode::kFloatEqual:
+      case ir::Opcode::kFloatNotEqual: {
         const int lhs = load_float_operand(
             &assembler, allocation.locations[node.lhs.id()], kFloatScratch0);
         const int rhs = load_float_operand(
@@ -628,8 +648,15 @@ LoweringResult lower_impl(const ir::Function& function,
         const int target = destination.in_register()
                                ? physical_register(destination)
                                : kScratch0;
-        assembler.compare_float(target, lhs, rhs,
-                                node.opcode == ir::Opcode::kFloatLessEqual);
+        FloatCondition condition = FloatCondition::kLessThan;
+        if (node.opcode == ir::Opcode::kFloatLessEqual) {
+          condition = FloatCondition::kLessEqual;
+        } else if (node.opcode == ir::Opcode::kFloatEqual) {
+          condition = FloatCondition::kEqual;
+        } else if (node.opcode == ir::Opcode::kFloatNotEqual) {
+          condition = FloatCondition::kNotEqual;
+        }
+        assembler.compare_float(target, lhs, rhs, condition);
         if (!destination.in_register()) {
           assembler.store(target, kStackPointer, spill_offset(destination));
         }
@@ -1429,14 +1456,22 @@ LoweringResult lower_control_flow_impl(
           break;
         }
         case ir::ControlOpcode::kFloatLessThan:
-        case ir::ControlOpcode::kFloatLessEqual: {
+        case ir::ControlOpcode::kFloatLessEqual:
+        case ir::ControlOpcode::kFloatEqual:
+        case ir::ControlOpcode::kFloatNotEqual: {
           const int lhs = load_control_float(
               &assembler, allocation, node.lhs, block_index, kFloatScratch0);
           const int rhs = load_control_float(
               &assembler, allocation, node.rhs, block_index, kFloatScratch1);
-          assembler.compare_float(
-              word_destination, lhs, rhs,
-              node.opcode == ir::ControlOpcode::kFloatLessEqual);
+          FloatCondition condition = FloatCondition::kLessThan;
+          if (node.opcode == ir::ControlOpcode::kFloatLessEqual) {
+            condition = FloatCondition::kLessEqual;
+          } else if (node.opcode == ir::ControlOpcode::kFloatEqual) {
+            condition = FloatCondition::kEqual;
+          } else if (node.opcode == ir::ControlOpcode::kFloatNotEqual) {
+            condition = FloatCondition::kNotEqual;
+          }
+          assembler.compare_float(word_destination, lhs, rhs, condition);
           if (allocated_word < 0 ||
               allocation.requires_stack[value.id()]) {
             assembler.store(word_destination, kStackPointer,

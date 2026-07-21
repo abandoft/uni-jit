@@ -26,6 +26,8 @@ void visit_control_operands(const ir::ControlFlowFunction& function,
     case ir::ControlOpcode::kFloatDivide:
     case ir::ControlOpcode::kFloatLessThan:
     case ir::ControlOpcode::kFloatLessEqual:
+    case ir::ControlOpcode::kFloatEqual:
+    case ir::ControlOpcode::kFloatNotEqual:
     case ir::ControlOpcode::kLessThan:
     case ir::ControlOpcode::kLessEqual:
       visitor(node.lhs);
@@ -77,7 +79,9 @@ RegisterAllocation allocate_impl(const ir::Function& function,
         node.opcode == ir::Opcode::kFloatMultiply ||
         node.opcode == ir::Opcode::kFloatDivide ||
         node.opcode == ir::Opcode::kFloatLessThan ||
-        node.opcode == ir::Opcode::kFloatLessEqual) {
+        node.opcode == ir::Opcode::kFloatLessEqual ||
+        node.opcode == ir::Opcode::kFloatEqual ||
+        node.opcode == ir::Opcode::kFloatNotEqual) {
       note_use(&last_use, node.lhs, index);
       note_use(&last_use, node.rhs, index);
     } else if (node.opcode == ir::Opcode::kGuardFloatNonzero) {
@@ -222,6 +226,8 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kFloatDivide:
         case ir::ControlOpcode::kFloatLessThan:
         case ir::ControlOpcode::kFloatLessEqual:
+        case ir::ControlOpcode::kFloatEqual:
+        case ir::ControlOpcode::kFloatNotEqual:
         case ir::ControlOpcode::kLessThan:
         case ir::ControlOpcode::kLessEqual:
           note_local_use(node.lhs);
@@ -355,6 +361,8 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kFloatDivide:
         case ir::ControlOpcode::kFloatLessThan:
         case ir::ControlOpcode::kFloatLessEqual:
+        case ir::ControlOpcode::kFloatEqual:
+        case ir::ControlOpcode::kFloatNotEqual:
         case ir::ControlOpcode::kLessThan:
         case ir::ControlOpcode::kLessEqual:
           note_nonlocal_use(block_index, node.lhs);

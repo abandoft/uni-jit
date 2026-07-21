@@ -31,6 +31,13 @@ constexpr std::array<int, 6> kFloatAllocationRegisters = {16, 17, 18,
 constexpr std::size_t kMaximumStackSize = 4080;
 constexpr std::size_t kMaximumAddressableParameters = 4096;
 
+enum class FloatCondition : std::uint8_t {
+  kLessThan,
+  kLessEqual,
+  kEqual,
+  kNotEqual,
+};
+
 class Assembler final {
  public:
   void move_register(int destination, int source) {
@@ -116,9 +123,17 @@ class Assembler final {
                      reg(destination));
   }
 
-  void compare_float(int destination, int lhs, int rhs, bool or_equal) {
+  void compare_float(int destination, int lhs, int rhs,
+                     FloatCondition condition) {
     buffer_.emit_u32(0x1E602000U | (reg(rhs) << 16U) | (reg(lhs) << 5U));
-    const std::uint32_t inverse_condition = or_equal ? 0x8U : 0x5U;
+    std::uint32_t inverse_condition = 0x5U;
+    if (condition == FloatCondition::kLessEqual) {
+      inverse_condition = 0x8U;
+    } else if (condition == FloatCondition::kEqual) {
+      inverse_condition = 0x1U;
+    } else if (condition == FloatCondition::kNotEqual) {
+      inverse_condition = 0x0U;
+    }
     buffer_.emit_u32(0x9A800400U | (reg(31) << 16U) |
                      (inverse_condition << 12U) | (reg(31) << 5U) |
                      reg(destination));
@@ -579,7 +594,9 @@ LoweringResult lower_impl(const ir::Function& function,
         break;
       }
       case ir::Opcode::kFloatLessThan:
-      case ir::Opcode::kFloatLessEqual: {
+      case ir::Opcode::kFloatLessEqual:
+      case ir::Opcode::kFloatEqual:
+      case ir::Opcode::kFloatNotEqual: {
         const int lhs = load_float_operand(
             &assembler, allocation.locations[node.lhs.id()], kFloatScratch0);
         const int rhs = load_float_operand(
@@ -587,8 +604,15 @@ LoweringResult lower_impl(const ir::Function& function,
         const int target = destination.in_register()
                                ? physical_register(destination)
                                : kScratch0;
-        assembler.compare_float(target, lhs, rhs,
-                                node.opcode == ir::Opcode::kFloatLessEqual);
+        FloatCondition condition = FloatCondition::kLessThan;
+        if (node.opcode == ir::Opcode::kFloatLessEqual) {
+          condition = FloatCondition::kLessEqual;
+        } else if (node.opcode == ir::Opcode::kFloatEqual) {
+          condition = FloatCondition::kEqual;
+        } else if (node.opcode == ir::Opcode::kFloatNotEqual) {
+          condition = FloatCondition::kNotEqual;
+        }
+        assembler.compare_float(target, lhs, rhs, condition);
         if (!destination.in_register()) {
           assembler.store(target, kStackPointer, spill_offset(destination));
         }
@@ -1382,14 +1406,22 @@ LoweringResult lower_control_flow_impl(
           break;
         }
         case ir::ControlOpcode::kFloatLessThan:
-        case ir::ControlOpcode::kFloatLessEqual: {
+        case ir::ControlOpcode::kFloatLessEqual:
+        case ir::ControlOpcode::kFloatEqual:
+        case ir::ControlOpcode::kFloatNotEqual: {
           const int lhs = load_control_float(
               &assembler, allocation, node.lhs, block_index, kFloatScratch0);
           const int rhs = load_control_float(
               &assembler, allocation, node.rhs, block_index, kFloatScratch1);
-          assembler.compare_float(
-              word_destination, lhs, rhs,
-              node.opcode == ir::ControlOpcode::kFloatLessEqual);
+          FloatCondition condition = FloatCondition::kLessThan;
+          if (node.opcode == ir::ControlOpcode::kFloatLessEqual) {
+            condition = FloatCondition::kLessEqual;
+          } else if (node.opcode == ir::ControlOpcode::kFloatEqual) {
+            condition = FloatCondition::kEqual;
+          } else if (node.opcode == ir::ControlOpcode::kFloatNotEqual) {
+            condition = FloatCondition::kNotEqual;
+          }
+          assembler.compare_float(word_destination, lhs, rhs, condition);
           if (allocated_word < 0 ||
               allocation.requires_stack[value.id()]) {
             assembler.store(word_destination, kStackPointer,

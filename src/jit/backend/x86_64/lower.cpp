@@ -52,6 +52,13 @@ constexpr std::size_t kMaximumStackSize = 1024U * 1024U;
 constexpr std::size_t kMaximumOffset =
     static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max());
 
+enum class FloatCondition : std::uint8_t {
+  kLessThan,
+  kLessEqual,
+  kEqual,
+  kNotEqual,
+};
+
 class Assembler final {
  public:
   void move_register(int destination, int source) {
@@ -142,16 +149,40 @@ class Assembler final {
     emit_float_binary(0x5EU, destination, rhs);
   }
 
-  void compare_float(int destination, int lhs, int rhs, bool or_equal) {
+  void compare_float(int destination, int lhs, int rhs,
+                     FloatCondition condition) {
     buffer_.emit_u8(0x66U);
     emit_float_rex(rhs, lhs);
     buffer_.emit_u8(0x0FU);
     buffer_.emit_u8(0x2EU);
     emit_modrm(3, rhs, lhs);
+    if (condition == FloatCondition::kEqual ||
+        condition == FloatCondition::kNotEqual) {
+      emit_set_condition(destination,
+                         condition == FloatCondition::kEqual ? 0x94U : 0x95U);
+      emit_set_condition(kScratch1,
+                         condition == FloatCondition::kEqual ? 0x9BU : 0x9AU);
+      zero_extend_byte(destination);
+      zero_extend_byte(kScratch1);
+      emit_rex(kScratch1, destination);
+      buffer_.emit_u8(condition == FloatCondition::kEqual ? 0x21U : 0x09U);
+      emit_modrm(3, kScratch1, destination);
+      return;
+    }
+    emit_set_condition(destination,
+                       condition == FloatCondition::kLessEqual ? 0x93U
+                                                               : 0x97U);
+    zero_extend_byte(destination);
+  }
+
+  void emit_set_condition(int destination, std::uint8_t opcode) {
     emit_rex(0, destination);
     buffer_.emit_u8(0x0FU);
-    buffer_.emit_u8(or_equal ? 0x93U : 0x97U);
+    buffer_.emit_u8(opcode);
     emit_modrm(3, 0, destination);
+  }
+
+  void zero_extend_byte(int destination) {
     emit_rex(destination, destination);
     buffer_.emit_u8(0x0FU);
     buffer_.emit_u8(0xB6U);
@@ -629,7 +660,9 @@ LoweringResult lower_impl(const ir::Function& function,
         break;
       }
       case ir::Opcode::kFloatLessThan:
-      case ir::Opcode::kFloatLessEqual: {
+      case ir::Opcode::kFloatLessEqual:
+      case ir::Opcode::kFloatEqual:
+      case ir::Opcode::kFloatNotEqual: {
         const int lhs = load_float_operand(
             &assembler, allocation.locations[node.lhs.id()], kFloatScratch0);
         const int rhs = load_float_operand(
@@ -637,8 +670,15 @@ LoweringResult lower_impl(const ir::Function& function,
         const int target = destination.in_register()
                                ? physical_register(destination)
                                : kScratch0;
-        assembler.compare_float(target, lhs, rhs,
-                                node.opcode == ir::Opcode::kFloatLessEqual);
+        FloatCondition condition = FloatCondition::kLessThan;
+        if (node.opcode == ir::Opcode::kFloatLessEqual) {
+          condition = FloatCondition::kLessEqual;
+        } else if (node.opcode == ir::Opcode::kFloatEqual) {
+          condition = FloatCondition::kEqual;
+        } else if (node.opcode == ir::Opcode::kFloatNotEqual) {
+          condition = FloatCondition::kNotEqual;
+        }
+        assembler.compare_float(target, lhs, rhs, condition);
         if (!destination.in_register()) {
           assembler.store(target, kRsp, spill_offset(destination));
         }
@@ -1390,14 +1430,22 @@ LoweringResult lower_control_flow_impl(
           break;
         }
         case ir::ControlOpcode::kFloatLessThan:
-        case ir::ControlOpcode::kFloatLessEqual: {
+        case ir::ControlOpcode::kFloatLessEqual:
+        case ir::ControlOpcode::kFloatEqual:
+        case ir::ControlOpcode::kFloatNotEqual: {
           const int lhs = load_control_float(
               &assembler, allocation, node.lhs, block_index, kFloatScratch0);
           const int rhs = load_control_float(
               &assembler, allocation, node.rhs, block_index, kFloatScratch1);
-          assembler.compare_float(
-              word_destination, lhs, rhs,
-              node.opcode == ir::ControlOpcode::kFloatLessEqual);
+          FloatCondition condition = FloatCondition::kLessThan;
+          if (node.opcode == ir::ControlOpcode::kFloatLessEqual) {
+            condition = FloatCondition::kLessEqual;
+          } else if (node.opcode == ir::ControlOpcode::kFloatEqual) {
+            condition = FloatCondition::kEqual;
+          } else if (node.opcode == ir::ControlOpcode::kFloatNotEqual) {
+            condition = FloatCondition::kNotEqual;
+          }
+          assembler.compare_float(word_destination, lhs, rhs, condition);
           if (allocated_word < 0 ||
               allocation.requires_stack[value.id()]) {
             assembler.store(word_destination, kRsp, destination_offset);

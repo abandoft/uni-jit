@@ -32,6 +32,8 @@ bool is_binary(ControlOpcode opcode) {
   case ControlOpcode::kFloatDivide:
   case ControlOpcode::kFloatLessThan:
   case ControlOpcode::kFloatLessEqual:
+  case ControlOpcode::kFloatEqual:
+  case ControlOpcode::kFloatNotEqual:
   case ControlOpcode::kLessThan:
   case ControlOpcode::kLessEqual:
     return true;
@@ -320,7 +322,9 @@ Status verify_impl(const ControlFlowFunction &function) {
               value.id(), "Float64 CFG arithmetic has incompatible types");
         }
       } else if (node.opcode == ControlOpcode::kFloatLessThan ||
-                 node.opcode == ControlOpcode::kFloatLessEqual) {
+                 node.opcode == ControlOpcode::kFloatLessEqual ||
+                 node.opcode == ControlOpcode::kFloatEqual ||
+                 node.opcode == ControlOpcode::kFloatNotEqual) {
         if (node.type != ValueType::kWord ||
             lhs_type != ValueType::kFloat64 ||
             rhs_type != ValueType::kFloat64) {
@@ -425,6 +429,12 @@ Word evaluate_node(ControlOpcode opcode, Word lhs, Word rhs) noexcept {
   }
   if (opcode == ControlOpcode::kFloatLessEqual) {
     return unpack_float64(lhs) <= unpack_float64(rhs) ? 1 : 0;
+  }
+  if (opcode == ControlOpcode::kFloatEqual) {
+    return unpack_float64(lhs) == unpack_float64(rhs) ? 1 : 0;
+  }
+  if (opcode == ControlOpcode::kFloatNotEqual) {
+    return unpack_float64(lhs) != unpack_float64(rhs) ? 1 : 0;
   }
   if (opcode == ControlOpcode::kLessThan) {
     return lhs < rhs ? 1 : 0;
@@ -580,6 +590,16 @@ Value ControlFlowBuilder::float64_less_than(Value lhs, Value rhs) {
 
 Value ControlFlowBuilder::float64_less_equal(Value lhs, Value rhs) {
   return append_binary(ControlOpcode::kFloatLessEqual, lhs, rhs,
+                       ValueType::kWord);
+}
+
+Value ControlFlowBuilder::float64_equal(Value lhs, Value rhs) {
+  return append_binary(ControlOpcode::kFloatEqual, lhs, rhs,
+                       ValueType::kWord);
+}
+
+Value ControlFlowBuilder::float64_not_equal(Value lhs, Value rhs) {
+  return append_binary(ControlOpcode::kFloatNotEqual, lhs, rhs,
                        ValueType::kWord);
 }
 

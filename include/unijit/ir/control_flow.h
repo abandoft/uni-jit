@@ -48,6 +48,8 @@ enum class ControlOpcode : std::uint8_t {
   kFloatDivide,
   kFloatLessThan,
   kFloatLessEqual,
+  kFloatEqual,
+  kFloatNotEqual,
   kLessThan,
   kLessEqual,
   kCall,
@@ -156,6 +158,8 @@ public:
   Value float64_divide(Value lhs, Value rhs);
   Value float64_less_than(Value lhs, Value rhs);
   Value float64_less_equal(Value lhs, Value rhs);
+  Value float64_equal(Value lhs, Value rhs);
+  Value float64_not_equal(Value lhs, Value rhs);
   Value less_than(Value lhs, Value rhs);
   Value less_equal(Value lhs, Value rhs);
   Value call(RuntimeHelper helper, std::vector<Value> arguments,

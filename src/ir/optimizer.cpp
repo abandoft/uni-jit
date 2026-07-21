@@ -63,7 +63,13 @@ Word fold_float_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
   if (opcode == Opcode::kFloatLessThan) {
     return lhs_value < rhs_value ? 1 : 0;
   }
-  return lhs_value <= rhs_value ? 1 : 0;
+  if (opcode == Opcode::kFloatLessEqual) {
+    return lhs_value <= rhs_value ? 1 : 0;
+  }
+  if (opcode == Opcode::kFloatEqual) {
+    return lhs_value == rhs_value ? 1 : 0;
+  }
+  return lhs_value != rhs_value ? 1 : 0;
 }
 
 bool is_binary(Opcode opcode) noexcept {
@@ -72,7 +78,8 @@ bool is_binary(Opcode opcode) noexcept {
          opcode == Opcode::kFloatSubtract ||
          opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide ||
          opcode == Opcode::kFloatLessThan ||
-         opcode == Opcode::kFloatLessEqual;
+         opcode == Opcode::kFloatLessEqual || opcode == Opcode::kFloatEqual ||
+         opcode == Opcode::kFloatNotEqual;
 }
 
 bool is_float_binary(Opcode opcode) noexcept {
@@ -80,12 +87,14 @@ bool is_float_binary(Opcode opcode) noexcept {
          opcode == Opcode::kFloatSubtract ||
          opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide ||
          opcode == Opcode::kFloatLessThan ||
-         opcode == Opcode::kFloatLessEqual;
+         opcode == Opcode::kFloatLessEqual || opcode == Opcode::kFloatEqual ||
+         opcode == Opcode::kFloatNotEqual;
 }
 
 bool is_float_comparison(Opcode opcode) noexcept {
   return opcode == Opcode::kFloatLessThan ||
-         opcode == Opcode::kFloatLessEqual;
+         opcode == Opcode::kFloatLessEqual || opcode == Opcode::kFloatEqual ||
+         opcode == Opcode::kFloatNotEqual;
 }
 
 bool is_control_binary(ControlOpcode opcode) noexcept {
@@ -99,6 +108,8 @@ bool is_control_binary(ControlOpcode opcode) noexcept {
     case ControlOpcode::kFloatDivide:
     case ControlOpcode::kFloatLessThan:
     case ControlOpcode::kFloatLessEqual:
+    case ControlOpcode::kFloatEqual:
+    case ControlOpcode::kFloatNotEqual:
     case ControlOpcode::kLessThan:
     case ControlOpcode::kLessEqual:
       return true;
@@ -113,12 +124,16 @@ bool is_control_float_binary(ControlOpcode opcode) noexcept {
          opcode == ControlOpcode::kFloatMultiply ||
          opcode == ControlOpcode::kFloatDivide ||
          opcode == ControlOpcode::kFloatLessThan ||
-         opcode == ControlOpcode::kFloatLessEqual;
+         opcode == ControlOpcode::kFloatLessEqual ||
+         opcode == ControlOpcode::kFloatEqual ||
+         opcode == ControlOpcode::kFloatNotEqual;
 }
 
 bool is_control_comparison(ControlOpcode opcode) noexcept {
   return opcode == ControlOpcode::kFloatLessThan ||
          opcode == ControlOpcode::kFloatLessEqual ||
+         opcode == ControlOpcode::kFloatEqual ||
+         opcode == ControlOpcode::kFloatNotEqual ||
          opcode == ControlOpcode::kLessThan ||
          opcode == ControlOpcode::kLessEqual;
 }
@@ -142,7 +157,13 @@ Word fold_control_binary(ControlOpcode opcode, Word lhs, Word rhs) noexcept {
     if (opcode == ControlOpcode::kFloatLessThan) {
       return lhs_value < rhs_value ? 1 : 0;
     }
-    return lhs_value <= rhs_value ? 1 : 0;
+    if (opcode == ControlOpcode::kFloatLessEqual) {
+      return lhs_value <= rhs_value ? 1 : 0;
+    }
+    if (opcode == ControlOpcode::kFloatEqual) {
+      return lhs_value == rhs_value ? 1 : 0;
+    }
+    return lhs_value != rhs_value ? 1 : 0;
   }
   if (opcode == ControlOpcode::kAdd) {
     return from_bits(to_bits(lhs) + to_bits(rhs));
@@ -180,6 +201,10 @@ Value emit_control_binary(ControlFlowBuilder* builder,
       return builder->float64_less_than(lhs, rhs);
     case ControlOpcode::kFloatLessEqual:
       return builder->float64_less_equal(lhs, rhs);
+    case ControlOpcode::kFloatEqual:
+      return builder->float64_equal(lhs, rhs);
+    case ControlOpcode::kFloatNotEqual:
+      return builder->float64_not_equal(lhs, rhs);
     case ControlOpcode::kLessThan:
       return builder->less_than(lhs, rhs);
     case ControlOpcode::kLessEqual:
@@ -391,9 +416,14 @@ PassResult transform_once(
       } else if (node.opcode == Opcode::kFloatLessThan) {
         mapped[index] =
             builder.float64_less_than(mapped[lhs_id], mapped[rhs_id]);
-      } else {
+      } else if (node.opcode == Opcode::kFloatLessEqual) {
         mapped[index] =
             builder.float64_less_equal(mapped[lhs_id], mapped[rhs_id]);
+      } else if (node.opcode == Opcode::kFloatEqual) {
+        mapped[index] = builder.float64_equal(mapped[lhs_id], mapped[rhs_id]);
+      } else {
+        mapped[index] =
+            builder.float64_not_equal(mapped[lhs_id], mapped[rhs_id]);
       }
       continue;
     }
