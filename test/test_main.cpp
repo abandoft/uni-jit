@@ -1264,6 +1264,341 @@ void test_controlled_frame_slots() {
          "verifier must reject a frame store whose SSA type differs from its slot");
 }
 
+void test_trusted_object_layouts() {
+  using unijit::ir::ControlFlowBuilder;
+  using unijit::ir::ControlFlowInterpreter;
+  using unijit::ir::TrustedObjectSlot;
+  using unijit::ir::ValueType;
+  using unijit::runtime::ExecutionContext;
+  using unijit::runtime::TrustedObject;
+
+  struct alignas(8) PrimitiveLayout final {
+    Word word;
+    double floating;
+    Word untouched;
+  };
+  constexpr std::uint64_t kLayoutIdentity =
+      UINT64_C(0x554e494a49544f31);
+
+  FunctionBuilder builder({ValueType::kWord, ValueType::kFloat64});
+  const TrustedObjectSlot object =
+      builder.create_trusted_object(kLayoutIdentity,
+                                    sizeof(PrimitiveLayout));
+  const Value initial_word = builder.load_object(
+      object, offsetof(PrimitiveLayout, word), ValueType::kWord);
+  const Value stored_word = builder.store_object(
+      object, offsetof(PrimitiveLayout, word), builder.parameter(0));
+  const Value stored_float = builder.store_object(
+      object, offsetof(PrimitiveLayout, floating), builder.parameter(1));
+  const Value loaded_word = builder.load_object(
+      object, offsetof(PrimitiveLayout, word), ValueType::kWord);
+  const Value loaded_float = builder.load_object(
+      object, offsetof(PrimitiveLayout, floating), ValueType::kFloat64);
+  const Value float_matches = builder.float64_equal(loaded_float, stored_float);
+  expect(stored_word.valid() &&
+             builder
+                 .set_return(builder.add(
+                     builder.add(initial_word, loaded_word), float_matches))
+                 .ok(),
+         "trusted object fixture must load and store primitive fields");
+  const Function function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok() &&
+             function.trusted_objects().size() == 1 &&
+             function.trusted_objects()[0].layout_identity ==
+                 kLayoutIdentity &&
+             function.trusted_objects()[0].byte_size ==
+                 sizeof(PrimitiveLayout),
+         "trusted object descriptors must preserve layout identity and size");
+
+  const std::array<Word, 2> arguments = {
+      41, unijit::ir::pack_float64(6.25)};
+  PrimitiveLayout interpreted_layout{7, -1.0, 99};
+  TrustedObject interpreted_object{&interpreted_layout,
+                                   sizeof(interpreted_layout),
+                                   kLayoutIdentity, true};
+  ExecutionContext interpreted_context;
+  expect(interpreted_context
+             .bind_trusted_objects(&interpreted_object, 1)
+             .ok(),
+         "interpreter trusted object binding must validate");
+  const auto interpreted = Interpreter::evaluate(
+      function, arguments.data(), arguments.size(), &interpreted_context);
+
+  const auto optimization = unijit::ir::Optimizer::run(function);
+  PrimitiveLayout optimized_layout{7, -1.0, 99};
+  TrustedObject optimized_object{&optimized_layout, sizeof(optimized_layout),
+                                 kLayoutIdentity, true};
+  ExecutionContext optimized_context;
+  expect(optimized_context.bind_trusted_objects(&optimized_object, 1).ok(),
+         "optimized trusted object binding must validate");
+  const auto optimized_result =
+      optimization.ok()
+          ? Interpreter::evaluate(optimization.function, arguments.data(),
+                                  arguments.size(), &optimized_context)
+          : unijit::ir::EvaluationResult{optimization.status, 0};
+
+  auto compilation = Compiler::compile(function);
+  PrimitiveLayout native_layout{7, -1.0, 99};
+  TrustedObject native_object{&native_layout, sizeof(native_layout),
+                              kLayoutIdentity, true};
+  ExecutionContext native_context;
+  expect(native_context.bind_trusted_objects(&native_object, 1).ok(),
+         "native trusted object binding must validate");
+  const auto native =
+      compilation.ok()
+          ? compilation.function->invoke(arguments.data(), arguments.size(),
+                                         &native_context)
+          : unijit::ir::EvaluationResult{compilation.status, 0};
+  expect(interpreted.ok() && interpreted.value == 49 &&
+             interpreted_layout.word == 41 &&
+             interpreted_layout.floating == 6.25 &&
+             interpreted_layout.untouched == 99 && optimization.ok() &&
+             optimization.function.trusted_objects().size() == 1 &&
+             optimized_result.ok() && optimized_result.value == 49 &&
+             optimized_layout.word == 41 &&
+             optimized_layout.floating == 6.25 && compilation.ok() &&
+             native.ok() && native.value == 49 && native_layout.word == 41 &&
+             native_layout.floating == 6.25 && native_layout.untouched == 99,
+         "trusted primitive fields must match across interpreter, optimizer, and native code");
+
+  unijit::jit::CompilationOptions baseline_options;
+  baseline_options.optimization_level =
+      unijit::jit::OptimizationLevel::kBaseline;
+  auto baseline_compilation = Compiler::compile(function, baseline_options);
+  PrimitiveLayout baseline_layout{7, -1.0, 99};
+  TrustedObject baseline_object{&baseline_layout, sizeof(baseline_layout),
+                                kLayoutIdentity, true};
+  ExecutionContext baseline_context;
+  expect(baseline_context.bind_trusted_objects(&baseline_object, 1).ok(),
+         "baseline trusted object binding must validate");
+  const auto baseline_native =
+      baseline_compilation.ok()
+          ? baseline_compilation.function->invoke(
+                arguments.data(), arguments.size(), &baseline_context)
+          : unijit::ir::EvaluationResult{baseline_compilation.status, 0};
+  expect(baseline_compilation.ok() && baseline_native.ok() &&
+             baseline_native.value == 49 && baseline_layout.word == 41 &&
+             baseline_layout.floating == 6.25 &&
+             baseline_layout.untouched == 99,
+         "baseline lowering must preserve trusted primitive fields");
+  if (compilation.ok()) {
+    expect(compilation.function->requires_context() &&
+               compilation.function->native_entry() == nullptr &&
+               compilation.function->stats().trusted_objects == 1 &&
+               compilation.function->trusted_objects().size() == 1,
+           "trusted object code must require managed preflight and report metadata");
+
+    PrimitiveLayout wrong_layout{3, 1.0, 5};
+    TrustedObject wrong_identity{&wrong_layout, sizeof(wrong_layout),
+                                 kLayoutIdentity + 1, true};
+    ExecutionContext wrong_context;
+    expect(wrong_context.bind_trusted_objects(&wrong_identity, 1).ok(),
+           "mismatched identity fixture must bind structurally");
+    const auto wrong_result = compilation.function->invoke(
+        arguments.data(), arguments.size(), &wrong_context);
+
+    TrustedObject too_small{&wrong_layout, sizeof(Word), kLayoutIdentity,
+                            true};
+    ExecutionContext small_context;
+    expect(small_context.bind_trusted_objects(&too_small, 1).ok(),
+           "undersized object fixture must bind structurally");
+    const auto small_result = compilation.function->invoke(
+        arguments.data(), arguments.size(), &small_context);
+
+    TrustedObject read_only{&wrong_layout, sizeof(wrong_layout),
+                            kLayoutIdentity, false};
+    ExecutionContext read_only_context;
+    expect(read_only_context.bind_trusted_objects(&read_only, 1).ok(),
+           "read-only object fixture must bind structurally");
+    const auto read_only_result = compilation.function->invoke(
+        arguments.data(), arguments.size(), &read_only_context);
+    const auto missing_result = compilation.function->invoke(
+        arguments.data(), arguments.size(), nullptr);
+    expect(!wrong_result.ok() && !small_result.ok() &&
+               !read_only_result.ok() && !missing_result.ok() &&
+               wrong_layout.word == 3 && wrong_layout.floating == 1.0,
+           "managed preflight must reject identity, size, permission, and missing bindings before entry");
+  }
+
+  FunctionBuilder read_only_builder(0);
+  const TrustedObjectSlot read_only_slot =
+      read_only_builder.create_trusted_object(kLayoutIdentity,
+                                              sizeof(PrimitiveLayout));
+  expect(read_only_builder
+             .set_return(read_only_builder.load_object(
+                 read_only_slot, offsetof(PrimitiveLayout, word),
+                 ValueType::kWord))
+             .ok(),
+         "read-only trusted object fixture must be constructible");
+  const Function read_only_function = std::move(read_only_builder).build();
+  PrimitiveLayout read_only_layout{73, 2.0, 5};
+  TrustedObject read_only_binding{&read_only_layout,
+                                  sizeof(read_only_layout),
+                                  kLayoutIdentity, false};
+  ExecutionContext read_only_context;
+  expect(read_only_context
+             .bind_trusted_objects(&read_only_binding, 1)
+             .ok(),
+         "read-only trusted object must bind structurally");
+  const auto read_only_interpreted = Interpreter::evaluate(
+      read_only_function, nullptr, 0, &read_only_context);
+  auto read_only_compilation = Compiler::compile(read_only_function);
+  const auto read_only_native =
+      read_only_compilation.ok()
+          ? read_only_compilation.function->invoke(nullptr, 0,
+                                                   &read_only_context)
+          : unijit::ir::EvaluationResult{read_only_compilation.status, 0};
+  expect(read_only_interpreted.ok() && read_only_interpreted.value == 73 &&
+             read_only_compilation.ok() && read_only_native.ok() &&
+             read_only_native.value == 73,
+         "load-only trusted object code must accept read-only bindings");
+
+  ControlFlowBuilder cfg_builder({ValueType::kWord, ValueType::kFloat64});
+  const TrustedObjectSlot cfg_object = cfg_builder.create_trusted_object(
+      kLayoutIdentity, sizeof(PrimitiveLayout));
+  cfg_builder.store_object(cfg_object, offsetof(PrimitiveLayout, word),
+                           cfg_builder.parameter(0));
+  cfg_builder.store_object(cfg_object, offsetof(PrimitiveLayout, floating),
+                           cfg_builder.parameter(1));
+  const unijit::ir::Block cfg_body = cfg_builder.create_block(0);
+  expect(cfg_builder.jump(cfg_body, {}).ok() &&
+             cfg_builder.set_insertion_block(cfg_body).ok(),
+         "trusted object CFG fixture must enter its load block");
+  const Value cfg_word = cfg_builder.load_object(
+      cfg_object, offsetof(PrimitiveLayout, word), ValueType::kWord);
+  const Value cfg_float = cfg_builder.load_object(
+      cfg_object, offsetof(PrimitiveLayout, floating), ValueType::kFloat64);
+  expect(cfg_builder
+             .set_return(cfg_builder.add(
+                 cfg_word,
+                 cfg_builder.float64_equal(cfg_float,
+                                           cfg_builder.parameter(1))))
+             .ok(),
+         "trusted object CFG fixture must return cross-block fields");
+  const auto cfg_function = std::move(cfg_builder).build();
+  PrimitiveLayout cfg_layout{0, 0.0, 77};
+  TrustedObject cfg_binding{&cfg_layout, sizeof(cfg_layout), kLayoutIdentity,
+                            true};
+  ExecutionContext cfg_context;
+  expect(cfg_context.bind_trusted_objects(&cfg_binding, 1).ok(),
+         "trusted object CFG binding must validate");
+  const auto cfg_reference = ControlFlowInterpreter::evaluate(
+      cfg_function, arguments.data(), arguments.size(), 4, &cfg_context);
+  const auto cfg_optimization = unijit::ir::Optimizer::run(cfg_function);
+  PrimitiveLayout cfg_optimized_layout{0, 0.0, 77};
+  TrustedObject cfg_optimized_binding{&cfg_optimized_layout,
+                                      sizeof(cfg_optimized_layout),
+                                      kLayoutIdentity, true};
+  ExecutionContext cfg_optimized_context;
+  expect(cfg_optimized_context
+             .bind_trusted_objects(&cfg_optimized_binding, 1)
+             .ok(),
+         "optimized CFG trusted object binding must validate");
+  const auto cfg_optimized =
+      cfg_optimization.ok()
+          ? ControlFlowInterpreter::evaluate(
+                cfg_optimization.function, arguments.data(), arguments.size(),
+                4, &cfg_optimized_context)
+          : unijit::ir::EvaluationResult{cfg_optimization.status, 0};
+  cfg_layout = {0, 0.0, 77};
+  auto cfg_compilation = Compiler::compile(cfg_function);
+  const auto cfg_native =
+      cfg_compilation.ok()
+          ? cfg_compilation.function->invoke(
+                arguments.data(), arguments.size(), &cfg_context)
+          : unijit::ir::EvaluationResult{cfg_compilation.status, 0};
+  expect(unijit::ir::verify(cfg_function).ok() && cfg_reference.ok() &&
+             cfg_reference.value == 42 && cfg_optimization.ok() &&
+             cfg_optimized.ok() && cfg_optimized.value == 42 &&
+             cfg_optimized_layout.word == 41 &&
+             cfg_optimized_layout.floating == 6.25 &&
+             cfg_optimized_layout.untouched == 77 && cfg_compilation.ok() &&
+             cfg_native.ok() && cfg_native.value == 42 &&
+             cfg_layout.word == 41 && cfg_layout.floating == 6.25 &&
+             cfg_layout.untouched == 77,
+         "trusted object CFG state must lower across basic blocks");
+
+  FunctionBuilder invalid_layout_builder(0);
+  const TrustedObjectSlot invalid_layout =
+      invalid_layout_builder.create_trusted_object(0, sizeof(PrimitiveLayout));
+  expect(invalid_layout_builder
+             .set_return(invalid_layout_builder.load_object(
+                 invalid_layout, 0, ValueType::kWord))
+             .ok() &&
+             !unijit::ir::verify(
+                  std::move(invalid_layout_builder).build())
+                  .ok(),
+         "verifier must reject a trusted object without a layout identity");
+
+  FunctionBuilder invalid_field_builder(0);
+  const TrustedObjectSlot invalid_field =
+      invalid_field_builder.create_trusted_object(kLayoutIdentity, 16);
+  expect(invalid_field_builder
+             .set_return(invalid_field_builder.load_object(
+                 invalid_field, 16, ValueType::kWord))
+             .ok() &&
+             !unijit::ir::verify(
+                  std::move(invalid_field_builder).build())
+                  .ok(),
+         "verifier must reject a trusted field outside its declared layout");
+
+  FunctionBuilder misaligned_field_builder(0);
+  const TrustedObjectSlot misaligned_field =
+      misaligned_field_builder.create_trusted_object(kLayoutIdentity, 16);
+  expect(misaligned_field_builder
+             .set_return(misaligned_field_builder.load_object(
+                 misaligned_field, 4, ValueType::kWord))
+             .ok() &&
+             !unijit::ir::verify(
+                  std::move(misaligned_field_builder).build())
+                  .ok(),
+         "verifier must reject a misaligned trusted field");
+
+  FunctionBuilder oversized_layout_builder(0);
+  const TrustedObjectSlot oversized_layout =
+      oversized_layout_builder.create_trusted_object(
+          kLayoutIdentity,
+          unijit::ir::TrustedObjectDescriptor::kMaximumByteSize +
+              sizeof(Word));
+  expect(oversized_layout_builder
+             .set_return(oversized_layout_builder.load_object(
+                 oversized_layout, 0, ValueType::kWord))
+             .ok() &&
+             !unijit::ir::verify(
+                  std::move(oversized_layout_builder).build())
+                  .ok(),
+         "verifier must reject an oversized trusted object layout");
+
+  TrustedObject malformed_binding{nullptr, 8, kLayoutIdentity, false};
+  ExecutionContext malformed_context;
+  expect(!malformed_context
+              .bind_trusted_objects(&malformed_binding, 1)
+              .ok(),
+         "execution context must reject a non-empty object with no base");
+
+  alignas(8) std::array<std::uint8_t, sizeof(PrimitiveLayout) + 1>
+      misaligned_storage{};
+  TrustedObject misaligned_binding{misaligned_storage.data() + 1,
+                                   sizeof(PrimitiveLayout),
+                                   kLayoutIdentity, false};
+  ExecutionContext misaligned_context;
+  expect(misaligned_context
+             .bind_trusted_objects(&misaligned_binding, 1)
+             .ok() &&
+             !Interpreter::evaluate(read_only_function, nullptr, 0,
+                                    &misaligned_context)
+                  .ok(),
+         "managed preflight must reject a misaligned trusted object base");
+
+  TrustedObject missing_identity{&read_only_layout, sizeof(read_only_layout),
+                                 0, false};
+  ExecutionContext missing_identity_context;
+  expect(!missing_identity_context
+              .bind_trusted_objects(&missing_identity, 1)
+              .ok(),
+         "execution context must reject a binding without a layout identity");
+}
+
 void test_code_cache_lifecycle() {
   using unijit::jit::CodeCache;
   using unijit::jit::CodeCacheLimits;
@@ -3247,6 +3582,21 @@ void test_compilation_resource_limits() {
                  unijit::StatusCode::kResourceExhausted &&
              frame_limited.status.location() == 2,
          "compilation must bound fixed frame storage before optimization");
+
+  FunctionBuilder object_builder(0);
+  object_builder.create_trusted_object(UINT64_C(0x554e494a49544f31), 8);
+  object_builder.create_trusted_object(UINT64_C(0x554e494a49544f32), 8);
+  expect(object_builder.set_return(object_builder.constant(0)).ok(),
+         "resource-limit trusted object fixture must be constructible");
+  unijit::jit::CompilationOptions object_options;
+  object_options.limits.maximum_trusted_objects = 1;
+  const auto object_limited = Compiler::compile(
+      std::move(object_builder).build(), object_options);
+  expect(!object_limited.ok() &&
+             object_limited.status.code() ==
+                 unijit::StatusCode::kResourceExhausted &&
+             object_limited.status.location() == 2,
+         "compilation must bound trusted object bindings before optimization");
 }
 
 void test_constant_float64_nonzero_guard_elimination() {
@@ -5914,6 +6264,7 @@ int main() {
   test_native_bounded_float_memory_matrix();
   test_bounded_float_memory_control_flow();
   test_controlled_frame_slots();
+  test_trusted_object_layouts();
   test_code_cache_lifecycle();
   test_code_cache_concurrency();
   test_verifier_rejects_forward_reference();
