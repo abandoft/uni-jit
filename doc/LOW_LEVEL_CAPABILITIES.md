@@ -20,7 +20,7 @@ qualifying the shared commercial contract on those three targets.
 |---|---|---|---|
 | Scalar Word and Float64 operations | Implemented in both IR forms and all three backends | Continue expanding through the same typed contract | Delivered |
 | SIMD | No vector IR or vector allocation | Add strict portable SIMD, then guarded wider target profiles and loop vectorization | P0 |
-| Typed memory, unaligned access, byte reversal | Bounded 8/16/32/64-bit Word memory, Float32/Float64 storage, standalone 16/32/64-bit byte reversal, and fixed Word/Float64 frame slots are delivered in both IR forms, the interpreter, optimizer, and all three native backends; trusted layouts remain | Complete trusted scalar provenance before SIMD, atomics, or FFI lowering | P0 partial |
+| Typed memory, unaligned access, byte reversal | Bounded 8/16/32/64-bit Word memory, Float32/Float64 storage, standalone 16/32/64-bit byte reversal, fixed Word/Float64 frame slots, and preflighted trusted Word/Float64 object layouts are delivered in both IR forms, the interpreter, optimizer, and all three native backends | Use the completed scalar provenance floor for SIMD, atomics, and later FFI lowering | Delivered scalar floor |
 | Generated-code atomics | Runtime control structures use C++ atomics; generated IR has none | Add typed atomic IR with explicit memory order and natural-alignment rules | P1 |
 | Fast internal calls | Calls currently use the portable runtime-helper ABI | Add a private JIT-to-JIT convention without weakening external ABI safety | P1 |
 | Tail calls | Not represented | Add verified tail transfers after fast calls and unwind metadata exist | P2 |
@@ -138,10 +138,13 @@ reversal in straight-line and CFG IR. It includes the interpreter oracle,
 optimizer preservation, resource limits, live-value stack-map reconstruction,
 diagnosed exits, and AArch64, x86-64, and RISC-V 64 native lowering.
 [`TYPED_MEMORY.md`](TYPED_MEMORY.md) is the normative delivered contract.
-Trusted runtime-object layouts, standalone address calculation, and advanced
-vector/aggregate frame classes remain follow-on work. The delivered fixed
-Word/Float64 slot floor is specified separately in
-[`FRAME_LOCALS.md`](FRAME_LOCALS.md). Every delivered access records:
+Trusted runtime-object layouts are now a separate delivered provenance mode;
+their fixed primitive fields, semantic identity, managed preflight, and direct
+lowering are specified in [`TRUSTED_OBJECTS.md`](TRUSTED_OBJECTS.md).
+Standalone address calculation and advanced vector/aggregate frame classes
+remain follow-on work. The delivered fixed Word/Float64 slot floor is
+specified separately in [`FRAME_LOCALS.md`](FRAME_LOCALS.md). Every bounded
+region access records:
 
 - a declared bounded-region index;
 - byte width and required alignment;
@@ -155,7 +158,10 @@ bind a base pointer and size to an execution-context region. The verifier
 rejects malformed descriptors and undeclared regions; generated code and the
 interpreter perform the unsigned dynamic bounds, permission, and absolute
 alignment checks before every dereference. Trusted runtime-owned object layouts
-will be a distinct provenance mode rather than an implicit escape hatch.
+are a distinct provenance mode rather than an implicit escape hatch: IR sees
+only a declared layout slot and fixed field offset, while managed invocation
+validates identity, size, alignment, and whole-function write permission before
+native entry.
 
 Unaligned scalar loads and stores have byte-exact semantics and never rely on C
 or C++ undefined behavior. A backend may use one native unaligned instruction
