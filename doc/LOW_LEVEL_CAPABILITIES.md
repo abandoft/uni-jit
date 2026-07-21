@@ -20,7 +20,7 @@ qualifying the shared commercial contract on those three targets.
 |---|---|---|---|
 | Scalar Word and Float64 operations | Implemented in both IR forms and all three backends | Continue expanding through the same typed contract | Delivered |
 | SIMD | No vector IR or vector allocation | Add strict portable SIMD, then guarded wider target profiles and loop vectorization | P0 |
-| Typed memory, unaligned access, byte reversal | Bounded 8/16/32/64-bit Word memory is delivered in both IR forms, the interpreter, and all three native backends; Float memory, standalone byte reversal, and frame slots remain | Complete the typed scalar surface before SIMD, atomics, or FFI lowering | P0 partial |
+| Typed memory, unaligned access, byte reversal | Bounded 8/16/32/64-bit Word memory, Float32/Float64 storage, and standalone 16/32/64-bit byte reversal are delivered in both IR forms, the interpreter, optimizer, and all three native backends; trusted layouts and frame slots remain | Complete the remaining typed scalar provenance and storage surface before SIMD, atomics, or FFI lowering | P0 partial |
 | Generated-code atomics | Runtime control structures use C++ atomics; generated IR has none | Add typed atomic IR with explicit memory order and natural-alignment rules | P1 |
 | Fast internal calls | Calls currently use the portable runtime-helper ABI | Add a private JIT-to-JIT convention without weakening external ABI safety | P1 |
 | Tail calls | Not represented | Add verified tail transfers after fast calls and unwind metadata exist | P2 |
@@ -91,14 +91,15 @@ benchmark improvement.
 ## Typed memory contract
 
 Memory IR is a prerequisite for vectors, atomics, inline caches, and efficient
-runtime object access. The delivered first slice covers signed and unsigned
-8-, 16-, 32-, and 64-bit Word loads and matching stores in straight-line and
-CFG IR. It includes the interpreter oracle, optimizer preservation, resource
-limits, stack maps, diagnosed exits, and AArch64, x86-64, and RISC-V 64 native
-lowering. [`TYPED_MEMORY.md`](TYPED_MEMORY.md) is the normative delivered
-contract. Float32/Float64 memory, trusted runtime-object layouts, standalone
-address calculation, and frame slots remain follow-on work. Every delivered
-access records:
+runtime object access. The delivered scalar slice covers signed and unsigned
+8-, 16-, 32-, and 64-bit Word loads and matching stores, Float32 and Float64
+storage through the Float64 SSA type, and standalone 16/32/64-bit Word byte
+reversal in straight-line and CFG IR. It includes the interpreter oracle,
+optimizer preservation, resource limits, live-value stack-map reconstruction,
+diagnosed exits, and AArch64, x86-64, and RISC-V 64 native lowering.
+[`TYPED_MEMORY.md`](TYPED_MEMORY.md) is the normative delivered contract.
+Trusted runtime-object layouts, standalone address calculation, and frame slots
+remain follow-on work. Every delivered access records:
 
 - a declared bounded-region index;
 - byte width and required alignment;
@@ -119,11 +120,12 @@ or C++ undefined behavior. A backend may use one native unaligned instruction
 when its target contract permits it; otherwise it emits aligned pieces and
 combines them. Unaligned atomics are never synthesized and are rejected.
 
-Standalone `byte_swap16`, `byte_swap32`, and `byte_swap64` operations remain
-planned. Delivered explicit-endian loads and stores already use equivalent
-private lowering sequences when the host order differs. UniJIT's generated-code
-format remains little-endian on the current targets, while the portable
-serialized format uses a canonical byte order.
+Standalone byte reversal is exposed as one width-verified pure IR operation.
+It reverses the low 16, 32, or 64 bits and zero-extends a narrow result. The
+optimizer folds it, while native backends select target instructions or a
+verified scalar sequence. UniJIT's generated-code format remains little-endian
+on the current targets, while the portable serialized format uses a canonical
+byte order.
 
 ## Portable SIMD design
 
@@ -284,9 +286,9 @@ byte-identical packages for identical inputs and target profiles.
 ## Delivery and qualification order
 
 1. Complete bounded typed memory, byte reversal, unaligned scalar access, frame
-   slots, target profiles, and negative verifier tests. Target profiles and the
-   bounded Word-memory slice are delivered; Float memory, standalone byte
-   reversal, trusted layouts, and frame slots remain.
+   slots, target profiles, and negative verifier tests. Target profiles, Word
+   and Float scalar memory, and standalone byte reversal are delivered; trusted
+   layouts and frame slots remain.
 2. Deliver strict 128-bit SIMD with interpreter parity, spills, calls, CFG edge
    copies, feature discovery, and scalar fallback where required.
 3. Add explicit SIMD and complete-loop performance gates on real AArch64,

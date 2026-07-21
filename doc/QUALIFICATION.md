@@ -195,21 +195,27 @@ frontend suites, while the separate Windows MSVC ASan lane covers Lua's
 
 ## Bounded memory qualification
 
-Core unit tests execute bounded Word memory through straight-line and CFG
-interpreters and native code. They cover region binding, read-only rejection,
+Core unit tests execute bounded Word, Float32, and Float64 memory through
+straight-line and CFG interpreters and native code. They cover region binding, read-only rejection,
 unsigned overflow-free bounds, null contexts, absolute alignment, diagnosed
 exit site/value capture, stack maps, optimizer effect preservation, and a
 matrix of 8/16/32/64-bit native/little/big-endian accesses with signed and
-unsigned loads. The same matrix forces both naturally aligned target fast paths
-and deliberately unaligned byte-exact paths and checks the final bytes against
-the reference interpreter.
+unsigned loads. Floating coverage checks binary32 rounding into the Float64 SSA
+type, binary64 bit preservation, signed zero, native and explicit byte order,
+and rejection of invalid widths or store value types. The same matrix forces
+both naturally aligned target fast paths and deliberately unaligned byte-exact
+paths and checks the final bytes against the reference interpreter. Diagnosed
+memory exits additionally reconstruct simultaneously live Word and Float64
+values from stable stack-map slots. Pure byte-swap tests cover 16/32/64-bit
+interpreter, optimizer, straight-line native, and CFG native paths.
 
-`unijit_bounded_memory_benchmark` retains separate aligned native-order u64 and
-unaligned big-endian u64 store/load records. Each sample is checksum- and
-byte-matched with the interpreter and reports compilation latency, native code
-bytes, median latency, and speedup. Initial real-host records are target
-baselines, not release floors; [`PORTABILITY.md`](PORTABILITY.md) records the
-current AArch64, Ubuntu/Windows x86-64, and RISC-V 64 results.
+`unijit_bounded_memory_benchmark` retains aligned native-order u64 and Float64
+records plus unaligned big-endian u64 and Float32 records. Each sample is
+checksum- and byte-matched with the interpreter and reports compilation
+latency, native code bytes, median latency, and speedup. Initial real-host
+records are target baselines, not release floors;
+[`PORTABILITY.md`](PORTABILITY.md) records the current AArch64,
+Ubuntu/Windows x86-64, and RISC-V 64 results.
 
 ## CFG register-residency benchmark
 

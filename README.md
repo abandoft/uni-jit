@@ -44,9 +44,10 @@ atomics, immutable patch cells, fast and tail calls, bounded frame locals,
 target profiles, and validated serialization/AOT.
 [doc/TARGET_PROFILES.md](doc/TARGET_PROFILES.md) defines host feature discovery,
 portable baselines, immutable compilation identity, and profile-scoped caches.
-[doc/TYPED_MEMORY.md](doc/TYPED_MEMORY.md) defines bounded regions, Word access
-descriptors, byte-exact endian and unaligned semantics, diagnosed failures,
-native lowering, resource limits, and the remaining memory roadmap.
+[doc/TYPED_MEMORY.md](doc/TYPED_MEMORY.md) defines bounded regions, Word and
+Float32/Float64 storage, standalone byte reversal, byte-exact endian and
+unaligned semantics, diagnosed failures, live-value stack maps, native
+lowering, resource limits, and the remaining memory roadmap.
 [doc/QUALIFICATION.md](doc/QUALIFICATION.md) defines deterministic fuzzing,
 concurrency stress, sanitizers, and commercial performance floors.
 [doc/LUA_FRONTEND.md](doc/LUA_FRONTEND.md) describes the stock Lua 5.5

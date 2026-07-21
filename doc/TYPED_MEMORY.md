@@ -3,15 +3,16 @@
 ## Delivered scope
 
 UniJIT exposes a region-based memory contract instead of allowing IR to form
-arbitrary process pointers. The first delivered slice supports Word loads and
-stores with 8-, 16-, 32-, or 64-bit widths in both straight-line and CFG IR.
-It is implemented by the reference interpreters, optimizer, register
-allocator, AArch64, x86-64, and RISC-V 64 native backends.
+arbitrary process pointers. The delivered scalar slice supports Word loads and
+stores with 8-, 16-, 32-, or 64-bit widths, Float32 and Float64 storage through
+the IR Float64 value type, and standalone 16-, 32-, and 64-bit Word byte
+reversal in both straight-line and CFG IR. It is implemented by the reference
+interpreters, optimizer, register allocator, AArch64, x86-64, and RISC-V 64
+native backends.
 
 The following related capabilities remain roadmap items and are not implied by
-the Word-memory API: Float32/Float64 memory values, standalone byte-swap
-operations, trusted runtime-object layouts, frame-local slots, vector memory,
-atomics, and arbitrary address arithmetic.
+the scalar-memory API: trusted runtime-object layouts, frame-local slots,
+vector memory, atomics, and arbitrary address arithmetic.
 
 ## Region and descriptor model
 
@@ -27,16 +28,22 @@ Each IR access carries a `MemoryAccessDescriptor`:
 | Field | Contract |
 |---|---|
 | `region` | Zero-based index into the function's declared region table |
-| `width` | Exactly 1, 2, 4, or 8 bytes |
+| `width` | Word: exactly 1, 2, 4, or 8 bytes; Float: exactly 4 or 8 bytes |
 | `alignment` | Power of two, at least 1 and no greater than the width |
 | `byte_order` | Native, explicitly little-endian, or explicitly big-endian |
-| `sign_extend` | Zero-extend by default; sign-extend a load narrower than Word |
+| `sign_extend` | Word only: zero-extend by default or sign-extend a narrow load; invalid for Float and stores |
 | `is_volatile` | Preserve byte-observable access semantics |
 | `alias_class` | Frontend alias identity retained for future dependence analysis |
 
-Stores return the original Word value. `sign_extend` is invalid on stores.
-All current memory nodes are treated as effectful: optimization preserves their
-order and does not yet use `alias_class` to remove or reorder an access.
+Word and Float stores return the original typed SSA value. A Float32 store
+rounds the Float64 input to IEEE-754 binary32 before writing; its result remains
+the original Float64 input. A Float32 load converts binary32 to Float64, while a
+Float64 load/store preserves all 64 payload bits. Finite values, infinities,
+signed zero, and subnormals follow the default IEEE environment required by the
+native entry contract. Narrowing a NaN remains NaN, but its payload and sign are
+not portable across targets. All current memory nodes are effectful:
+optimization preserves their order and does not yet use `alias_class` to
+remove or reorder an access.
 
 ## Dynamic checks and exits
 
@@ -59,7 +66,9 @@ the same function-local unique site namespace as guards and safepoints.
 Every native memory site has a stack map. Values live at a failing access are
 captured through the same diagnosed-exit path used by guards, so a frontend can
 reconstruct its logical state after the generated frame has returned through
-the ordinary ABI boundary.
+the ordinary ABI boundary. CFG allocation reserves stable typed slots for
+these values even when they normally remain in registers; this is a required
+part of memory lowering, not optional deoptimization metadata.
 
 ## Byte-exact semantics and lowering
 
@@ -68,15 +77,23 @@ unaligned access do not depend on C or C++ object aliasing or alignment rules.
 Current supported native targets are little-endian:
 
 - AArch64 and x86-64 use their native scalar width operations and explicit
-  byte reversal for big-endian descriptors. Their architecture contracts allow
-  the emitted scalar forms to access the verified unaligned address.
+  byte reversal for big-endian descriptors. Float32 conversion uses native
+  scalar conversion instructions. Their architecture contracts allow the
+  emitted scalar forms to access the verified unaligned address.
 - RISC-V 64 uses one native width operation for naturally aligned native or
-  little-endian access. It assembles or scatters bytes for explicit big-endian
-  access and for descriptors that permit an address less aligned than the
-  width, avoiding platform-dependent misaligned traps.
+  little-endian access, including `FLW`/`FLD` and `FSW`/`FSD` for floating
+  storage. It assembles or scatters integer bits for explicit big-endian access
+  and for descriptors that permit an address less aligned than the width,
+  avoiding platform-dependent misaligned traps before moving those bits to or
+  from the floating register bank.
 
 This distinction is a lowering choice only. All paths have identical bounds,
 permission, alignment, byte-order, sign-extension, result, and exit semantics.
+
+Standalone `byte_swap(value, width)` accepts only 16, 32, or 64 bits. It
+reverses the selected low bytes and zero-extends 16- and 32-bit results. It is a
+pure IR operation, so the optimizer folds constants and the three native
+backends may use one instruction or a verified scalar sequence.
 
 ## Public construction example
 
@@ -118,15 +135,17 @@ unavailable or wrongly typed operands, duplicated descriptors, and duplicated
 runtime sites before native publication.
 
 Qualification covers both IR forms, permission and range failures, null
-contexts, optimizer preservation, stack maps, all four widths, both explicit
-byte orders, native order, signed extension, natural-alignment fast paths, and
-unaligned byte paths. The native matrix is checked against the interpreter and
-the expected byte layout on AArch64, real Ubuntu and Windows x86-64, and real
-RISC-V 64 hardware. The versioned two-path microbenchmark and initial real-host
-records are documented in [`PORTABILITY.md`](PORTABILITY.md).
+contexts, optimizer preservation, live Word/Float64 stack-map reconstruction,
+all Word and Float widths, both explicit byte orders, native order, signed
+extension, Float32 rounding, natural-alignment fast paths, unaligned byte
+paths, and all byte-swap widths. The native matrix is checked against the
+interpreter and the expected byte layout on AArch64, real Ubuntu and Windows
+x86-64, and real RISC-V 64 hardware. The versioned four-path microbenchmark and
+initial real-host records are documented in
+[`PORTABILITY.md`](PORTABILITY.md).
 
-The next memory milestones are Float32/Float64 values and standalone byte
-reversal, followed by verified frame slots. Strict 128-bit SIMD then builds on
-the same region, alias, endian, alignment, bounds, stack-map, and target-profile
-contracts. Atomics remain a later, naturally aligned contract with explicit
-memory ordering; they will not reuse the unaligned scalar fallback.
+The next memory milestones are trusted runtime layouts and verified frame
+slots. Strict 128-bit SIMD then builds on the same region, alias, endian,
+alignment, bounds, stack-map, and target-profile contracts. Atomics remain a
+later, naturally aligned contract with explicit memory ordering; they will not
+reuse the unaligned scalar fallback.
