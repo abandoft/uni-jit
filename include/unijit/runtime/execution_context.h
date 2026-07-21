@@ -56,7 +56,12 @@ class ExecutionContext final {
     exit_site_ = 0;
     exit_value_ = 0;
     captured_value_count_ = 0;
+    safepoint_polls_ = 0;
   }
+
+  void record_safepoint_poll() noexcept { ++safepoint_polls_; }
+
+  std::uint64_t safepoint_polls() const noexcept { return safepoint_polls_; }
 
   void record_exit(ExitReason reason, std::size_t site,
                    ir::Word value = 0) noexcept {
@@ -91,6 +96,7 @@ class ExecutionContext final {
   static constexpr std::size_t exit_value_offset() noexcept;
   static constexpr std::size_t captured_value_count_offset() noexcept;
   static constexpr std::size_t captured_values_offset() noexcept;
+  static constexpr std::size_t safepoint_polls_offset() noexcept;
 
  private:
   friend class Assumption;
@@ -115,6 +121,7 @@ class ExecutionContext final {
   ir::Word exit_value_{0};
   std::uint64_t captured_value_count_{0};
   std::array<ir::Word, kMaximumCapturedValues> captured_values_;
+  std::uint64_t safepoint_polls_{0};
   void* user_data_{nullptr};
 };
 
@@ -141,6 +148,10 @@ ExecutionContext::captured_value_count_offset() noexcept {
 
 constexpr std::size_t ExecutionContext::captured_values_offset() noexcept {
   return offsetof(ExecutionContext, captured_values_);
+}
+
+constexpr std::size_t ExecutionContext::safepoint_polls_offset() noexcept {
+  return offsetof(ExecutionContext, safepoint_polls_);
 }
 
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free,

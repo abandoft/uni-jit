@@ -571,13 +571,14 @@ void test_safepoint_ir_and_interpreter() {
              interrupted.status.location() == 42 &&
              context.exit_reason() ==
                  unijit::runtime::ExitReason::kSafepoint &&
-             context.exit_site() == 42,
+             context.exit_site() == 42 && context.safepoint_polls() == 1,
          "interpreter safepoints must report interruption and site identity");
 
   context.clear_interrupt();
   const auto completed = Interpreter::evaluate(function, nullptr, 0, &context);
   expect(completed.ok() && completed.value == 73 &&
-             context.exit_reason() == unijit::runtime::ExitReason::kNone,
+             context.exit_reason() == unijit::runtime::ExitReason::kNone &&
+             context.safepoint_polls() == 1,
          "clear safepoints must continue without changing the result");
 
   auto compilation = Compiler::compile(function);
@@ -609,13 +610,15 @@ void test_safepoint_ir_and_interpreter() {
                    unijit::StatusCode::kExecutionInterrupted &&
                native_interrupted.status.location() == 42 &&
                context.exit_reason() ==
-                   unijit::runtime::ExitReason::kSafepoint,
+                   unijit::runtime::ExitReason::kSafepoint &&
+               context.safepoint_polls() == 1,
            "native safepoints must exit with the matching site identity");
 
     context.clear_interrupt();
     const auto native_completed =
         compilation.function->invoke(nullptr, 0, &context);
-    expect(native_completed.ok() && native_completed.value == 73,
+    expect(native_completed.ok() && native_completed.value == 73 &&
+               context.safepoint_polls() == 1,
            "native clear safepoints must continue with a zero effect value");
     expect(compilation.function->native_entry()(nullptr, nullptr) == 73,
            "a null execution context must bypass safepoint polling");
@@ -3059,7 +3062,8 @@ void test_control_flow_safepoint() {
   expect(!interpreted.ok() &&
              interpreted.status.code() ==
                  unijit::StatusCode::kExecutionInterrupted &&
-             interpreted.status.location() == 314,
+             interpreted.status.location() == 314 &&
+             context.safepoint_polls() == 1,
          "CFG interpreter must exit at the requested loop safepoint");
 
   auto compilation = Compiler::compile(function);
@@ -3104,7 +3108,8 @@ void test_control_flow_safepoint() {
                interrupted.status.code() ==
                    unijit::StatusCode::kExecutionInterrupted &&
                interrupted.status.location() == 314 &&
-               context.exit_site() == 314 && captured.ok() &&
+               context.exit_site() == 314 &&
+               context.safepoint_polls() == 1 && captured.ok() &&
                captured_remaining != nullptr &&
                captured_remaining->value_bits == 4 &&
                captured_sum != nullptr && captured_sum->value_bits == 0 &&
@@ -3116,6 +3121,7 @@ void test_control_flow_safepoint() {
     const auto completed =
         compilation.function->invoke(args.data(), args.size(), &context);
     expect(completed.ok() && completed.value == 10 &&
+               context.safepoint_polls() == 4 &&
                context.captured_value_count() == 0 &&
                !compilation.function->reconstruct_stack_map(context).ok(),
            "successful invocation must clear stale captured stack-map state");

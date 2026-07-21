@@ -117,6 +117,9 @@ EvaluationResult Interpreter::evaluate(const Function& function,
           break;
         case Opcode::kSafepoint:
           values[index] = 0;
+          if (context != nullptr) {
+            context->record_safepoint_poll();
+          }
           if (context != nullptr && context->exit_poll_requested()) {
             const auto site = static_cast<std::size_t>(node.immediate);
             context->record_exit(runtime::ExitReason::kSafepoint, site);

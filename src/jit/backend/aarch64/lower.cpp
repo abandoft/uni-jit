@@ -129,6 +129,11 @@ class Assembler final {
                      reg(destination));
   }
 
+  void increment(int destination) {
+    buffer_.emit_u32(0x91000400U | (reg(destination) << 5U) |
+                     reg(destination));
+  }
+
   void subtract(int destination, int lhs, int rhs) {
     buffer_.emit_u32(0xCB000000U | (reg(rhs) << 16U) | (reg(lhs) << 5U) |
                      reg(destination));
@@ -690,6 +695,11 @@ LoweringResult lower_impl(const ir::Function& function,
         assembler.load(kScratch0, kStackPointer,
                        context_slot * sizeof(ir::Word));
         const std::size_t no_context = assembler.branch_zero(kScratch0);
+        assembler.load(kScratch1, kScratch0,
+                       runtime::ExecutionContext::safepoint_polls_offset());
+        assembler.increment(kScratch1);
+        assembler.store(kScratch1, kScratch0,
+                        runtime::ExecutionContext::safepoint_polls_offset());
         assembler.load(
             kScratch0, kScratch0,
             runtime::ExecutionContext::interrupt_requested_offset());
@@ -1284,6 +1294,13 @@ LoweringResult lower_control_flow_impl(
           assembler.load(kScratch0, kStackPointer,
                          context_slot * sizeof(ir::Word));
           const std::size_t no_context = assembler.branch_zero(kScratch0);
+          assembler.load(
+              kScratch1, kScratch0,
+              runtime::ExecutionContext::safepoint_polls_offset());
+          assembler.increment(kScratch1);
+          assembler.store(
+              kScratch1, kScratch0,
+              runtime::ExecutionContext::safepoint_polls_offset());
           assembler.load(
               kScratch0, kScratch0,
               runtime::ExecutionContext::interrupt_requested_offset());

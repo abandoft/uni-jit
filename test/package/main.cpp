@@ -202,6 +202,25 @@ int main() {
       package_cfg_call_count != 1) {
     return 37;
   }
+  unijit::ir::FunctionBuilder safepoint_builder(0);
+  if (!safepoint_builder.safepoint(23).valid() ||
+      !safepoint_builder
+           .set_return(safepoint_builder.constant(42))
+           .ok()) {
+    return 38;
+  }
+  auto safepoint_compilation = unijit::jit::Compiler::compile(
+      std::move(safepoint_builder).build());
+  if (!safepoint_compilation.ok()) {
+    return 39;
+  }
+  unijit::runtime::ExecutionContext safepoint_context;
+  const auto safepoint_result = safepoint_compilation.function->invoke(
+      nullptr, 0, &safepoint_context);
+  if (!safepoint_result.ok() || safepoint_result.value != 42 ||
+      safepoint_context.safepoint_polls() != 1) {
+    return 40;
+  }
   unijit::runtime::OsrFrame osr_frame(31, 7);
   unijit::runtime::OsrEntryPlan osr_plan(31, 7);
   if (!osr_frame.add(8, unijit::ir::ValueType::kWord, 20).ok() ||

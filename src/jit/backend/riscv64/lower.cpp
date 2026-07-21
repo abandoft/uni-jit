@@ -103,6 +103,10 @@ class Assembler final {
     emit_r(0x00, rhs, lhs, 0, destination, 0x33);
   }
 
+  void increment(int destination) {
+    emit_i(1, destination, 0, destination, 0x13);
+  }
+
   void subtract(int destination, int lhs, int rhs) {
     emit_r(0x20, rhs, lhs, 0, destination, 0x33);
   }
@@ -733,6 +737,11 @@ LoweringResult lower_impl(const ir::Function& function,
         assembler.load(kScratch0, kStackPointer,
                        context_slot * sizeof(ir::Word));
         const std::size_t no_context = assembler.branch_zero(kScratch0);
+        assembler.load(kScratch1, kScratch0,
+                       runtime::ExecutionContext::safepoint_polls_offset());
+        assembler.increment(kScratch1);
+        assembler.store(kScratch1, kScratch0,
+                        runtime::ExecutionContext::safepoint_polls_offset());
         assembler.load(
             kScratch0, kScratch0,
             runtime::ExecutionContext::interrupt_requested_offset());
@@ -1332,6 +1341,13 @@ LoweringResult lower_control_flow_impl(
           assembler.load(kScratch0, kStackPointer,
                          context_slot * sizeof(ir::Word));
           const std::size_t no_context = assembler.branch_zero(kScratch0);
+          assembler.load(
+              kScratch1, kScratch0,
+              runtime::ExecutionContext::safepoint_polls_offset());
+          assembler.increment(kScratch1);
+          assembler.store(
+              kScratch1, kScratch0,
+              runtime::ExecutionContext::safepoint_polls_offset());
           assembler.load(
               kScratch0, kScratch0,
               runtime::ExecutionContext::interrupt_requested_offset());

@@ -797,6 +797,9 @@ ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
           }
         } else if (node.opcode == ControlOpcode::kSafepoint) {
           values[value.id()] = 0;
+          if (context != nullptr) {
+            context->record_safepoint_poll();
+          }
           if (context != nullptr && context->exit_poll_requested()) {
             const auto site = static_cast<std::size_t>(node.immediate);
             context->record_exit(runtime::ExitReason::kSafepoint, site);
