@@ -58,7 +58,6 @@ jobs:
         run: >-
           cmake -S . -B build/platform -A x64
           -DUNIJIT_BUILD_LUA_REFERENCE=ON
-          -DUNIJIT_BUILD_QUICKJS_REFERENCE=ON
           -DUNIJIT_BUILD_POCKETPY_REFERENCE=ON
           -DUNIJIT_BUILD_BENCHMARKS=ON
           -DUNIJIT_WARNINGS_AS_ERRORS=ON
