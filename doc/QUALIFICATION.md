@@ -163,6 +163,16 @@ package builders. Stock Lua executes dynamic ordered and equality conditions
 with structured true/else arithmetic arms in scalar baseline and eight-way
 optimized numeric loops, then compares both tiers with the unmodified VM.
 
+Lua Float64-loop qualification differentially executes ascending, descending,
+fractional, zero-iteration, infinite, NaN, and signed-zero controls through the
+stock VM and both live UniJIT tiers. Constant and computed zero steps must raise
+the same Lua error without entering native code. The optimized graph carries
+only bytecode-live state, selects direction outside the body, precomputes each
+eight-way group's indices with ordered Float64 additions, and polls at least
+once per group. Its retained three-engine complete-loop record is a target
+baseline until it independently clears the ordinary 1.25x stock-Lua and 1.10x
+LuaJIT floors on the real Ubuntu x86-64 runner.
+
 Compact-frame qualification compiles and executes a baseline CFG with more
 than 2,048 SSA nodes and repeated local register oversubscription while
 requiring no more than sixteen frame slots. The fixture proves block-local
@@ -222,7 +232,8 @@ is stable across unrelated machines. Both the raw comparison and the
 machine-readable gate decision are retained as workflow artifacts.
 
 Lua records include the direct `unijit_speedup_over_luajit` ratio and all four
-hosted Lua baselines are retained. Its release gate uses the complete
+hosted integer-loop gates plus the Float64-loop target baseline are retained.
+The release gate uses the complete
 1,000-iteration numeric-loop boundary rather than the narrower native-call
 microbenchmark. The commercial loop gate runs three independent seven-sample
 trials and rotates stock Lua, UniJIT, and LuaJIT through every process-order

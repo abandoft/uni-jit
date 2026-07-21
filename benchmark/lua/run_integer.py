@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare one integer Lua workload across stock Lua, UniJIT, and LuaJIT."""
+"""Compare one numeric Lua workload across stock Lua, UniJIT, and LuaJIT."""
 
 from __future__ import annotations
 
@@ -160,6 +160,7 @@ def main() -> int:
             "integer_parameter_loop",
             "integer_guarded_loop",
             "integer_conditional_loop",
+            "float_parameter_loop",
         }
         else "language_call"
     )

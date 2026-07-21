@@ -135,6 +135,16 @@ jobs:
           --warmup 10000 --iterations 100000 --samples 3
           > build/language/lua-float.json
 
+      - name: Compare parameterized Lua Float64 numeric loops
+        run: >-
+          python3 benchmark/lua/run_integer.py
+          --script benchmark/lua/float_parameter_loop.lua
+          --lua build/language/bin/lua5.5-reference
+          --unijit build/language/bin/lua5.5-unijit
+          --luajit build/language/references/luajit/src/luajit
+          --warmup 1000 --iterations 100000 --samples 7 --trials 3
+          > build/language/lua-float-parameter-loop.json
+
       - name: Retain Lua target baselines
         if: always()
         uses: actions/upload-artifact@v7
@@ -152,6 +162,7 @@ jobs:
             build/language/lua-integer-conditional-loop.json
             build/language/lua-integer-conditional-loop-performance-gate.json
             build/language/lua-float.json
+            build/language/lua-float-parameter-loop.json
           if-no-files-found: error
 
   quickjs-reference-baseline:

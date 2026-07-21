@@ -117,6 +117,16 @@ specialization with identical floating-point inputs in stock Lua, UniJIT, and
 LuaJIT. Checksums are compared without integer truncation before performance
 ratios are emitted.
 
+Passing `--script benchmark/lua/float_parameter_loop.lua` measures a complete
+1,000-iteration Float64 numeric loop whose start, limit, fractional step, and
+recurrence seed cross the guarded callable boundary. The runner uses the same
+balanced process-order policy as the integer loop gates, compares the exact
+three-engine checksum, and normalizes time per completed source iteration.
+Hosted validation currently retains this as a target baseline while the
+optimized Float64 path is being raised to the 1.25x stock-Lua and 1.10x LuaJIT
+commercial floors; it is not labeled a passing release gate before both ratios
+are demonstrated on the real Ubuntu x86-64 host.
+
 ## QuickJS, V8 Jitless, and V8 target comparison
 
 The JavaScript target runner executes one checked-in source file in stock
