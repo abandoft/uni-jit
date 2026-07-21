@@ -6246,6 +6246,466 @@ void test_control_flow_float64_lhs_register_reuse() {
          "dead Float64 left operands must donate their register to the result");
 }
 
+void test_vector128_strict_semantics() {
+  using unijit::ir::ValueType;
+  using unijit::ir::Vector128;
+  using unijit::ir::VectorBinaryOperation;
+  using unijit::ir::VectorComparison;
+  using unijit::ir::VectorExtension;
+  using unijit::ir::VectorHalf;
+  using unijit::ir::VectorShuffle;
+  using unijit::ir::VectorUnaryOperation;
+
+  expect(unijit::ir::vector_lane_count(ValueType::kI8x16) == 16 &&
+             unijit::ir::vector_lane_count(ValueType::kF64x2) == 2 &&
+             unijit::ir::vector_mask_type(ValueType::kF32x4) ==
+                 ValueType::kMask32x4,
+         "portable vector types must have fixed 128-bit lane shapes");
+
+  const Vector128 i8_250 =
+      unijit::ir::vector_splat_bits(ValueType::kI8x16, 250);
+  const Vector128 i8_10 =
+      unijit::ir::vector_splat_bits(ValueType::kI8x16, 10);
+  const Vector128 wrapped = unijit::ir::vector_binary(
+      VectorBinaryOperation::kAdd, i8_250, i8_10, ValueType::kI8x16);
+  expect(unijit::ir::vector_extract_lane_bits(wrapped, ValueType::kI8x16, 0,
+                                              false) == 4,
+         "integer vector arithmetic must wrap independently per lane");
+  expect(unijit::ir::vector_extract_lane_bits(i8_250, ValueType::kI8x16, 3,
+                                              true) == -6,
+         "integer lane extraction must apply explicit sign extension");
+
+  Vector128 signed_lanes =
+      unijit::ir::vector_splat_bits(ValueType::kI8x16, 1);
+  signed_lanes = unijit::ir::vector_insert_lane_bits(
+      signed_lanes, ValueType::kI8x16, 0, -1);
+  const Vector128 signed_mask = unijit::ir::vector_compare(
+      VectorComparison::kSignedLessThan, signed_lanes, i8_10,
+      ValueType::kI8x16);
+  expect(unijit::ir::vector_mask_is_canonical(signed_mask,
+                                              ValueType::kMask8x16) &&
+             unijit::ir::vector_lane_sign_mask(signed_mask,
+                                               ValueType::kMask8x16) ==
+                 0xffff,
+         "vector comparisons must produce canonical all-zero/all-one masks");
+  const Vector128 selected =
+      unijit::ir::vector_select(signed_mask, i8_250, i8_10,
+                                ValueType::kMask8x16);
+  expect(unijit::ir::vector_extract_lane_bits(selected, ValueType::kI8x16, 7,
+                                              false) == 250,
+         "lane selection must use canonical mask bits without scalar truthiness");
+
+  Vector128 ordered;
+  ordered = unijit::ir::vector_insert_lane_bits(ordered, ValueType::kI32x4,
+                                                0, 10);
+  ordered = unijit::ir::vector_insert_lane_bits(ordered, ValueType::kI32x4,
+                                                1, 20);
+  ordered = unijit::ir::vector_insert_lane_bits(ordered, ValueType::kI32x4,
+                                                2, 30);
+  ordered = unijit::ir::vector_insert_lane_bits(ordered, ValueType::kI32x4,
+                                                3, 40);
+  VectorShuffle reverse;
+  reverse.lane_count = 4;
+  reverse.lanes = {3, 2, 1, 0};
+  const Vector128 reversed =
+      unijit::ir::vector_shuffle(ordered, ValueType::kI32x4, reverse);
+  expect(unijit::ir::vector_extract_lane_bits(reversed, ValueType::kI32x4, 0,
+                                              false) == 40,
+         "shuffle lane zero must remain the lowest-addressed logical lane");
+
+  const Vector128 widened = unijit::ir::vector_widen(
+      signed_lanes, ValueType::kI8x16, ValueType::kI16x8,
+      VectorExtension::kSign, VectorHalf::kLow);
+  expect(unijit::ir::vector_extract_lane_bits(widened, ValueType::kI16x8, 0,
+                                              true) == -1,
+         "signed widening must preserve the selected half's lane signs");
+
+  const Vector128 f32_lhs = unijit::ir::vector_splat_bits(
+      ValueType::kF32x4, static_cast<Word>(UINT32_C(0x3fc00000)));
+  const Vector128 f32_rhs = unijit::ir::vector_splat_bits(
+      ValueType::kF32x4, static_cast<Word>(UINT32_C(0x40000000)));
+  const Vector128 f32_sum = unijit::ir::vector_binary(
+      VectorBinaryOperation::kAdd, f32_lhs, f32_rhs, ValueType::kF32x4);
+  expect(unijit::ir::vector_extract_lane_bits(f32_sum, ValueType::kF32x4, 2,
+                                              false) ==
+             static_cast<Word>(UINT32_C(0x40600000)),
+         "Float32 vector arithmetic must round and retain exact lane bits");
+
+  const Vector128 f32_nan = unijit::ir::vector_splat_bits(
+      ValueType::kF32x4, static_cast<Word>(UINT32_C(0x7fc01234)));
+  const Vector128 ordered_nan = unijit::ir::vector_compare(
+      VectorComparison::kOrderedFloatEqual, f32_nan, f32_nan,
+      ValueType::kF32x4);
+  expect(unijit::ir::vector_lane_sign_mask(ordered_nan,
+                                          ValueType::kMask32x4) == 0,
+         "ordered vector comparisons must be false for every NaN lane");
+
+  Vector128 signed_zero = unijit::ir::vector_splat_bits(ValueType::kF32x4, 0);
+  signed_zero = unijit::ir::vector_insert_lane_bits(
+      signed_zero, ValueType::kF32x4, 1,
+      static_cast<Word>(UINT32_C(0x80000000)));
+  signed_zero = unijit::ir::vector_insert_lane_bits(
+      signed_zero, ValueType::kF32x4, 3,
+      static_cast<Word>(UINT32_C(0x80000000)));
+  expect(unijit::ir::vector_lane_sign_mask(signed_zero,
+                                          ValueType::kF32x4) == 0xa,
+         "lane-sign extraction must preserve negative-zero sign bits");
+
+  const Vector128 zero;
+  Vector128 noncanonical_mask;
+  noncanonical_mask.bytes[0] = UINT8_MAX;
+  VectorShuffle malformed_shuffle;
+  malformed_shuffle.lane_count = 4;
+  malformed_shuffle.lanes = {0, 1, 2, 4};
+  expect(unijit::ir::vector_splat_bits(ValueType::kMask32x4, -1) == zero &&
+             unijit::ir::vector_extract_lane_bits(
+                 ordered, ValueType::kI32x4, 4, false) == 0 &&
+             unijit::ir::vector_insert_lane_bits(
+                 ordered, ValueType::kI32x4, 4, 99) == zero &&
+             unijit::ir::vector_unary(
+                 VectorUnaryOperation::kBitwiseNot, ordered,
+                 ValueType::kWord) == zero &&
+             unijit::ir::vector_binary(
+                 static_cast<VectorBinaryOperation>(UINT8_MAX), ordered,
+                 ordered, ValueType::kI32x4) == zero &&
+             unijit::ir::vector_compare(
+                 VectorComparison::kSignedLessThan, f32_lhs, f32_rhs,
+                 ValueType::kF32x4) == zero &&
+             unijit::ir::vector_select(noncanonical_mask, ordered, reversed,
+                                       ValueType::kMask32x4) == zero &&
+             unijit::ir::vector_lane_sign_mask(ordered,
+                                               ValueType::kWord) == 0 &&
+             unijit::ir::vector_shuffle(
+                 ordered, ValueType::kI32x4, malformed_shuffle) == zero &&
+             unijit::ir::vector_widen(
+                 signed_lanes, ValueType::kI8x16, ValueType::kI32x4,
+                 VectorExtension::kSign, VectorHalf::kLow) == zero,
+         "public SIMD semantics must totalize malformed types, masks, lanes "
+         "and operation enums without out-of-bounds access");
+}
+
+void test_vector128_straight_line_ir() {
+  using unijit::ir::ValueType;
+  using unijit::ir::VectorBinaryOperation;
+  using unijit::ir::VectorComparison;
+
+  FunctionBuilder builder(2);
+  const Value five = builder.parameter(0);
+  const Value seven = builder.parameter(1);
+  const Value lhs = builder.vector_splat(ValueType::kI32x4, five);
+  const Value rhs = builder.vector_splat(ValueType::kI32x4, seven);
+  const Value sum =
+      builder.vector_binary(VectorBinaryOperation::kAdd, lhs, rhs);
+  const Value minus_one = builder.constant(-1);
+  const Value patched = builder.vector_insert_lane(sum, 2, minus_one);
+  const Value mask = builder.vector_compare(
+      VectorComparison::kSignedLessThan, patched, sum);
+  const Value selected = builder.vector_select(mask, rhs, lhs);
+  const Value shuffled = builder.vector_shuffle(selected, {3, 2, 1, 0});
+  const Value lane = builder.vector_extract_lane(shuffled, 1, true);
+  const Value sign = builder.vector_lane_sign_mask(patched);
+  expect(builder.set_return(builder.add(lane, sign)).ok(),
+         "straight-line vector fixture must return a scalar projection");
+  const Function function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "strict straight-line SIMD IR must verify");
+
+  const std::array<Word, 2> arguments = {5, 7};
+  const auto interpreted =
+      Interpreter::evaluate(function, arguments.data(), arguments.size());
+  expect(interpreted.ok() && interpreted.value == 11,
+         "straight-line SIMD interpreter must preserve select, shuffle and "
+         "sign-mask semantics");
+
+  const auto optimized = unijit::ir::Optimizer::run(function);
+  expect(optimized.ok(), "optimizer must preserve strict SIMD nodes");
+  if (optimized.ok()) {
+    const auto optimized_result = Interpreter::evaluate(
+        optimized.function, arguments.data(), arguments.size());
+    expect(optimized_result.ok() &&
+               optimized_result.value == interpreted.value,
+           "optimized straight-line SIMD must match the reference tier");
+  }
+
+  const auto compilation = Compiler::compile(function);
+  expect(!compilation.ok() &&
+             compilation.status.code() ==
+                 unijit::StatusCode::kCodeGenerationFailed &&
+             compilation.status.message().find("native vector lowering") !=
+                 std::string::npos,
+         "native compilation must fail closed until vector allocation and "
+         "lowering are delivered");
+
+  FunctionBuilder folding_builder(0);
+  const Value folded_lhs = folding_builder.vector_splat(
+      ValueType::kI8x16, folding_builder.constant(250));
+  const Value folded_rhs = folding_builder.vector_splat(
+      ValueType::kI8x16, folding_builder.constant(10));
+  const Value folded_sum = folding_builder.vector_binary(
+      VectorBinaryOperation::kAdd, folded_lhs, folded_rhs);
+  expect(folding_builder
+             .set_return(
+                 folding_builder.vector_extract_lane(folded_sum, 5, false))
+             .ok(),
+         "straight-line vector folding fixture must return a scalar lane");
+  const Function folding_function = std::move(folding_builder).build();
+  const auto folded = unijit::ir::Optimizer::run(folding_function);
+  const auto folded_result =
+      folded.ok() ? Interpreter::evaluate(folded.function, nullptr, 0)
+                  : unijit::ir::EvaluationResult{};
+  expect(folded.ok() && folded.stats.constants_folded >= 4 &&
+             folded_result.ok() && folded_result.value == 4,
+         "straight-line optimizer must fold vector splats, arithmetic and "
+         "lane extraction bit-exactly");
+  auto folded_compilation = Compiler::compile(folding_function);
+  const auto folded_native =
+      folded_compilation.ok()
+          ? folded_compilation.function->invoke(nullptr, 0)
+          : unijit::ir::EvaluationResult{};
+  expect(folded_compilation.ok() && folded_native.ok() &&
+             folded_native.value == 4,
+         "optimized compilation may publish a SIMD program only after all "
+         "vector operations fold to the existing scalar native floor");
+  unijit::jit::CompilationOptions baseline_options;
+  baseline_options.optimization_level =
+      unijit::jit::OptimizationLevel::kBaseline;
+  const auto baseline_compilation =
+      Compiler::compile(folding_function, baseline_options);
+  expect(!baseline_compilation.ok() &&
+             baseline_compilation.status.code() ==
+                 unijit::StatusCode::kCodeGenerationFailed,
+         "baseline compilation must still fail closed when vector nodes reach "
+         "native allocation");
+}
+
+void test_vector128_control_flow_ir() {
+  using unijit::ir::Block;
+  using unijit::ir::ControlFlowBuilder;
+  using unijit::ir::ControlFlowInterpreter;
+  using unijit::ir::ValueType;
+  using unijit::ir::VectorBinaryOperation;
+
+  ControlFlowBuilder builder(2);
+  const Value base =
+      builder.vector_splat(ValueType::kI16x8, builder.parameter(0));
+  const Block merge = builder.create_block({ValueType::kI16x8});
+  expect(builder.jump(merge, {base}).ok(),
+         "CFG must carry one typed vector across an edge");
+  expect(builder.set_insertion_block(merge).ok(),
+         "vector merge block must exist");
+  const Value incoming = builder.block_parameter(merge, 0);
+  const Value increment =
+      builder.vector_splat(ValueType::kI16x8, builder.parameter(1));
+  const Value result = builder.vector_binary(VectorBinaryOperation::kAdd,
+                                             incoming, increment);
+  expect(builder.set_return(builder.vector_extract_lane(result, 7, true)).ok(),
+         "CFG vector fixture must return a scalar lane");
+  const auto function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "CFG SIMD block parameters and edge copies must verify");
+
+  const std::array<Word, 2> arguments = {100, 23};
+  const auto interpreted = ControlFlowInterpreter::evaluate(
+      function, arguments.data(), arguments.size());
+  expect(interpreted.ok() && interpreted.value == 123,
+         "CFG interpreter must copy complete 128-bit vector values across "
+         "edges");
+
+  const auto optimized = unijit::ir::Optimizer::run(function);
+  expect(optimized.ok(), "CFG optimizer must retain vector edge semantics");
+  if (optimized.ok()) {
+    const auto optimized_result = ControlFlowInterpreter::evaluate(
+        optimized.function, arguments.data(), arguments.size());
+    expect(optimized_result.ok() &&
+               optimized_result.value == interpreted.value,
+           "optimized CFG SIMD must remain bit-exact");
+  }
+  const auto dynamic_compilation = Compiler::compile(function);
+  expect(!dynamic_compilation.ok() &&
+             dynamic_compilation.status.code() ==
+                 unijit::StatusCode::kCodeGenerationFailed,
+         "CFG compilation must fail closed while a dynamic vector operation "
+         "survives optimization");
+
+
+  ControlFlowBuilder folding_builder(0);
+  const Value folded_lhs = folding_builder.vector_splat(
+      ValueType::kI16x8, folding_builder.constant(100));
+  const Value folded_rhs = folding_builder.vector_splat(
+      ValueType::kI16x8, folding_builder.constant(23));
+  const Value folded_sum = folding_builder.vector_binary(
+      VectorBinaryOperation::kAdd, folded_lhs, folded_rhs);
+  expect(folding_builder
+             .set_return(
+                 folding_builder.vector_extract_lane(folded_sum, 7, true))
+             .ok(),
+         "CFG vector folding fixture must return a scalar lane");
+  const auto folding_function = std::move(folding_builder).build();
+  const auto folded = unijit::ir::Optimizer::run(folding_function);
+  const auto folded_result =
+      folded.ok() ? ControlFlowInterpreter::evaluate(folded.function, nullptr,
+                                                      0)
+                  : unijit::ir::EvaluationResult{};
+  expect(folded.ok() && folded_result.ok() && folded_result.value == 123,
+         "CFG optimizer must preserve a constant vector program");
+  expect(folded.ok() && folded.stats.constants_folded >= 1 &&
+             folded.stats.output_nodes == 1,
+         "CFG optimizer must collapse a strict vector projection to one "
+         "canonical scalar constant");
+  auto folded_compilation = Compiler::compile(folding_function);
+  expect(folded_compilation.ok(),
+         "CFG compilation must accept a vector program fully folded to the "
+         "scalar native floor");
+  if (folded_compilation.ok()) {
+    const auto native = folded_compilation.function->invoke(nullptr, 0);
+    expect(native.ok() && native.value == 123,
+           "fully folded CFG SIMD must execute as canonical scalar code");
+  }
+}
+
+void test_vector128_verifier_and_limits() {
+  using unijit::ir::ValueType;
+  using unijit::ir::Vector128;
+  using unijit::ir::VectorComparison;
+
+  {
+    FunctionBuilder builder({ValueType::kI32x4});
+    expect(builder.set_return(builder.constant(0)).ok(),
+           "invalid vector parameter fixture must still return a scalar");
+    expect(!unijit::ir::verify(std::move(builder).build()).ok(),
+           "public scalar invocation ABI must reject vector parameters");
+  }
+  {
+    FunctionBuilder builder(0);
+    Vector128 malformed_mask;
+    malformed_mask.bytes[0] = 1;
+    builder.vector_constant(ValueType::kMask8x16, malformed_mask);
+    expect(builder.set_return(builder.constant(0)).ok(),
+           "malformed mask fixture must return a scalar");
+    expect(!unijit::ir::verify(std::move(builder).build()).ok(),
+           "verifier must reject noncanonical mask lanes");
+  }
+  {
+    FunctionBuilder builder(0);
+    const Value zero = builder.vector_zero(ValueType::kI32x4);
+    builder.vector_shuffle(zero, {0, 1, 2});
+    expect(builder.set_return(builder.constant(0)).ok(),
+           "invalid shuffle fixture must return a scalar");
+    expect(!unijit::ir::verify(std::move(builder).build()).ok(),
+           "verifier must reject a shuffle with the wrong lane count");
+  }
+  {
+    FunctionBuilder builder(0);
+    const Value lane = builder.constant(1);
+    builder.vector_splat(ValueType::kMask32x4, lane);
+    expect(builder.set_return(builder.constant(0)).ok(),
+           "invalid mask splat fixture must return a scalar");
+    expect(!unijit::ir::verify(std::move(builder).build()).ok(),
+           "dynamic splats must not manufacture noncanonical masks");
+  }
+  {
+    FunctionBuilder builder(0);
+    const Value lhs = builder.vector_zero(ValueType::kF32x4);
+    const Value rhs = builder.vector_zero(ValueType::kF32x4);
+    builder.vector_compare(VectorComparison::kSignedLessThan, lhs, rhs);
+    expect(builder.set_return(builder.constant(0)).ok(),
+           "invalid float comparison fixture must return a scalar");
+    expect(!unijit::ir::verify(std::move(builder).build()).ok(),
+           "floating vectors must reject integer signed comparisons");
+  }
+  {
+    FunctionBuilder builder(0);
+    const Value vector = builder.vector_zero(ValueType::kI32x4);
+    expect(!builder.set_return(vector).ok(),
+           "scalar invocation ABI must reject vector return values early");
+  }
+  {
+    FunctionBuilder builder(0);
+    const Value first = builder.vector_zero(ValueType::kI32x4);
+    builder.vector_zero(ValueType::kI32x4);
+    expect(builder.set_return(builder.vector_extract_lane(first, 0)).ok(),
+           "vector limit fixture must return a scalar lane");
+    const Function function = std::move(builder).build();
+    unijit::jit::CompilationOptions options;
+    options.limits.maximum_vector_constants = 1;
+    const auto compilation = Compiler::compile(function, options);
+    expect(!compilation.ok() &&
+               compilation.status.code() ==
+                   unijit::StatusCode::kResourceExhausted,
+           "vector literal tables must obey independent compilation limits");
+  }
+  {
+    FunctionBuilder builder(0);
+    const Value zero = builder.vector_zero(ValueType::kI32x4);
+    const Value first = builder.vector_shuffle(zero, {3, 2, 1, 0});
+    const Value second = builder.vector_shuffle(first, {1, 0, 3, 2});
+    expect(builder.set_return(builder.vector_extract_lane(second, 0)).ok(),
+           "vector shuffle-limit fixture must return a scalar lane");
+    unijit::jit::CompilationOptions options;
+    options.limits.maximum_vector_shuffles = 1;
+    const auto compilation =
+        Compiler::compile(std::move(builder).build(), options);
+    expect(!compilation.ok() &&
+               compilation.status.code() ==
+                   unijit::StatusCode::kResourceExhausted,
+           "vector shuffle tables must obey independent compilation limits");
+  }
+  {
+    FunctionBuilder builder(0);
+    Vector128 mask_bits;
+    mask_bits.bytes.fill(UINT8_MAX);
+    const Value mask =
+        builder.vector_constant(ValueType::kMask32x4, mask_bits);
+    const Value zero = builder.vector_zero(ValueType::kI32x4);
+    const Value one = builder.vector_splat(ValueType::kI32x4,
+                                           builder.constant(1));
+    const Value first = builder.vector_select(mask, one, zero);
+    const Value second = builder.vector_select(mask, first, zero);
+    expect(builder.set_return(builder.vector_extract_lane(second, 0)).ok(),
+           "vector select-limit fixture must return a scalar lane");
+    unijit::jit::CompilationOptions options;
+    options.limits.maximum_vector_selects = 1;
+    const auto compilation =
+        Compiler::compile(std::move(builder).build(), options);
+    expect(!compilation.ok() &&
+               compilation.status.code() ==
+                   unijit::StatusCode::kResourceExhausted,
+           "vector select side tables must obey independent compilation "
+           "limits");
+  }
+  {
+    unijit::ir::ControlFlowBuilder builder(0);
+    const Value zero = builder.vector_zero(ValueType::kI16x8);
+    const Value first =
+        builder.vector_shuffle(zero, {7, 6, 5, 4, 3, 2, 1, 0});
+    const Value second =
+        builder.vector_shuffle(first, {1, 0, 3, 2, 5, 4, 7, 6});
+    expect(builder.set_return(builder.vector_extract_lane(second, 0)).ok(),
+           "CFG vector limit fixture must return a scalar lane");
+    unijit::jit::CompilationOptions options;
+    options.limits.maximum_vector_shuffles = 1;
+    const auto compilation =
+        Compiler::compile(std::move(builder).build(), options);
+    expect(!compilation.ok() &&
+               compilation.status.code() ==
+                   unijit::StatusCode::kResourceExhausted,
+           "CFG vector side tables must be bounded before dominance analysis");
+  }
+  {
+    FunctionBuilder builder(0);
+    expect(builder.set_return(builder.constant(0)).ok(),
+           "zero-limit fixture must return a scalar");
+    unijit::jit::CompilationOptions options;
+    options.limits.maximum_vector_constants = 0;
+    const auto compilation =
+        Compiler::compile(std::move(builder).build(), options);
+    expect(!compilation.ok() &&
+               compilation.status.code() ==
+                   unijit::StatusCode::kInvalidArgument,
+           "every configured SIMD compilation budget must be positive");
+  }
+}
+
 void test_control_flow_builder_rejects_edge_arity() {
   unijit::ir::ControlFlowBuilder builder(0);
   const unijit::ir::Block target = builder.create_block(1);
@@ -6328,6 +6788,10 @@ int main() {
   test_compilation_scheduler();
   test_control_flow_split_register_classes();
   test_control_flow_float64_lhs_register_reuse();
+  test_vector128_strict_semantics();
+  test_vector128_straight_line_ir();
+  test_vector128_control_flow_ir();
+  test_vector128_verifier_and_limits();
   test_control_flow_compact_spill_frame();
   test_control_flow_execution_budget();
   test_control_flow_builder_rejects_edge_arity();

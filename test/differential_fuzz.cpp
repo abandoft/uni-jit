@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -15,6 +16,7 @@
 #include "unijit/ir/control_flow.h"
 #include "unijit/ir/function.h"
 #include "unijit/ir/interpreter.h"
+#include "unijit/ir/optimizer.h"
 #include "unijit/jit/compiler.h"
 
 namespace {
@@ -27,6 +29,11 @@ using unijit::ir::FunctionBuilder;
 using unijit::ir::Interpreter;
 using unijit::ir::Value;
 using unijit::ir::ValueType;
+using unijit::ir::VectorBinaryOperation;
+using unijit::ir::VectorComparison;
+using unijit::ir::VectorExtension;
+using unijit::ir::VectorHalf;
+using unijit::ir::VectorUnaryOperation;
 using unijit::ir::Word;
 
 struct Options final {
@@ -463,6 +470,242 @@ bool fuzz_cfg_function(std::mt19937_64* random, const Options& options,
   return true;
 }
 
+struct VectorProgram final {
+  ValueType type{ValueType::kI8x16};
+  VectorBinaryOperation arithmetic{VectorBinaryOperation::kAdd};
+  VectorComparison comparison{VectorComparison::kEqual};
+  VectorExtension extension{VectorExtension::kZero};
+  VectorHalf half{VectorHalf::kLow};
+  std::size_t lane{0};
+  bool sign_extend{false};
+  std::vector<std::uint8_t> shuffle;
+};
+
+ValueType widened_type(ValueType type) noexcept {
+  switch (type) {
+    case ValueType::kI8x16:
+      return ValueType::kI16x8;
+    case ValueType::kI16x8:
+      return ValueType::kI32x4;
+    case ValueType::kI32x4:
+      return ValueType::kI64x2;
+    case ValueType::kWord:
+    case ValueType::kFloat64:
+    case ValueType::kI64x2:
+    case ValueType::kF32x4:
+    case ValueType::kF64x2:
+    case ValueType::kMask8x16:
+    case ValueType::kMask16x8:
+    case ValueType::kMask32x4:
+    case ValueType::kMask64x2:
+      return ValueType::kWord;
+  }
+  return ValueType::kWord;
+}
+
+VectorProgram random_vector_program(std::mt19937_64* random) {
+  constexpr std::array<ValueType, 6> kTypes = {
+      ValueType::kI8x16, ValueType::kI16x8, ValueType::kI32x4,
+      ValueType::kI64x2, ValueType::kF32x4, ValueType::kF64x2};
+  constexpr std::array<VectorBinaryOperation, 4> kFloatArithmetic = {
+      VectorBinaryOperation::kAdd, VectorBinaryOperation::kSubtract,
+      VectorBinaryOperation::kMultiply, VectorBinaryOperation::kDivide};
+  constexpr std::array<VectorBinaryOperation, 3> kIntegerArithmetic = {
+      VectorBinaryOperation::kAdd, VectorBinaryOperation::kSubtract,
+      VectorBinaryOperation::kMultiply};
+  constexpr std::array<VectorComparison, 3> kFloatComparisons = {
+      VectorComparison::kOrderedFloatEqual,
+      VectorComparison::kOrderedFloatLessThan,
+      VectorComparison::kOrderedFloatLessEqual};
+  constexpr std::array<VectorComparison, 5> kIntegerComparisons = {
+      VectorComparison::kEqual, VectorComparison::kSignedLessThan,
+      VectorComparison::kSignedLessEqual,
+      VectorComparison::kUnsignedLessThan,
+      VectorComparison::kUnsignedLessEqual};
+
+  VectorProgram result;
+  result.type = kTypes[(*random)() % kTypes.size()];
+  if (unijit::ir::is_float_vector_type(result.type)) {
+    result.arithmetic =
+        kFloatArithmetic[(*random)() % kFloatArithmetic.size()];
+    result.comparison =
+        kFloatComparisons[(*random)() % kFloatComparisons.size()];
+  } else {
+    result.arithmetic =
+        kIntegerArithmetic[(*random)() % kIntegerArithmetic.size()];
+    result.comparison =
+        kIntegerComparisons[(*random)() % kIntegerComparisons.size()];
+  }
+  const std::size_t lanes = unijit::ir::vector_lane_count(result.type);
+  result.lane = (*random)() % lanes;
+  result.sign_extend =
+      unijit::ir::is_integer_vector_type(result.type) &&
+      (((*random)() & 1ULL) != 0);
+  result.extension = ((*random)() & 1ULL) == 0
+                         ? VectorExtension::kZero
+                         : VectorExtension::kSign;
+  result.half = ((*random)() & 1ULL) == 0 ? VectorHalf::kLow
+                                          : VectorHalf::kHigh;
+  result.shuffle.resize(lanes);
+  for (std::size_t lane = 0; lane < lanes; ++lane) {
+    result.shuffle[lane] = static_cast<std::uint8_t>(lane);
+  }
+  std::shuffle(result.shuffle.begin(), result.shuffle.end(), *random);
+  return result;
+}
+
+template <typename Builder>
+Value build_vector_projection(Builder* builder, const VectorProgram& program,
+                              Value lhs, Value rhs_lane) {
+  const Value rhs = builder->vector_splat(program.type, rhs_lane);
+  const Value arithmetic =
+      builder->vector_binary(program.arithmetic, lhs, rhs);
+  const Value inserted =
+      builder->vector_insert_lane(arithmetic, program.lane, rhs_lane);
+  const Value mask =
+      builder->vector_compare(program.comparison, inserted, lhs);
+  const Value inverted_mask = builder->vector_unary(
+      VectorUnaryOperation::kBitwiseNot, mask);
+  const Value roundtrip_mask = builder->vector_unary(
+      VectorUnaryOperation::kBitwiseNot, inverted_mask);
+  const Value selected_mask = builder->vector_binary(
+      VectorBinaryOperation::kBitwiseAnd, mask, roundtrip_mask);
+  const Value selected =
+      builder->vector_select(selected_mask, inserted, rhs);
+  const Value zero = builder->vector_zero(program.type);
+  const Value bitwise = builder->vector_binary(
+      VectorBinaryOperation::kBitwiseXor, selected, zero);
+  const Value shuffled = builder->vector_shuffle(bitwise, program.shuffle);
+  Value projection = builder->vector_extract_lane(
+      shuffled, program.lane, program.sign_extend);
+  projection =
+      builder->add(projection, builder->vector_lane_sign_mask(shuffled));
+
+  const ValueType widened = widened_type(program.type);
+  if (widened != ValueType::kWord) {
+    const Value extended = builder->vector_widen(
+        selected, widened, program.extension, program.half);
+    projection = builder->add(
+        projection, builder->vector_extract_lane(extended, 0, false));
+  }
+  return projection;
+}
+
+bool fuzz_vector_function(std::mt19937_64* random, const Options& options,
+                          std::size_t program_index) {
+  const VectorProgram program = random_vector_program(random);
+
+  FunctionBuilder straight_builder(2);
+  const Value straight_lhs = straight_builder.vector_splat(
+      program.type, straight_builder.parameter(0));
+  const Value straight_result = build_vector_projection(
+      &straight_builder, program, straight_lhs, straight_builder.parameter(1));
+  if (!straight_builder.set_return(straight_result).ok()) {
+    std::cerr << "unable to terminate generated straight-line vector IR\n";
+    return false;
+  }
+  const Function straight = std::move(straight_builder).build();
+  const auto straight_verification = unijit::ir::verify(straight);
+  if (!straight_verification.ok()) {
+    std::cerr << "generated straight-line vector IR failed verification: "
+              << straight_verification.message() << '\n';
+    return false;
+  }
+  const auto optimized_straight = unijit::ir::Optimizer::run(straight);
+  if (!optimized_straight.ok()) {
+    std::cerr << "generated straight-line vector IR failed optimization: "
+              << optimized_straight.status.message() << '\n';
+    return false;
+  }
+
+  ControlFlowBuilder cfg_builder(2);
+  const Value entry_vector =
+      cfg_builder.vector_splat(program.type, cfg_builder.parameter(0));
+  const auto merge = cfg_builder.create_block({program.type});
+  if (!cfg_builder.jump(merge, {entry_vector}).ok() ||
+      !cfg_builder.set_insertion_block(merge).ok()) {
+    std::cerr << "unable to create generated vector CFG edge\n";
+    return false;
+  }
+  const Value cfg_result = build_vector_projection(
+      &cfg_builder, program, cfg_builder.block_parameter(merge, 0),
+      cfg_builder.parameter(1));
+  if (!cfg_builder.set_return(cfg_result).ok()) {
+    std::cerr << "unable to terminate generated vector CFG\n";
+    return false;
+  }
+  const ControlFlowFunction cfg = std::move(cfg_builder).build();
+  const auto cfg_verification = unijit::ir::verify(cfg);
+  if (!cfg_verification.ok()) {
+    std::cerr << "generated vector CFG failed verification: "
+              << cfg_verification.message() << '\n';
+    return false;
+  }
+  const auto optimized_cfg = unijit::ir::Optimizer::run(cfg);
+  if (!optimized_cfg.ok()) {
+    std::cerr << "generated vector CFG failed optimization: "
+              << optimized_cfg.status.message() << '\n';
+    return false;
+  }
+
+  for (std::size_t input = 0; input < options.inputs; ++input) {
+    const std::array<Word, 2> arguments = {
+        word_from_bits((*random)()), word_from_bits((*random)())};
+    const auto straight_result_value =
+        Interpreter::evaluate(straight, arguments.data(), arguments.size());
+    const auto optimized_straight_value = Interpreter::evaluate(
+        optimized_straight.function, arguments.data(), arguments.size());
+    if (!straight_result_value.ok() || !optimized_straight_value.ok() ||
+        straight_result_value.value != optimized_straight_value.value) {
+      return report_mismatch("straight-line SIMD optimizer", options.seed,
+                             program_index, input, straight_result_value,
+                             optimized_straight_value);
+    }
+
+    const auto cfg_result_value = ControlFlowInterpreter::evaluate(
+        cfg, arguments.data(), arguments.size());
+    const auto optimized_cfg_value = ControlFlowInterpreter::evaluate(
+        optimized_cfg.function, arguments.data(), arguments.size());
+    if (!cfg_result_value.ok() || !optimized_cfg_value.ok() ||
+        cfg_result_value.value != optimized_cfg_value.value) {
+      return report_mismatch("CFG SIMD optimizer", options.seed,
+                             program_index, input, cfg_result_value,
+                             optimized_cfg_value);
+    }
+    if (straight_result_value.value != cfg_result_value.value) {
+      return report_mismatch("straight-line/CFG SIMD", options.seed,
+                             program_index, input, straight_result_value,
+                             cfg_result_value);
+    }
+  }
+
+  FunctionBuilder constant_builder(0);
+  const Value lhs_bits = constant_builder.constant(word_from_bits((*random)()));
+  const Value rhs_bits = constant_builder.constant(word_from_bits((*random)()));
+  const Value constant_lhs =
+      constant_builder.vector_splat(program.type, lhs_bits);
+  const Value constant_result = build_vector_projection(
+      &constant_builder, program, constant_lhs, rhs_bits);
+  if (!constant_builder.set_return(constant_result).ok()) {
+    std::cerr << "unable to terminate generated constant vector IR\n";
+    return false;
+  }
+  const Function constant_function = std::move(constant_builder).build();
+  const auto folded = unijit::ir::Optimizer::run(constant_function);
+  const auto unfolded_value =
+      Interpreter::evaluate(constant_function, nullptr, 0);
+  const auto folded_value =
+      folded.ok() ? Interpreter::evaluate(folded.function, nullptr, 0)
+                  : unijit::ir::EvaluationResult{};
+  if (!folded.ok() || folded.stats.constants_folded == 0 ||
+      !unfolded_value.ok() || !folded_value.ok() ||
+      unfolded_value.value != folded_value.value) {
+    return report_mismatch("constant SIMD folding", options.seed,
+                           program_index, 0, unfolded_value, folded_value);
+  }
+  return true;
+}
+
 bool parse_size(const char* text, std::size_t* result) {
   try {
     const std::uint64_t value = std::stoull(text, nullptr, 0);
@@ -522,15 +765,17 @@ int main(int argc, char** argv) {
   for (std::size_t program = 0; program < options.programs; ++program) {
     if (!fuzz_word_function(&random, options, program) ||
         !fuzz_float64_function(&random, options, program) ||
-        !fuzz_cfg_function(&random, options, program)) {
+        !fuzz_cfg_function(&random, options, program) ||
+        !fuzz_vector_function(&random, options, program)) {
       return EXIT_FAILURE;
     }
   }
-  std::cout << "{\"schema\":\"unijit.differential-fuzz.v1\","
+  std::cout << "{\"schema\":\"unijit.differential-fuzz.v2\","
             << "\"seed\":\"0x" << std::hex << options.seed << std::dec
             << "\",\"programs\":" << options.programs
             << ",\"inputs_per_program\":" << options.inputs
             << ",\"nodes_per_straight_line_program\":" << options.nodes
+            << ",\"strict_simd\":true"
             << "}\n";
   return EXIT_SUCCESS;
 }

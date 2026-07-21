@@ -799,5 +799,28 @@ int main() {
       !scheduler_creation.scheduler->shutdown().ok()) {
     return 26;
   }
+
+  unijit::ir::FunctionBuilder vector_builder(0);
+  const auto vector_lhs = vector_builder.vector_splat(
+      unijit::ir::ValueType::kI8x16, vector_builder.constant(250));
+  const auto vector_rhs = vector_builder.vector_splat(
+      unijit::ir::ValueType::kI8x16, vector_builder.constant(10));
+  const auto vector_sum = vector_builder.vector_binary(
+      unijit::ir::VectorBinaryOperation::kAdd, vector_lhs, vector_rhs);
+  if (!vector_builder
+           .set_return(vector_builder.vector_extract_lane(vector_sum, 3))
+           .ok()) {
+    return 70;
+  }
+  auto vector_compilation = unijit::jit::Compiler::compile(
+      std::move(vector_builder).build());
+  const auto vector_result =
+      vector_compilation.ok()
+          ? vector_compilation.function->invoke(nullptr, 0)
+          : unijit::ir::EvaluationResult{};
+  if (!vector_compilation.ok() || !vector_result.ok() ||
+      vector_result.value != 4) {
+    return 71;
+  }
   return 0;
 }
