@@ -9,6 +9,7 @@
 
 #include "unijit/ir/function.h"
 #include "unijit/runtime/memory_region.h"
+#include "unijit/runtime/trusted_object.h"
 
 namespace unijit::jit {
 class CompiledFunction;
@@ -104,6 +105,19 @@ class ExecutionContext final {
     return memory_region_count_;
   }
 
+  Status bind_trusted_objects(const TrustedObject* objects,
+                              std::size_t count) noexcept;
+  void clear_trusted_objects() noexcept {
+    trusted_objects_ = nullptr;
+    trusted_object_count_ = 0;
+  }
+  const TrustedObject* trusted_objects() const noexcept {
+    return trusted_objects_;
+  }
+  std::size_t trusted_object_count() const noexcept {
+    return trusted_object_count_;
+  }
+
   static constexpr std::size_t interrupt_requested_offset() noexcept;
   static constexpr std::size_t exit_reason_offset() noexcept;
   static constexpr std::size_t exit_site_offset() noexcept;
@@ -113,6 +127,8 @@ class ExecutionContext final {
   static constexpr std::size_t safepoint_polls_offset() noexcept;
   static constexpr std::size_t memory_regions_offset() noexcept;
   static constexpr std::size_t memory_region_count_offset() noexcept;
+  static constexpr std::size_t trusted_objects_offset() noexcept;
+  static constexpr std::size_t trusted_object_count_offset() noexcept;
 
  private:
   friend class Assumption;
@@ -141,6 +157,8 @@ class ExecutionContext final {
   void* user_data_{nullptr};
   const MemoryRegion* memory_regions_{nullptr};
   std::size_t memory_region_count_{0};
+  const TrustedObject* trusted_objects_{nullptr};
+  std::size_t trusted_object_count_{0};
 };
 
 constexpr std::size_t ExecutionContext::interrupt_requested_offset() noexcept {
@@ -179,6 +197,15 @@ constexpr std::size_t ExecutionContext::memory_regions_offset() noexcept {
 constexpr std::size_t
 ExecutionContext::memory_region_count_offset() noexcept {
   return offsetof(ExecutionContext, memory_region_count_);
+}
+
+constexpr std::size_t ExecutionContext::trusted_objects_offset() noexcept {
+  return offsetof(ExecutionContext, trusted_objects_);
+}
+
+constexpr std::size_t
+ExecutionContext::trusted_object_count_offset() noexcept {
+  return offsetof(ExecutionContext, trusted_object_count_);
 }
 
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free,
