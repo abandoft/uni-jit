@@ -40,6 +40,8 @@ weighted priorities, deterministic shutdown, and scheduler telemetry.
 independent commercial roadmap for typed memory, strict SIMD, generated-code
 atomics, immutable patch cells, fast and tail calls, bounded frame locals,
 target profiles, and validated serialization/AOT.
+[doc/TARGET_PROFILES.md](doc/TARGET_PROFILES.md) defines host feature discovery,
+portable baselines, immutable compilation identity, and profile-scoped caches.
 [doc/QUALIFICATION.md](doc/QUALIFICATION.md) defines deterministic fuzzing,
 concurrency stress, sanitizers, and commercial performance floors.
 [doc/LUA_FRONTEND.md](doc/LUA_FRONTEND.md) describes the stock Lua 5.5

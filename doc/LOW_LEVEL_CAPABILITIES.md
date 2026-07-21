@@ -43,6 +43,12 @@ cache identity and serialized-artifact compatibility key. A compiled function
 may only execute on a host whose discovered feature set contains its required
 set.
 
+The public target-profile contract, validation, host discovery, compiled-code
+identity, and profile-scoped code-cache enforcement are now implemented; see
+[`TARGET_PROFILES.md`](TARGET_PROFILES.md). Cross-architecture object emission
+remains deferred to the portable IR/AOT stage and is rejected rather than
+inferred from the build host.
+
 Host discovery uses CPUID plus XGETBV on x86-64, operating-system capability
 interfaces on AArch64, and the Linux RISC-V hardware-probe or auxiliary-vector
 interfaces where available. Cross compilation requires an explicit profile and

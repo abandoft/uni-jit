@@ -26,6 +26,13 @@ Float64 tier requires the `D` extension. The assembler, ABI selection, register
 allocator, and executable-memory publisher are owned by UniJIT and do not link
 against SLJIT or another JIT library.
 
+Every compilation retains a validated immutable target profile. Portable
+profiles require AArch64 FP64/NEON, x86-64 SSE2, or RV64IMD as appropriate;
+optional x86 features are discovered with CPUID plus OS-state validation, and
+Linux RISC-V vector availability is discovered from `AT_HWCAP`. Code caches
+are profile-scoped and reject mismatched native generations. See
+[`TARGET_PROFILES.md`](TARGET_PROFILES.md).
+
 Straight-line and CFG lowering allocate Word and Float64 values from separate
 caller-saved register banks. Typed CFG edge moves preserve floating-point
 residency, use a dedicated scratch register for cycles, and spill exact bits to
