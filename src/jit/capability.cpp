@@ -134,6 +134,30 @@ bool is_atomic(ir::ControlOpcode opcode) noexcept {
   return is_atomic_access(opcode) || opcode == ir::ControlOpcode::kAtomicFence;
 }
 
+LoweringStrategy atomic_strategy(const TargetProfile& target,
+                                 ir::Opcode opcode) noexcept {
+  if (target.architecture != TargetArchitecture::kX86_64) {
+    return LoweringStrategy::kUnsupported;
+  }
+  return opcode == ir::Opcode::kAtomicFetchAnd ||
+                 opcode == ir::Opcode::kAtomicFetchOr ||
+                 opcode == ir::Opcode::kAtomicFetchXor
+             ? LoweringStrategy::kLegalized
+             : LoweringStrategy::kNative;
+}
+
+LoweringStrategy atomic_strategy(const TargetProfile& target,
+                                 ir::ControlOpcode opcode) noexcept {
+  if (target.architecture != TargetArchitecture::kX86_64) {
+    return LoweringStrategy::kUnsupported;
+  }
+  return opcode == ir::ControlOpcode::kAtomicFetchAnd ||
+                 opcode == ir::ControlOpcode::kAtomicFetchOr ||
+                 opcode == ir::ControlOpcode::kAtomicFetchXor
+             ? LoweringStrategy::kLegalized
+             : LoweringStrategy::kNative;
+}
+
 bool requires_context(ir::Opcode opcode) noexcept {
   return opcode == ir::Opcode::kGuardWordNonzero ||
          opcode == ir::Opcode::kGuardFloatNonzero ||
@@ -394,11 +418,12 @@ CapabilityReport analyze_verified(const FunctionType &function,
     report.requires_execution_context =
         report.requires_execution_context || requires_context(node.opcode);
     if (is_atomic(node.opcode)) {
-      if (!found_unsupported) {
+      const LoweringStrategy strategy = atomic_strategy(target, node.opcode);
+      if (strategy == LoweringStrategy::kUnsupported && !found_unsupported) {
         found_unsupported = true;
         first_unsupported = index;
       }
-      note_operation(&report, LoweringStrategy::kUnsupported, 0);
+      note_operation(&report, strategy, 0);
       continue;
     }
     const NormalizedVectorOpcode vector_opcode = normalize(node.opcode);

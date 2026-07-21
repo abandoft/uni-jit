@@ -88,6 +88,28 @@ bool is_vector_opcode(ir::ControlOpcode opcode) noexcept {
          opcode == ir::ControlOpcode::kStoreVector;
 }
 
+bool is_atomic_access(ir::Opcode opcode) noexcept {
+  return opcode == ir::Opcode::kAtomicLoad ||
+         opcode == ir::Opcode::kAtomicStore ||
+         opcode == ir::Opcode::kAtomicExchange ||
+         opcode == ir::Opcode::kAtomicCompareExchange ||
+         opcode == ir::Opcode::kAtomicFetchAdd ||
+         opcode == ir::Opcode::kAtomicFetchAnd ||
+         opcode == ir::Opcode::kAtomicFetchOr ||
+         opcode == ir::Opcode::kAtomicFetchXor;
+}
+
+bool is_atomic_access(ir::ControlOpcode opcode) noexcept {
+  return opcode == ir::ControlOpcode::kAtomicLoad ||
+         opcode == ir::ControlOpcode::kAtomicStore ||
+         opcode == ir::ControlOpcode::kAtomicExchange ||
+         opcode == ir::ControlOpcode::kAtomicCompareExchange ||
+         opcode == ir::ControlOpcode::kAtomicFetchAdd ||
+         opcode == ir::ControlOpcode::kAtomicFetchAnd ||
+         opcode == ir::ControlOpcode::kAtomicFetchOr ||
+         opcode == ir::ControlOpcode::kAtomicFetchXor;
+}
+
 std::size_t aligned_stack_size(std::size_t raw_size,
                                bool align_vector_slots) noexcept {
   if (align_vector_slots) {
@@ -189,6 +211,62 @@ class Assembler final {
     buffer_.emit_u8(0x0FU);
     buffer_.emit_u8(width == 1 ? 0xBEU : 0xBFU);
     emit_modrm(3, destination, destination);
+  }
+
+  void zero_extend(int destination, std::size_t width) {
+    if (width == 8) {
+      return;
+    }
+    if (width == 4) {
+      emit_rex_width(destination, destination, false);
+      buffer_.emit_u8(0x8BU);
+      emit_modrm(3, destination, destination);
+      return;
+    }
+    emit_rex_width(destination, destination, true);
+    buffer_.emit_u8(0x0FU);
+    buffer_.emit_u8(width == 1 ? 0xB6U : 0xB7U);
+    emit_modrm(3, destination, destination);
+  }
+
+  void atomic_exchange(int source, int base, std::size_t width) {
+    if (width == 2) {
+      buffer_.emit_u8(0x66U);
+    }
+    emit_rex_width(source, base, width == 8);
+    buffer_.emit_u8(width == 1 ? 0x86U : 0x87U);
+    emit_memory_modrm(source, base);
+    buffer_.emit_u32(0);
+  }
+
+  void atomic_fetch_add(int source, int base, std::size_t width) {
+    buffer_.emit_u8(0xF0U);
+    if (width == 2) {
+      buffer_.emit_u8(0x66U);
+    }
+    emit_rex_width(source, base, width == 8);
+    buffer_.emit_u8(0x0FU);
+    buffer_.emit_u8(width == 1 ? 0xC0U : 0xC1U);
+    emit_memory_modrm(source, base);
+    buffer_.emit_u32(0);
+  }
+
+  void atomic_compare_exchange(int desired, int base, std::size_t width) {
+    buffer_.emit_u8(0xF0U);
+    if (width == 2) {
+      buffer_.emit_u8(0x66U);
+    }
+    emit_rex_width(desired, base, width == 8);
+    buffer_.emit_u8(0x0FU);
+    buffer_.emit_u8(width == 1 ? 0xB0U : 0xB1U);
+    emit_memory_modrm(desired, base);
+    buffer_.emit_u32(0);
+  }
+
+  void sequentially_consistent_fence() {
+    buffer_.emit_u8(0x0FU);
+    buffer_.emit_u8(0xAEU);
+    buffer_.emit_u8(0xF0U);
   }
 
   void move_word_to_float(int destination, int source) {
@@ -825,6 +903,14 @@ class Assembler final {
     return displacement;
   }
 
+  std::size_t branch_not_equal_flags() {
+    buffer_.emit_u8(0x0FU);
+    buffer_.emit_u8(0x85U);
+    const std::size_t displacement = buffer_.size();
+    buffer_.emit_u32(0);
+    return displacement;
+  }
+
   std::size_t branch_zero(int source) {
     emit_rex(source, source);
     buffer_.emit_u8(0x85U);
@@ -1051,6 +1137,127 @@ class Assembler final {
 
   CodeBuffer buffer_;
 };
+
+enum class AtomicLoweringOperation : std::uint8_t {
+  kLoad,
+  kStore,
+  kExchange,
+  kCompareExchange,
+  kFetchAdd,
+  kFetchAnd,
+  kFetchOr,
+  kFetchXor,
+};
+
+AtomicLoweringOperation atomic_operation(ir::Opcode opcode) noexcept {
+  switch (opcode) {
+  case ir::Opcode::kAtomicLoad:
+    return AtomicLoweringOperation::kLoad;
+  case ir::Opcode::kAtomicStore:
+    return AtomicLoweringOperation::kStore;
+  case ir::Opcode::kAtomicExchange:
+    return AtomicLoweringOperation::kExchange;
+  case ir::Opcode::kAtomicCompareExchange:
+    return AtomicLoweringOperation::kCompareExchange;
+  case ir::Opcode::kAtomicFetchAdd:
+    return AtomicLoweringOperation::kFetchAdd;
+  case ir::Opcode::kAtomicFetchAnd:
+    return AtomicLoweringOperation::kFetchAnd;
+  case ir::Opcode::kAtomicFetchOr:
+    return AtomicLoweringOperation::kFetchOr;
+  case ir::Opcode::kAtomicFetchXor:
+    return AtomicLoweringOperation::kFetchXor;
+  default:
+    return AtomicLoweringOperation::kLoad;
+  }
+}
+
+AtomicLoweringOperation atomic_operation(ir::ControlOpcode opcode) noexcept {
+  switch (opcode) {
+  case ir::ControlOpcode::kAtomicLoad:
+    return AtomicLoweringOperation::kLoad;
+  case ir::ControlOpcode::kAtomicStore:
+    return AtomicLoweringOperation::kStore;
+  case ir::ControlOpcode::kAtomicExchange:
+    return AtomicLoweringOperation::kExchange;
+  case ir::ControlOpcode::kAtomicCompareExchange:
+    return AtomicLoweringOperation::kCompareExchange;
+  case ir::ControlOpcode::kAtomicFetchAdd:
+    return AtomicLoweringOperation::kFetchAdd;
+  case ir::ControlOpcode::kAtomicFetchAnd:
+    return AtomicLoweringOperation::kFetchAnd;
+  case ir::ControlOpcode::kAtomicFetchOr:
+    return AtomicLoweringOperation::kFetchOr;
+  case ir::ControlOpcode::kAtomicFetchXor:
+    return AtomicLoweringOperation::kFetchXor;
+  default:
+    return AtomicLoweringOperation::kLoad;
+  }
+}
+
+Status lower_atomic_operation(Assembler* assembler,
+                              AtomicLoweringOperation operation,
+                              const ir::AtomicAccessDescriptor& access,
+                              std::size_t operand_offset,
+                              std::size_t auxiliary_offset) {
+  const std::size_t width = ir::memory_width_bytes(access.memory.width);
+  switch (operation) {
+  case AtomicLoweringOperation::kLoad:
+    assembler->load_unsigned(kScratch0, kScratch1, 0, width);
+    return Status::ok_status();
+  case AtomicLoweringOperation::kStore:
+    assembler->load(kArgumentBaseRegister, kRsp, operand_offset);
+    if (access.order == ir::AtomicMemoryOrder::kSequentiallyConsistent) {
+      assembler->atomic_exchange(kArgumentBaseRegister, kScratch1, width);
+    } else {
+      assembler->store_width(kArgumentBaseRegister, kScratch1, 0, width);
+    }
+    assembler->load(kScratch0, kRsp, operand_offset);
+    return Status::ok_status();
+  case AtomicLoweringOperation::kExchange:
+    assembler->load(kArgumentBaseRegister, kRsp, operand_offset);
+    assembler->atomic_exchange(kArgumentBaseRegister, kScratch1, width);
+    assembler->zero_extend(kArgumentBaseRegister, width);
+    assembler->move_register(kScratch0, kArgumentBaseRegister);
+    return Status::ok_status();
+  case AtomicLoweringOperation::kCompareExchange:
+    assembler->load(kScratch0, kRsp, operand_offset);
+    assembler->zero_extend(kScratch0, width);
+    assembler->load(kArgumentBaseRegister, kRsp, auxiliary_offset);
+    assembler->atomic_compare_exchange(kArgumentBaseRegister, kScratch1,
+                                       width);
+    assembler->zero_extend(kScratch0, width);
+    return Status::ok_status();
+  case AtomicLoweringOperation::kFetchAdd:
+    assembler->load(kArgumentBaseRegister, kRsp, operand_offset);
+    assembler->atomic_fetch_add(kArgumentBaseRegister, kScratch1, width);
+    assembler->zero_extend(kArgumentBaseRegister, width);
+    assembler->move_register(kScratch0, kArgumentBaseRegister);
+    return Status::ok_status();
+  case AtomicLoweringOperation::kFetchAnd:
+  case AtomicLoweringOperation::kFetchOr:
+  case AtomicLoweringOperation::kFetchXor: {
+    assembler->load_unsigned(kScratch0, kScratch1, 0, width);
+    const std::size_t retry = assembler->size();
+    assembler->load(kArgumentBaseRegister, kRsp, operand_offset);
+    if (operation == AtomicLoweringOperation::kFetchAnd) {
+      assembler->bitwise_and(kArgumentBaseRegister, kArgumentBaseRegister,
+                             kScratch0);
+    } else if (operation == AtomicLoweringOperation::kFetchOr) {
+      assembler->bitwise_or(kArgumentBaseRegister, kArgumentBaseRegister,
+                            kScratch0);
+    } else {
+      assembler->bitwise_xor(kArgumentBaseRegister, kArgumentBaseRegister,
+                             kScratch0);
+    }
+    assembler->atomic_compare_exchange(kArgumentBaseRegister, kScratch1,
+                                       width);
+    return assembler->patch_branch(assembler->branch_not_equal_flags(), retry);
+  }
+  }
+  return {StatusCode::kCodeGenerationFailed,
+          "x86-64 received an unknown atomic operation"};
+}
 
 int physical_register(const ValueLocation& location) noexcept {
   return kAllocationRegisters[location.register_index];
@@ -1660,9 +1867,12 @@ LoweringResult lower_impl(const ir::Function& function,
   std::size_t maximum_call_arguments = 0;
   bool has_context_operations = false;
   bool has_vector_operations = false;
+  bool has_atomic_operations = false;
   for (const ir::Node& node : function.nodes()) {
     has_vector_operations =
         has_vector_operations || is_vector_opcode(node.opcode);
+    has_atomic_operations =
+        has_atomic_operations || is_atomic_access(node.opcode);
     if (node.opcode == ir::Opcode::kCall) {
       maximum_call_arguments =
           std::max(maximum_call_arguments,
@@ -1676,6 +1886,7 @@ LoweringResult lower_impl(const ir::Function& function,
                node.opcode == ir::Opcode::kStoreFloat ||
                node.opcode == ir::Opcode::kLoadVector ||
                node.opcode == ir::Opcode::kStoreVector ||
+               is_atomic_access(node.opcode) ||
                node.opcode == ir::Opcode::kLoadObject ||
                node.opcode == ir::Opcode::kStoreObject) {
       has_context_operations = true;
@@ -1691,10 +1902,14 @@ LoweringResult lower_impl(const ir::Function& function,
   const std::size_t scalar_total_slots =
       stack_map_base +
       (has_context_operations ? function.nodes().size() : 0);
+  const std::size_t atomic_temporary_base = scalar_total_slots;
+  const std::size_t scalar_with_atomic_slots =
+      atomic_temporary_base + (has_atomic_operations ? 2U : 0U);
   const std::size_t vector_temporary_base =
-      (scalar_total_slots + 1U) & ~std::size_t{1U};
+      (scalar_with_atomic_slots + 1U) & ~std::size_t{1U};
   const std::size_t total_slots =
-      has_vector_operations ? vector_temporary_base + 4U : scalar_total_slots;
+      has_vector_operations ? vector_temporary_base + 4U
+                            : scalar_with_atomic_slots;
   if (total_slots > kMaximumStackSize / sizeof(ir::Word)) {
     return {{StatusCode::kResourceExhausted,
              "x86-64 runtime-call frame exceeds the backend limit"},
@@ -1731,7 +1946,8 @@ LoweringResult lower_impl(const ir::Function& function,
         node.opcode == ir::Opcode::kLoadFloat ||
         node.opcode == ir::Opcode::kStoreFloat ||
         node.opcode == ir::Opcode::kLoadVector ||
-        node.opcode == ir::Opcode::kStoreVector) {
+        node.opcode == ir::Opcode::kStoreVector ||
+        is_atomic_access(node.opcode)) {
       spill_straight_stack_map_values(&assembler, function, allocation,
                                       live_values, stack_map_base);
       stack_maps.push_back(make_stack_map_record(
@@ -2140,11 +2356,162 @@ LoweringResult lower_impl(const ir::Function& function,
       case ir::Opcode::kAtomicFetchAnd:
       case ir::Opcode::kAtomicFetchOr:
       case ir::Opcode::kAtomicFetchXor:
-      case ir::Opcode::kAtomicFence:
-        return {{StatusCode::kCodeGenerationFailed,
-                 "x86-64 atomic lowering is not enabled", index},
-                {},
-                0};
+      case ir::Opcode::kAtomicFence: {
+        if (node.opcode == ir::Opcode::kAtomicFence) {
+          if (static_cast<ir::AtomicMemoryOrder>(node.immediate) ==
+              ir::AtomicMemoryOrder::kSequentiallyConsistent) {
+            assembler.sequentially_consistent_fence();
+          }
+          const int target = destination.in_register()
+                                 ? physical_register(destination)
+                                 : kScratch0;
+          assembler.move_immediate(target, 0);
+          if (!destination.in_register()) {
+            assembler.store(target, kRsp, spill_offset(destination));
+          }
+          break;
+        }
+
+        const ir::AtomicAccessDescriptor& access =
+            function.atomic_accesses()[node.atomic_access];
+        const std::size_t width =
+            ir::memory_width_bytes(access.memory.width);
+        const bool writes_memory = node.opcode != ir::Opcode::kAtomicLoad;
+        const std::size_t operand_offset =
+            atomic_temporary_base * sizeof(ir::Word);
+        const std::size_t auxiliary_offset =
+            (atomic_temporary_base + 1U) * sizeof(ir::Word);
+        if (node.opcode != ir::Opcode::kAtomicLoad) {
+          const int operand = load_operand(
+              &assembler, allocation.locations[node.rhs.id()], kScratch0);
+          assembler.store(operand, kRsp, operand_offset);
+        }
+        if (node.opcode == ir::Opcode::kAtomicCompareExchange) {
+          const int desired = load_operand(
+              &assembler, allocation.locations[node.auxiliary.id()],
+              kScratch0);
+          assembler.store(desired, kRsp, auxiliary_offset);
+        }
+
+        const std::size_t region_offset =
+            static_cast<std::size_t>(access.memory.region) *
+            sizeof(runtime::MemoryRegion);
+        assembler.load(kScratch0, kRsp,
+                       context_slot * sizeof(ir::Word));
+        const std::size_t no_context = assembler.branch_zero(kScratch0);
+        assembler.load(kScratch1, kScratch0,
+                       runtime::ExecutionContext::memory_regions_offset());
+        const std::size_t no_regions = assembler.branch_zero(kScratch1);
+        assembler.load(
+            kArgumentBaseRegister, kScratch0,
+            runtime::ExecutionContext::memory_region_count_offset());
+        const std::size_t missing_region = assembler.branch_unsigned_less(
+            kArgumentBaseRegister,
+            static_cast<std::uint8_t>(access.memory.region + 1U));
+        assembler.load(kScratch0, kScratch1,
+                       region_offset + runtime::MemoryRegion::data_offset());
+        const std::size_t null_base = assembler.branch_zero(kScratch0);
+        std::size_t read_only = 0;
+        if (writes_memory) {
+          assembler.load_unsigned(
+              kArgumentBaseRegister, kScratch1,
+              region_offset + runtime::MemoryRegion::writable_offset(), 1);
+          read_only = assembler.branch_zero(kArgumentBaseRegister);
+        }
+        assembler.load(kArgumentBaseRegister, kScratch1,
+                       region_offset + runtime::MemoryRegion::size_offset());
+        const std::size_t too_small = assembler.branch_unsigned_less(
+            kArgumentBaseRegister, static_cast<std::uint8_t>(width));
+        const int offset_source = load_operand(
+            &assembler, allocation.locations[node.lhs.id()], kScratch1);
+        if (offset_source != kScratch1) {
+          assembler.move_register(kScratch1, offset_source);
+        }
+        assembler.subtract_immediate(kArgumentBaseRegister,
+                                     static_cast<std::uint8_t>(width));
+        const std::size_t out_of_bounds = assembler.branch_unsigned_greater(
+            kScratch1, kArgumentBaseRegister);
+        assembler.add(kScratch0, kScratch0, kScratch1);
+        assembler.move_register(kScratch1, kScratch0);
+        assembler.bitwise_and_immediate(
+            kScratch1,
+            static_cast<std::uint8_t>(access.memory.alignment - 1U));
+        const std::size_t misaligned = assembler.branch_nonzero(kScratch1);
+        assembler.move_register(kScratch1, kScratch0);
+
+        const Status atomic_status = lower_atomic_operation(
+            &assembler, atomic_operation(node.opcode), access, operand_offset,
+            auxiliary_offset);
+        if (!atomic_status.ok()) {
+          return {atomic_status, {}, 0};
+        }
+        const int target = destination.in_register()
+                               ? physical_register(destination)
+                               : kScratch1;
+        assembler.move_register(target, kScratch0);
+        if (!destination.in_register()) {
+          assembler.store(target, kRsp, spill_offset(destination));
+        }
+        const std::size_t completed = assembler.branch();
+
+        const std::size_t record_failure = assembler.size();
+        assembler.load(kScratch0, kRsp,
+                       context_slot * sizeof(ir::Word));
+        const int failed_offset = load_operand(
+            &assembler, allocation.locations[node.lhs.id()], kScratch1);
+        assembler.store(failed_offset, kScratch0,
+                        runtime::ExecutionContext::exit_value_offset());
+        capture_straight_stack_map_values(&assembler, live_values,
+                                          stack_map_base, kScratch0);
+        assembler.move_immediate(kScratch1, node.immediate);
+        assembler.store(kScratch1, kScratch0,
+                        runtime::ExecutionContext::exit_site_offset());
+        assembler.move_immediate(
+            kScratch1,
+            static_cast<ir::Word>(runtime::ExitReason::kRuntime));
+        assembler.store(kScratch1, kScratch0,
+                        runtime::ExecutionContext::exit_reason_offset());
+
+        const std::size_t exit = assembler.size();
+        assembler.move_immediate(kReturnRegister, 0);
+        clear_sensitive_frame_slots(&assembler, function.frame_slots(),
+                                    frame_slot_base);
+        if (stack_size != 0) {
+          assembler.release_stack(stack_size);
+        }
+        assembler.return_to_caller();
+        const std::size_t resume = assembler.size();
+
+        Status status = assembler.patch_branch(no_context, exit);
+        if (status.ok()) {
+          status = assembler.patch_branch(no_regions, record_failure);
+        }
+        if (status.ok()) {
+          status = assembler.patch_branch(missing_region, record_failure);
+        }
+        if (status.ok()) {
+          status = assembler.patch_branch(null_base, record_failure);
+        }
+        if (status.ok()) {
+          status = assembler.patch_branch(too_small, record_failure);
+        }
+        if (status.ok() && writes_memory) {
+          status = assembler.patch_branch(read_only, record_failure);
+        }
+        if (status.ok()) {
+          status = assembler.patch_branch(out_of_bounds, record_failure);
+        }
+        if (status.ok()) {
+          status = assembler.patch_branch(misaligned, record_failure);
+        }
+        if (status.ok()) {
+          status = assembler.patch_branch(completed, resume);
+        }
+        if (!status.ok()) {
+          return {status, {}, 0};
+        }
+        break;
+      }
       case ir::Opcode::kVectorConstant:
       case ir::Opcode::kVectorSplat:
       case ir::Opcode::kVectorExtractLane:
@@ -3066,14 +3433,18 @@ LoweringResult lower_control_flow_impl(
                node.opcode == ir::ControlOpcode::kStoreFloat ||
                node.opcode == ir::ControlOpcode::kLoadVector ||
                node.opcode == ir::ControlOpcode::kStoreVector ||
+               is_atomic_access(node.opcode) ||
                node.opcode == ir::ControlOpcode::kLoadObject ||
                node.opcode == ir::ControlOpcode::kStoreObject;
       });
   std::size_t maximum_call_arguments = 0;
   bool has_vector_operations = false;
+  bool has_atomic_operations = false;
   for (const ir::ControlNode& node : function.nodes()) {
     has_vector_operations =
         has_vector_operations || is_vector_opcode(node.opcode);
+    has_atomic_operations =
+        has_atomic_operations || is_atomic_access(node.opcode);
     if (node.opcode == ir::ControlOpcode::kCall) {
       maximum_call_arguments =
           std::max(maximum_call_arguments,
@@ -3106,10 +3477,14 @@ LoweringResult lower_control_flow_impl(
       context_slot + static_cast<std::size_t>(has_context_operations);
   const std::size_t scalar_total_slots =
       call_argument_base + maximum_call_arguments;
+  const std::size_t atomic_temporary_base = scalar_total_slots;
+  const std::size_t scalar_with_atomic_slots =
+      atomic_temporary_base + (has_atomic_operations ? 2U : 0U);
   const std::size_t vector_temporary_base =
-      (scalar_total_slots + 1U) & ~std::size_t{1U};
+      (scalar_with_atomic_slots + 1U) & ~std::size_t{1U};
   const std::size_t total_slots =
-      has_vector_operations ? vector_temporary_base + 4U : scalar_total_slots;
+      has_vector_operations ? vector_temporary_base + 4U
+                            : scalar_with_atomic_slots;
   const std::size_t raw_stack_size = total_slots * sizeof(ir::Word);
   const std::size_t stack_size =
       aligned_stack_size(raw_stack_size, has_vector_operations);
@@ -3185,7 +3560,8 @@ LoweringResult lower_control_flow_impl(
           node.opcode == ir::ControlOpcode::kLoadFloat ||
           node.opcode == ir::ControlOpcode::kStoreFloat ||
           node.opcode == ir::ControlOpcode::kLoadVector ||
-          node.opcode == ir::ControlOpcode::kStoreVector) {
+          node.opcode == ir::ControlOpcode::kStoreVector ||
+          is_atomic_access(node.opcode)) {
         spill_control_stack_map_values(&assembler, function, allocation,
                                        live_values, block_index);
         stack_maps.push_back(make_stack_map_record(
@@ -3434,11 +3810,162 @@ LoweringResult lower_control_flow_impl(
         case ir::ControlOpcode::kAtomicFetchAnd:
         case ir::ControlOpcode::kAtomicFetchOr:
         case ir::ControlOpcode::kAtomicFetchXor:
-        case ir::ControlOpcode::kAtomicFence:
-          return {{StatusCode::kCodeGenerationFailed,
-                   "x86-64 CFG atomic lowering is not enabled", value.id()},
-                  {},
-                  0};
+        case ir::ControlOpcode::kAtomicFence: {
+          if (node.opcode == ir::ControlOpcode::kAtomicFence) {
+            if (static_cast<ir::AtomicMemoryOrder>(node.immediate) ==
+                ir::AtomicMemoryOrder::kSequentiallyConsistent) {
+              assembler.sequentially_consistent_fence();
+            }
+            assembler.move_immediate(word_destination, 0);
+            if (allocated_word < 0 ||
+                allocation.requires_stack[value.id()]) {
+              assembler.store(word_destination, kRsp, destination_offset);
+            }
+            break;
+          }
+
+          const ir::AtomicAccessDescriptor& access =
+              function.atomic_accesses()[node.atomic_access];
+          const std::size_t width =
+              ir::memory_width_bytes(access.memory.width);
+          const bool writes_memory =
+              node.opcode != ir::ControlOpcode::kAtomicLoad;
+          const std::size_t operand_offset =
+              atomic_temporary_base * sizeof(ir::Word);
+          const std::size_t auxiliary_offset =
+              (atomic_temporary_base + 1U) * sizeof(ir::Word);
+          if (node.opcode != ir::ControlOpcode::kAtomicLoad) {
+            const int operand = load_control_word(
+                &assembler, allocation, node.rhs, block_index, kScratch0);
+            assembler.store(operand, kRsp, operand_offset);
+          }
+          if (node.opcode == ir::ControlOpcode::kAtomicCompareExchange) {
+            const int desired = load_control_word(
+                &assembler, allocation, node.auxiliary, block_index,
+                kScratch0);
+            assembler.store(desired, kRsp, auxiliary_offset);
+          }
+
+          const std::size_t region_offset =
+              static_cast<std::size_t>(access.memory.region) *
+              sizeof(runtime::MemoryRegion);
+          assembler.load(kScratch0, kRsp,
+                         context_slot * sizeof(ir::Word));
+          const std::size_t no_context = assembler.branch_zero(kScratch0);
+          assembler.load(kScratch1, kScratch0,
+                         runtime::ExecutionContext::memory_regions_offset());
+          const std::size_t no_regions = assembler.branch_zero(kScratch1);
+          assembler.load(
+              kArgumentBaseRegister, kScratch0,
+              runtime::ExecutionContext::memory_region_count_offset());
+          const std::size_t missing_region = assembler.branch_unsigned_less(
+              kArgumentBaseRegister,
+              static_cast<std::uint8_t>(access.memory.region + 1U));
+          assembler.load(
+              kScratch0, kScratch1,
+              region_offset + runtime::MemoryRegion::data_offset());
+          const std::size_t null_base = assembler.branch_zero(kScratch0);
+          std::size_t read_only = 0;
+          if (writes_memory) {
+            assembler.load_unsigned(
+                kArgumentBaseRegister, kScratch1,
+                region_offset + runtime::MemoryRegion::writable_offset(), 1);
+            read_only = assembler.branch_zero(kArgumentBaseRegister);
+          }
+          assembler.load(
+              kArgumentBaseRegister, kScratch1,
+              region_offset + runtime::MemoryRegion::size_offset());
+          const std::size_t too_small = assembler.branch_unsigned_less(
+              kArgumentBaseRegister, static_cast<std::uint8_t>(width));
+          const int offset_source = load_control_word(
+              &assembler, allocation, node.lhs, block_index, kScratch1);
+          if (offset_source != kScratch1) {
+            assembler.move_register(kScratch1, offset_source);
+          }
+          assembler.subtract_immediate(kArgumentBaseRegister,
+                                       static_cast<std::uint8_t>(width));
+          const std::size_t out_of_bounds =
+              assembler.branch_unsigned_greater(kScratch1,
+                                                kArgumentBaseRegister);
+          assembler.add(kScratch0, kScratch0, kScratch1);
+          assembler.move_register(kScratch1, kScratch0);
+          assembler.bitwise_and_immediate(
+              kScratch1,
+              static_cast<std::uint8_t>(access.memory.alignment - 1U));
+          const std::size_t misaligned = assembler.branch_nonzero(kScratch1);
+          assembler.move_register(kScratch1, kScratch0);
+
+          const Status atomic_status = lower_atomic_operation(
+              &assembler, atomic_operation(node.opcode), access,
+              operand_offset, auxiliary_offset);
+          if (!atomic_status.ok()) {
+            return {atomic_status, {}, 0};
+          }
+          assembler.move_register(word_destination, kScratch0);
+          if (allocated_word < 0 ||
+              allocation.requires_stack[value.id()]) {
+            assembler.store(word_destination, kRsp, destination_offset);
+          }
+          const std::size_t completed = assembler.branch();
+
+          const std::size_t record_failure = assembler.size();
+          assembler.load(kScratch0, kRsp,
+                         context_slot * sizeof(ir::Word));
+          const int failed_offset = load_control_word(
+              &assembler, allocation, node.lhs, block_index, kScratch1);
+          assembler.store(failed_offset, kScratch0,
+                          runtime::ExecutionContext::exit_value_offset());
+          capture_control_stack_map_values(&assembler, allocation,
+                                           live_values, kScratch0);
+          assembler.move_immediate(kScratch1, node.immediate);
+          assembler.store(kScratch1, kScratch0,
+                          runtime::ExecutionContext::exit_site_offset());
+          assembler.move_immediate(
+              kScratch1,
+              static_cast<ir::Word>(runtime::ExitReason::kRuntime));
+          assembler.store(kScratch1, kScratch0,
+                          runtime::ExecutionContext::exit_reason_offset());
+
+          const std::size_t exit = assembler.size();
+          assembler.move_immediate(kReturnRegister, 0);
+          clear_sensitive_frame_slots(&assembler, function.frame_slots(),
+                                      frame_slot_base);
+          if (stack_size != 0) {
+            assembler.release_stack(stack_size);
+          }
+          assembler.return_to_caller();
+          const std::size_t resume = assembler.size();
+
+          Status status = assembler.patch_branch(no_context, exit);
+          if (status.ok()) {
+            status = assembler.patch_branch(no_regions, record_failure);
+          }
+          if (status.ok()) {
+            status = assembler.patch_branch(missing_region, record_failure);
+          }
+          if (status.ok()) {
+            status = assembler.patch_branch(null_base, record_failure);
+          }
+          if (status.ok()) {
+            status = assembler.patch_branch(too_small, record_failure);
+          }
+          if (status.ok() && writes_memory) {
+            status = assembler.patch_branch(read_only, record_failure);
+          }
+          if (status.ok()) {
+            status = assembler.patch_branch(out_of_bounds, record_failure);
+          }
+          if (status.ok()) {
+            status = assembler.patch_branch(misaligned, record_failure);
+          }
+          if (status.ok()) {
+            status = assembler.patch_branch(completed, resume);
+          }
+          if (!status.ok()) {
+            return {status, {}, 0};
+          }
+          break;
+        }
         case ir::ControlOpcode::kVectorConstant:
         case ir::ControlOpcode::kVectorSplat:
         case ir::ControlOpcode::kVectorExtractLane:
