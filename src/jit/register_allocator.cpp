@@ -209,6 +209,7 @@ RegisterAllocation allocate_impl(const ir::Function& function,
                node.opcode == ir::Opcode::kLoadWord ||
                node.opcode == ir::Opcode::kLoadFloat ||
                node.opcode == ir::Opcode::kLoadVector ||
+               node.opcode == ir::Opcode::kAtomicLoad ||
                node.opcode == ir::Opcode::kVectorSplat ||
                node.opcode == ir::Opcode::kVectorExtractLane ||
                node.opcode == ir::Opcode::kVectorUnary ||
@@ -225,9 +226,19 @@ RegisterAllocation allocate_impl(const ir::Function& function,
                index);
     } else if (node.opcode == ir::Opcode::kStoreWord ||
                node.opcode == ir::Opcode::kStoreFloat ||
-               node.opcode == ir::Opcode::kStoreVector) {
+               node.opcode == ir::Opcode::kStoreVector ||
+               node.opcode == ir::Opcode::kAtomicStore ||
+               node.opcode == ir::Opcode::kAtomicExchange ||
+               node.opcode == ir::Opcode::kAtomicFetchAdd ||
+               node.opcode == ir::Opcode::kAtomicFetchAnd ||
+               node.opcode == ir::Opcode::kAtomicFetchOr ||
+               node.opcode == ir::Opcode::kAtomicFetchXor) {
       note_use(&last_use, node.lhs, index);
       note_use(&last_use, node.rhs, index);
+    } else if (node.opcode == ir::Opcode::kAtomicCompareExchange) {
+      note_use(&last_use, node.lhs, index);
+      note_use(&last_use, node.rhs, index);
+      note_use(&last_use, node.auxiliary, index);
     } else if (node.opcode == ir::Opcode::kStoreFrame ||
                node.opcode == ir::Opcode::kStoreObject) {
       note_use(&last_use, node.lhs, index);
@@ -549,7 +560,15 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
           opcode == ir::ControlOpcode::kLoadFloat ||
           opcode == ir::ControlOpcode::kStoreFloat ||
           opcode == ir::ControlOpcode::kLoadVector ||
-          opcode == ir::ControlOpcode::kStoreVector) {
+          opcode == ir::ControlOpcode::kStoreVector ||
+          opcode == ir::ControlOpcode::kAtomicLoad ||
+          opcode == ir::ControlOpcode::kAtomicStore ||
+          opcode == ir::ControlOpcode::kAtomicExchange ||
+          opcode == ir::ControlOpcode::kAtomicCompareExchange ||
+          opcode == ir::ControlOpcode::kAtomicFetchAdd ||
+          opcode == ir::ControlOpcode::kAtomicFetchAnd ||
+          opcode == ir::ControlOpcode::kAtomicFetchOr ||
+          opcode == ir::ControlOpcode::kAtomicFetchXor) {
         const auto require_live_stack =
             [&](const std::vector<std::size_t>& active) {
           for (const std::size_t position : active) {
@@ -896,7 +915,15 @@ StackMapLiveness plan_straight_stack_map_liveness_impl(
         opcode != ir::Opcode::kLoadWord && opcode != ir::Opcode::kStoreWord &&
         opcode != ir::Opcode::kLoadFloat && opcode != ir::Opcode::kStoreFloat &&
         opcode != ir::Opcode::kLoadVector &&
-        opcode != ir::Opcode::kStoreVector) {
+        opcode != ir::Opcode::kStoreVector &&
+        opcode != ir::Opcode::kAtomicLoad &&
+        opcode != ir::Opcode::kAtomicStore &&
+        opcode != ir::Opcode::kAtomicExchange &&
+        opcode != ir::Opcode::kAtomicCompareExchange &&
+        opcode != ir::Opcode::kAtomicFetchAdd &&
+        opcode != ir::Opcode::kAtomicFetchAnd &&
+        opcode != ir::Opcode::kAtomicFetchOr &&
+        opcode != ir::Opcode::kAtomicFetchXor) {
       continue;
     }
     std::vector<ir::Value>& site_values = live_values[node_index];
@@ -1073,7 +1100,15 @@ StackMapLiveness plan_control_stack_map_liveness_impl(
           node.opcode != ir::ControlOpcode::kLoadFloat &&
           node.opcode != ir::ControlOpcode::kStoreFloat &&
           node.opcode != ir::ControlOpcode::kLoadVector &&
-          node.opcode != ir::ControlOpcode::kStoreVector) {
+          node.opcode != ir::ControlOpcode::kStoreVector &&
+          node.opcode != ir::ControlOpcode::kAtomicLoad &&
+          node.opcode != ir::ControlOpcode::kAtomicStore &&
+          node.opcode != ir::ControlOpcode::kAtomicExchange &&
+          node.opcode != ir::ControlOpcode::kAtomicCompareExchange &&
+          node.opcode != ir::ControlOpcode::kAtomicFetchAdd &&
+          node.opcode != ir::ControlOpcode::kAtomicFetchAnd &&
+          node.opcode != ir::ControlOpcode::kAtomicFetchOr &&
+          node.opcode != ir::ControlOpcode::kAtomicFetchXor) {
         continue;
       }
       std::vector<ir::Value>& site_values = live_values[value.id()];

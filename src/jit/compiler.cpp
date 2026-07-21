@@ -56,7 +56,15 @@ bool is_memory(ir::Opcode opcode) noexcept {
          opcode == ir::Opcode::kLoadFloat ||
          opcode == ir::Opcode::kStoreFloat ||
          opcode == ir::Opcode::kLoadVector ||
-         opcode == ir::Opcode::kStoreVector;
+         opcode == ir::Opcode::kStoreVector ||
+         opcode == ir::Opcode::kAtomicLoad ||
+         opcode == ir::Opcode::kAtomicStore ||
+         opcode == ir::Opcode::kAtomicExchange ||
+         opcode == ir::Opcode::kAtomicCompareExchange ||
+         opcode == ir::Opcode::kAtomicFetchAdd ||
+         opcode == ir::Opcode::kAtomicFetchAnd ||
+         opcode == ir::Opcode::kAtomicFetchOr ||
+         opcode == ir::Opcode::kAtomicFetchXor;
 }
 
 bool is_nonzero_guard(ir::ControlOpcode opcode) noexcept {
@@ -70,7 +78,15 @@ bool is_memory(ir::ControlOpcode opcode) noexcept {
          opcode == ir::ControlOpcode::kLoadFloat ||
          opcode == ir::ControlOpcode::kStoreFloat ||
          opcode == ir::ControlOpcode::kLoadVector ||
-         opcode == ir::ControlOpcode::kStoreVector;
+         opcode == ir::ControlOpcode::kStoreVector ||
+         opcode == ir::ControlOpcode::kAtomicLoad ||
+         opcode == ir::ControlOpcode::kAtomicStore ||
+         opcode == ir::ControlOpcode::kAtomicExchange ||
+         opcode == ir::ControlOpcode::kAtomicCompareExchange ||
+         opcode == ir::ControlOpcode::kAtomicFetchAdd ||
+         opcode == ir::ControlOpcode::kAtomicFetchAnd ||
+         opcode == ir::ControlOpcode::kAtomicFetchOr ||
+         opcode == ir::ControlOpcode::kAtomicFetchXor;
 }
 
 bool has_guard_site(const ir::Function& function, std::size_t site) noexcept {
