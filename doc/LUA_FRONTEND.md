@@ -65,13 +65,17 @@ the callable requests the same cancellation automatically.
 ## Supported bytecode contract
 
 The initial tier accepts straight-line `MOVE`, integer `LOADI`/`LOADK`, integer
-`ADDI`, `ADDK`, `SUBK`, `MULK`, `ADD`, `SUB`, `MUL`, and one-value fixed
-returns. Arithmetic is accepted only when the corresponding Lua metamethod
-fallback instruction is structurally present. Runtime integer guards make
-that fallback unreachable in the specialized closure.
+`ADDI`, `ADDK`, `SUBK`, `MULK`, `ADD`, `SUB`, `MUL`, unary `UNM`/`BNOT`, and
+one-value fixed returns. Binary arithmetic is accepted only when the
+corresponding Lua metamethod fallback instruction is structurally present.
+Runtime integer guards make that fallback, and unary metamethod dispatch,
+unreachable in the specialized closure. Integer unary minus wraps exactly as
+Lua does at `math.mininteger`, and bitwise-not flips all 64 integer bits.
 
 The Float64 tier accepts the corresponding straight-line numeric loads,
-constant arithmetic, binary `ADD`/`SUB`/`MUL`/`DIV`, and one-value returns.
+constant arithmetic, binary `ADD`/`SUB`/`MUL`/`DIV`, unary `UNM`, and one-value
+returns. Float64 unary minus toggles only the sign bit, preserving signed zero,
+infinity, and NaN payloads.
 Integer literals are converted exactly as Lua does when paired with a Float64
 operand. `DIV` always produces Float64 and therefore also accepts two integer
 literals; other integer-only arithmetic and non-Float64 results are rejected
@@ -90,7 +94,9 @@ steps preserve Lua 5.5's direction-sensitive zero-iteration and wrapping-
 integer semantics, including strides equal to `math.mininteger`. A zero
 parameter step raises Lua's exact error before native entry.
 Loop-carried Lua registers become explicit CFG block parameters, and a bytecode
-liveness scan avoids carrying dead setup registers. The constant-step baseline
+liveness scan avoids carrying dead setup registers. Loop bodies use the same
+integer arithmetic contract, including exact `UNM` and `BNOT`, in both tiers.
+The constant-step baseline
 emits one scalar body copy, while its optimized path uses overflow-safe
 eight-way body unrolling whenever the seven-step group offset is representable
 and otherwise safely retains a scalar group. Parameter steps use Lua-equivalent

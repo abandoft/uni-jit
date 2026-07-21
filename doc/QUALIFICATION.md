@@ -12,7 +12,8 @@ seed, compiles them with the production pipeline, and compares every native
 result bit-for-bit with the matching reference interpreter. Each corpus covers:
 
 - straight-line Word SSA with random constants, addition, subtraction,
-  multiplication, spills, and optimizer input shapes;
+  multiplication, exact negation and bitwise-not, spills, and optimizer input
+  shapes;
 - straight-line Float64 SSA with bounded finite inputs, all four binary
   arithmetic operations, and exact unary negation;
 - typed Word and Float64 CFGs with diamonds, 1 to 12 loop-carried state values,
@@ -111,6 +112,16 @@ baseline and optimized straight-line and counted-loop translation; stock
 runtime callables cross asynchronous tier promotion and retain signed zero at
 the language boundary. The deterministic generator emits unary negation in
 both IR forms, and the installed-package consumer builds both public APIs.
+
+Word unary qualification passes zero, ordinary positive and negative values,
+and both signed boundaries through straight-line and CFG interpreters and
+native compilers. It requires negation to wrap modulo 2^64 at `INT64_MIN`,
+bitwise-not to flip every bit, and the optimizer to fold constants and cancel
+paired operations. Stock Lua executes `OP_UNM` and `OP_BNOT` in straight-line
+and loop-carried baseline/optimized code across asynchronous promotion; its
+Float64 specialization separately checks both signed zeroes. The deterministic
+generator emits both Word operations in straight-line and CFG forms, and the
+installed-package consumer builds both public builders.
 
 Strided-loop coverage executes QuickJS prefix/postfix decrement and `+=`/`-=`
 updates plus PocketPy one-, two-, and three-argument `range` forms. Positive

@@ -65,6 +65,13 @@ bit. It therefore reverses both signed zeroes and infinities while retaining
 every NaN payload bit; the optimizer folds the same bit operation, and each
 native backend uses an architecture-specific sign operation rather than
 lowering negation as subtraction from positive zero.
+Word negation and bitwise-not are separate typed unary operations. Negation is
+defined over the unsigned 64-bit representation and wraps modulo 2^64, so
+negating the minimum signed value is exact and never invokes C++ signed
+overflow; bitwise-not flips all 64 bits. The optimizer folds these definitions,
+cancels paired identical unary operations, and preserves them in local value
+numbering. AArch64 lowers them to `NEG`/`MVN`, x86-64 to `NEG`/`NOT`, and
+RISC-V 64 to zero-based `SUB`/`XORI -1` without helper calls.
 
 Effectful runtime helpers use one portable signature: a pointer to a flat
 value-bits argument area plus its element count, returning one value-bits word.
@@ -126,8 +133,9 @@ fuzzed infinite loops fail deterministically.
 
 CFG signatures, constants, instructions, and block parameters carry the same
 Word/Float64 types as straight-line SSA. Edges must preserve each destination
-parameter's type, and Float64 addition, subtraction, negation, multiplication,
-and division retain exact value bits through loop backedges. Ordered Float64
+parameter's type; Word negation and bitwise-not retain exact modulo/bitwise
+semantics, while Float64 addition, subtraction, negation, multiplication, and
+division retain exact value bits through loop backedges. Ordered Float64
 comparisons return false for NaN inputs and produce Word conditions suitable
 for CFG branches. Equality is false and inequality is true for unordered
 operands, while both signed zeroes compare equal. Effectful CFG Float64
