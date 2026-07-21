@@ -95,6 +95,14 @@ frame reconstruction before `ZeroDivisionError`. Separate negative fixtures
 require an explicit rejection when a control guard contains an unsupported
 `else` arm.
 
+Float64 comparison qualification covers `<`, `<=`, equality, and inequality
+in straight-line and CFG interpreter/native execution, including NaN and both
+signed zeroes. QuickJS exercises loose and strict numeric equality, PocketPy
+exercises `==` and `!=`, and both adapters execute equality-controlled loops
+through direct optimized translation and their stock-runtime baseline path.
+The deterministic CFG generator varies all four core predicates, while the
+installed-package consumer compiles equality through both public IR builders.
+
 Strided-loop coverage executes QuickJS prefix/postfix decrement and `+=`/`-=`
 updates plus PocketPy one-, two-, and three-argument `range` forms. Positive
 and reverse loops are combined with early control guards, while zero and

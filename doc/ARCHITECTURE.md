@@ -57,6 +57,9 @@ transfers result bits to the shared return register at the compiled-function
 boundary. Ordered Float64 `<` and `<=` comparisons produce Word results with
 IEEE-754 unordered-false behavior, allowing frontends to materialize native
 language Boolean values without routing through a runtime helper.
+Float64 equality and inequality additionally preserve numeric signed-zero
+equality and make every NaN unequal, matching the specialized Number/float
+contracts of QuickJS and PocketPy without comparing raw value bits.
 
 Effectful runtime helpers use one portable signature: a pointer to a flat
 value-bits argument area plus its element count, returning one value-bits word.
@@ -121,7 +124,9 @@ Word/Float64 types as straight-line SSA. Edges must preserve each destination
 parameter's type, and Float64 addition, subtraction, multiplication, and
 division retain exact value bits through loop backedges. Ordered Float64
 comparisons return false for NaN inputs and produce Word conditions suitable
-for CFG branches. Effectful CFG Float64 nonzero guards consume one dominated
+for CFG branches. Equality is false and inequality is true for unordered
+operands, while both signed zeroes compare equal. Effectful CFG Float64
+nonzero guards consume one dominated
 Float64 value, retain their source site, and use the same diagnosed runtime-exit
 ABI and immutable frame-reconstruction metadata as straight-line guards.
 Effectful CFG helper calls likewise require every argument to dominate the call,

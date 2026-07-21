@@ -79,9 +79,10 @@ The first tier accepts one conventional `def` with zero to 64 unique ASCII
 parameter names and exactly one `return` expression. The expression may contain
 parameters, decimal numeric literals, parentheses, unary `+`/`-`, and binary
 `+`, `-`, `*`, and `/`, plus one top-level ordered `<`, `<=`, `>`, or `>=`
-comparison. Arithmetic lowers to Float64 SSA; ordered comparisons return an
-actual PocketPy `bool` from both baseline and optimized native tiers, with NaN
-remaining unordered and therefore false.
+comparison or numeric `==`/`!=` comparison. Arithmetic lowers to Float64 SSA;
+comparisons return an actual PocketPy `bool` from both baseline and optimized
+native tiers, with NaN remaining unequal and both signed zeroes comparing
+equal.
 
 Closures, annotations, default or variadic parameters, assignments, multiple
 statements, calls, attribute access, chained comparisons, and non-ASCII
@@ -103,7 +104,8 @@ accepted IR remains subject to the core compilation budgets.
 
 The counted-loop tier accepts four-space-indented numeric functions with
 Float64 local initializers, one `for name in range(...)` loop, arithmetic or
-augmented assignments, and ordered `if`/`else` arms that update loop locals.
+augmented assignments, and ordered or equality `if`/`else` arms that update
+loop locals.
 `range(stop)` and `range(start, stop)` use a positive unit step;
 `range(start, stop, step)` accepts a finite nonzero numeric-literal step and
 selects the matching forward or reverse strict bound. Dynamic and zero steps

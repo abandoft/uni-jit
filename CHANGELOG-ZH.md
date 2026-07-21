@@ -1,5 +1,6 @@
 ## 0.2.0
 
+- 为直线与 CFG SSA 新增符合 IEEE-754 的 Float64 相等和不等谓词，覆盖精确 NaN 与有符号零语义、常量折叠、无用代码清理、值编号、寄存器分配，以及 AArch64、x86-64、RISC-V 64 上的独立原生降级；在基线与优化实时分层中为 QuickJS 数值启用 `==`、`!=`、`===`、`!==`，为 PocketPy 启用 `==`、`!=`，覆盖返回布尔值、循环条件和受守卫的 break/continue 循环体，并通过确定性模糊测试与已安装包资格验证。
 - 新增公开的编译期 `measure_safepoint_polls` 策略，默认保持精确原生遥测，同时允许从延迟敏感代码中完全移除计数指令；Lua 因已从调用实参推导精确饱和循环热点而选择零开销路径，QuickJS 与 PocketPy 则保留实测回边，并覆盖直线/CFG 原生关闭路径及已安装包资格验证。
 - 扩展生产级 x86-64 资格验证，使真实 Ubuntu GCC 与 Clang 主机现与 Lua、PocketPy、核心 JIT、性能门禁和已安装包消费者一起构建并执行 stock QuickJS 适配器，同时由 Linux ASan/UBSan 覆盖 QuickJS；因上游 stock QuickJS 依赖 GNU C 扩展，Windows MSVC 继续验证核心、Lua 与 PocketPy，由此既补齐 QuickJS 运行时此前仅在 macOS 上验证的缺口，也不虚假声明 MSVC 兼容性。
 - 新增调用级安全点执行遥测，在 AArch64、x86-64 与 RISC-V 64 的解释器及原生代码中精确计数；QuickJS 与 PocketPy 现将实测计数循环回边计入饱和分层热点并通过统计 API 公开，可在单次 10,000 次迭代调用后异步升级，同时为直线代码保留 64 次调用策略，并覆盖中断、重置、循环计数及 stock 运行时资格验证。

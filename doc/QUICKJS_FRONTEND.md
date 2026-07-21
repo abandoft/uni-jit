@@ -64,10 +64,12 @@ The first tier accepts conventional `function` source with zero to 64 unique
 ASCII parameter names and a body containing exactly one `return` expression.
 The expression may contain parameters, decimal numeric literals, parentheses,
 unary `+`/`-`, binary `+`, `-`, `*`, and `/`, and one top-level ordered `<`,
-`<=`, `>`, or `>=` comparison. Arithmetic lowers to Float64 SSA; comparisons
-lower to ordered Word results and the adapter returns an actual JavaScript
-Boolean in both baseline and optimized tiers. NaN comparisons are false as
-required by JavaScript Number semantics.
+`<=`, `>`, or `>=` comparison or numeric `==`, `!=`, `===`, or `!==`
+comparison. Arithmetic lowers to Float64 SSA; comparisons produce Word results
+and the adapter returns an actual JavaScript Boolean in both baseline and
+optimized tiers. Because every accepted operand is already a Number, loose and
+strict equality have the same numeric result: signed zeroes compare equal,
+equality is false for NaN, and inequality is true for NaN.
 
 Arrow functions, closures, default or rest parameters, property access, calls,
 statements, chained comparisons, and coercive operands are rejected with a
@@ -78,8 +80,9 @@ Function source larger than 1 MiB is rejected before it is retained or
 translated, and accepted IR remains subject to the core compilation budgets.
 
 The counted-loop tier additionally accepts a conventional body with Float64
-`let` initializers, one `for` loop, arithmetic assignments, and ordered
-`if`/`else` comparisons whose arms update loop locals. The induction update may
+`let` initializers, one `for` loop, arithmetic assignments, and ordered or
+numeric-equality `if`/`else` comparisons whose arms update loop locals. Loop
+conditions accept the same comparison set. The induction update may
 use prefix/postfix `++` or `--`, or `+=`/`-=` with a finite nonzero numeric
 literal applied by the common update block. Dynamic update expressions are
 rejected until they can be evaluated after every possible body mutation.
