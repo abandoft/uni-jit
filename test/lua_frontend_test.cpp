@@ -873,18 +873,68 @@ ok, message = pcall(unijit.compile, function(count, first, second)
 end)
 assert(not ok and tostring(message):find("only one guarded condition"))
 
-ok, message = pcall(unijit.compile, function(count, threshold)
+local conditional_branch_sum = function(start, limit, step, threshold)
+  local sum = 7
+  for index = start, limit, step do
+    if index < threshold then
+      sum = sum + index * 3
+    else
+      sum = sum - index * 2
+    end
+    sum = sum + 1
+  end
+  return sum
+end
+local native_conditional_branch_sum = unijit.compile(conditional_branch_sum)
+local conditional_branch_cases = {
+  {1, 20, 1, 9},
+  {20, 1, -1, 9},
+  {-20, 20, 3, 0},
+  {20, -20, -3, 0},
+  {7, -7, 3, 100},
+  {7, -7, -3, -100},
+  {math.maxinteger - 6, math.maxinteger, 2, math.maxinteger},
+  {math.mininteger + 6, math.mininteger, -2, math.mininteger + 3},
+}
+for _, values in ipairs(conditional_branch_cases) do
+  assert(native_conditional_branch_sum(table.unpack(values)) ==
+         conditional_branch_sum(table.unpack(values)))
+end
+assert(native_conditional_branch_sum(1, 12000, 1, 6000) ==
+       conditional_branch_sum(1, 12000, 1, 6000))
+assert(unijit.wait(native_conditional_branch_sum, 5000))
+assert(unijit.stats(native_conditional_branch_sum).active_tier == "optimized")
+for _, values in ipairs(conditional_branch_cases) do
+  assert(native_conditional_branch_sum(table.unpack(values)) ==
+         conditional_branch_sum(table.unpack(values)))
+end
+
+local conditional_equality_sum = function(count, skipped)
   local sum = 0
   for index = 1, count do
-    if index < threshold then
+    if index ~= skipped then
       sum = sum + index
     else
-      sum = sum - index
+      sum = sum - 100
     end
   end
   return sum
-end)
-assert(not ok and tostring(message):find("unsupported Lua 5.5 opcode"))
+end
+local native_conditional_equality_sum =
+    unijit.compile(conditional_equality_sum)
+for _, values in ipairs({{0, 1}, {1, 1}, {10, 4}, {10, 1000}}) do
+  assert(native_conditional_equality_sum(table.unpack(values)) ==
+         conditional_equality_sum(table.unpack(values)))
+end
+assert(native_conditional_equality_sum(12000, 6000) ==
+       conditional_equality_sum(12000, 6000))
+assert(unijit.wait(native_conditional_equality_sum, 5000))
+assert(unijit.stats(native_conditional_equality_sum).active_tier == "optimized")
+for _, values in ipairs({{0, 1}, {1, 1}, {10, 4}, {10, 1000}}) do
+  assert(native_conditional_equality_sum(table.unpack(values)) ==
+         conditional_equality_sum(table.unpack(values)))
+end
+checkpoint("integer conditional branches")
 
 ok = pcall(unijit.compile, math.abs)
 assert(not ok)
@@ -935,6 +985,8 @@ native_immediate_guard_sum = nil
 native_not_equal_guard_sum = nil
 native_greater_immediate_sum = nil
 native_less_than_break = nil
+native_conditional_branch_sum = nil
+native_conditional_equality_sum = nil
 native_near_max_stride = nil
 native_near_min_stride = nil
 native_huge_positive_stride = nil
