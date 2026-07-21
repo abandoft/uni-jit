@@ -62,6 +62,26 @@ static_assert(sizeof(lua_Integer) == sizeof(Word),
 static_assert(sizeof(lua_Number) == sizeof(double),
               "Lua and UniJIT Float64 values must have the same width");
 
+std::uint64_t word_bits(Word value) noexcept {
+  std::uint64_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  return bits;
+}
+
+Word word_from_bits(std::uint64_t bits) noexcept {
+  Word value = 0;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+
+Word negate_word(Word value) noexcept {
+  return word_from_bits(UINT64_C(0) - word_bits(value));
+}
+
+Word bitwise_not_word(Word value) noexcept {
+  return word_from_bits(~word_bits(value));
+}
+
 enum class NumericMode : unsigned char {
   kInteger,
   kFloat64,
@@ -681,7 +701,8 @@ LoopHotnessPlan analyze_loop_hotness(const Proto &prototype) {
                 body_opcode == OP_LOADK || body_opcode == OP_ADDI ||
                 body_opcode == OP_ADDK || body_opcode == OP_SUBK ||
                 body_opcode == OP_MULK || body_opcode == OP_ADD ||
-                body_opcode == OP_SUB || body_opcode == OP_MUL;
+                body_opcode == OP_SUB || body_opcode == OP_MUL ||
+                body_opcode == OP_UNM || body_opcode == OP_BNOT;
             if (writes_destination &&
                 GETARG_A(prototype.code[body_pc]) == threshold_register) {
               return plan;
@@ -723,6 +744,21 @@ LoopHotnessPlan analyze_loop_hotness(const Proto &prototype) {
       } else {
         result = {};
       }
+      break;
+    }
+    case OP_UNM:
+    case OP_BNOT: {
+      const int source = GETARG_B(instruction);
+      if (source < 0 || source >= prototype.maxstacksize ||
+          !registers[static_cast<std::size_t>(source)].constant.has_value()) {
+        result = {};
+        break;
+      }
+      const Word source_value =
+          registers[static_cast<std::size_t>(source)].constant.value();
+      result.constant = opcode == OP_UNM ? negate_word(source_value)
+                                         : bitwise_not_word(source_value);
+      result.parameter.reset();
       break;
     }
     case OP_MMBIN:
@@ -902,6 +938,21 @@ compile_straight_prototype(const Proto &prototype,
               "binary arithmetic is missing its Lua metamethod fallback");
         }
         ++pc;
+        break;
+      }
+
+      case OP_UNM:
+      case OP_BNOT: {
+        const int source = GETARG_B(instruction);
+        if (!valid_destination(registers, destination) ||
+            !valid_register(registers, source)) {
+          return translation_error(static_cast<std::size_t>(pc),
+                                   "invalid register in unary arithmetic");
+        }
+        const Value operand = registers[static_cast<std::size_t>(source)];
+        registers[static_cast<std::size_t>(destination)] =
+            opcode == OP_UNM ? builder.negate(operand)
+                             : builder.bitwise_not(operand);
         break;
       }
 
@@ -1097,7 +1148,7 @@ CompilationResult compile_numeric_for_prototype(
             opcode == OP_MOVE || opcode == OP_LOADI || opcode == OP_LOADK ||
             opcode == OP_ADDI || opcode == OP_ADDK || opcode == OP_SUBK ||
             opcode == OP_MULK || opcode == OP_ADD || opcode == OP_SUB ||
-            opcode == OP_MUL;
+            opcode == OP_MUL || opcode == OP_UNM || opcode == OP_BNOT;
         if (writes_destination && protected_state_base >= 0 &&
             destination >= protected_state_base &&
             destination <= protected_state_base + 2) {
@@ -1237,6 +1288,29 @@ CompilationResult compile_numeric_for_prototype(
           break;
         }
 
+        case OP_UNM:
+        case OP_BNOT: {
+          const int source = GETARG_B(instruction);
+          if (!valid_destination(*values, destination) ||
+              !valid_register(*values, source)) {
+            return bytecode_error(pc, "invalid register in unary arithmetic");
+          }
+          const Value operand = (*values)[static_cast<std::size_t>(source)];
+          (*values)[static_cast<std::size_t>(destination)] =
+              opcode == OP_UNM ? builder.negate(operand)
+                               : builder.bitwise_not(operand);
+          const std::optional<Word> source_constant =
+              (*constants)[static_cast<std::size_t>(source)];
+          if (source_constant.has_value()) {
+            (*constants)[static_cast<std::size_t>(destination)] =
+                opcode == OP_UNM ? negate_word(source_constant.value())
+                                 : bitwise_not_word(source_constant.value());
+          } else {
+            (*constants)[static_cast<std::size_t>(destination)].reset();
+          }
+          break;
+        }
+
         case OP_RETURN1:
           if (!allow_return || !valid_register(*values, destination)) {
             return bytecode_error(pc, "unsupported return in numeric loop");
@@ -1313,7 +1387,8 @@ CompilationResult compile_numeric_for_prototype(
           }
         };
         if (opcode == OP_MOVE || opcode == OP_ADDI || opcode == OP_ADDK ||
-            opcode == OP_SUBK || opcode == OP_MULK) {
+            opcode == OP_SUBK || opcode == OP_MULK || opcode == OP_UNM ||
+            opcode == OP_BNOT) {
           note(GETARG_B(instruction));
         } else if (opcode == OP_ADD || opcode == OP_SUB || opcode == OP_MUL) {
           note(GETARG_B(instruction));

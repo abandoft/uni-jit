@@ -266,6 +266,26 @@ CompilationResult compile_float64_prototype(
           break;
         }
 
+        case OP_UNM: {
+          const int source = GETARG_B(instruction);
+          if (!valid_destination(registers, destination) ||
+              !valid_register(registers, source)) {
+            return translation_error(static_cast<std::size_t>(pc),
+                                     "invalid register in Float64 OP_UNM");
+          }
+          if (kinds[static_cast<std::size_t>(source)] !=
+              NumericKind::kFloat64) {
+            return translation_error(
+                static_cast<std::size_t>(pc),
+                "Float64 unary minus requires a Float64 operand");
+          }
+          registers[static_cast<std::size_t>(destination)] =
+              builder.float64_negate(
+                  registers[static_cast<std::size_t>(source)]);
+          kinds[static_cast<std::size_t>(destination)] = NumericKind::kFloat64;
+          break;
+        }
+
         case OP_RETURN1:
         case OP_RETURN:
           if ((opcode == OP_RETURN &&
