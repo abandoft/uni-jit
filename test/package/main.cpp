@@ -218,6 +218,31 @@ int main() {
           UINT64_C(0xffffffffffffffff)) {
     return 51;
   }
+  unijit::ir::FunctionBuilder bitwise_builder(2);
+  const auto bitwise_and = bitwise_builder.bitwise_and(
+      bitwise_builder.parameter(0), bitwise_builder.parameter(1));
+  const auto bitwise_xor = bitwise_builder.bitwise_xor(
+      bitwise_builder.parameter(0), bitwise_builder.parameter(1));
+  if (!bitwise_builder
+           .set_return(bitwise_builder.bitwise_or(bitwise_and, bitwise_xor))
+           .ok()) {
+    return 54;
+  }
+  auto bitwise_compilation = unijit::jit::Compiler::compile(
+      std::move(bitwise_builder).build());
+  const std::array<unijit::ir::Word, 2> bitwise_arguments = {
+      static_cast<unijit::ir::Word>(UINT64_C(0x5555555555555555)),
+      static_cast<unijit::ir::Word>(UINT64_C(0xaaaaaaaaaaaaaaaa))};
+  const auto bitwise_result =
+      bitwise_compilation.ok()
+          ? bitwise_compilation.function->invoke(bitwise_arguments.data(),
+                                                  bitwise_arguments.size())
+          : unijit::ir::EvaluationResult{};
+  if (!bitwise_compilation.ok() || !bitwise_result.ok() ||
+      static_cast<std::uint64_t>(bitwise_result.value) !=
+          UINT64_C(0xffffffffffffffff)) {
+    return 55;
+  }
   unijit::jit::CompilationLimits package_limits;
   package_limits.maximum_ir_nodes = 2;
   const auto limited_compilation = unijit::jit::Compiler::compile(
@@ -336,6 +361,28 @@ int main() {
   if (!cfg_word_unary.ok() || !cfg_word_unary_result.ok() ||
       cfg_word_unary_result.value != -1) {
     return 53;
+  }
+  unijit::ir::ControlFlowBuilder cfg_bitwise_builder(2);
+  const auto cfg_or = cfg_bitwise_builder.bitwise_or(
+      cfg_bitwise_builder.parameter(0), cfg_bitwise_builder.parameter(1));
+  const auto cfg_and = cfg_bitwise_builder.bitwise_and(
+      cfg_bitwise_builder.parameter(0), cfg_bitwise_builder.parameter(1));
+  if (!cfg_bitwise_builder
+           .set_return(cfg_bitwise_builder.bitwise_xor(cfg_or, cfg_and))
+           .ok()) {
+    return 56;
+  }
+  auto cfg_bitwise = unijit::jit::Compiler::compile(
+      std::move(cfg_bitwise_builder).build());
+  const std::array<unijit::ir::Word, 2> cfg_bitwise_arguments = {0x55, 0x0f};
+  const auto cfg_bitwise_result =
+      cfg_bitwise.ok()
+          ? cfg_bitwise.function->invoke(cfg_bitwise_arguments.data(),
+                                         cfg_bitwise_arguments.size())
+          : unijit::ir::EvaluationResult{};
+  if (!cfg_bitwise.ok() || !cfg_bitwise_result.ok() ||
+      cfg_bitwise_result.value != 0x5a) {
+    return 57;
   }
   unijit::ir::FunctionBuilder safepoint_builder(0);
   if (!safepoint_builder.safepoint(23).valid() ||
