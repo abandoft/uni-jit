@@ -863,6 +863,136 @@ void test_word_unary_operations() {
          "verifier must reject Word unary operations over Float64 operands");
 }
 
+void test_word_bitwise_operations() {
+  const auto build = [](unijit::ir::Opcode opcode) {
+    FunctionBuilder builder(2);
+    Value result;
+    if (opcode == unijit::ir::Opcode::kBitwiseAnd) {
+      result = builder.bitwise_and(builder.parameter(0), builder.parameter(1));
+    } else if (opcode == unijit::ir::Opcode::kBitwiseOr) {
+      result = builder.bitwise_or(builder.parameter(0), builder.parameter(1));
+    } else {
+      result = builder.bitwise_xor(builder.parameter(0), builder.parameter(1));
+    }
+    expect(builder.set_return(result).ok(),
+           "Word bitwise fixture must record its result");
+    return std::move(builder).build();
+  };
+  const Function and_function = build(unijit::ir::Opcode::kBitwiseAnd);
+  const Function or_function = build(unijit::ir::Opcode::kBitwiseOr);
+  const Function xor_function = build(unijit::ir::Opcode::kBitwiseXor);
+  expect(unijit::ir::verify(and_function).ok() &&
+             unijit::ir::verify(or_function).ok() &&
+             unijit::ir::verify(xor_function).ok(),
+         "typed Word bitwise operations must pass verification");
+  const auto and_compilation = Compiler::compile(and_function);
+  const auto or_compilation = Compiler::compile(or_function);
+  const auto xor_compilation = Compiler::compile(xor_function);
+  expect(and_compilation.ok() && or_compilation.ok() && xor_compilation.ok(),
+         "Word bitwise operations must compile to native code");
+
+  constexpr std::array<std::array<Word, 2>, 8> kSamples = {{
+      {{0, 0}},
+      {{-1, 0}},
+      {{1, -1}},
+      {{42, 21}},
+      {{-97, 0x55}},
+      {{std::numeric_limits<Word>::min(),
+        std::numeric_limits<Word>::max()}},
+      {{static_cast<Word>(UINT64_C(0x5555555555555555)),
+        static_cast<Word>(UINT64_C(0xaaaaaaaaaaaaaaaa))}},
+      {{static_cast<Word>(UINT64_C(0x0123456789abcdef)),
+        static_cast<Word>(UINT64_C(0xfedcba9876543210))}},
+  }};
+  for (const auto& sample : kSamples) {
+    const std::uint64_t lhs = static_cast<std::uint64_t>(sample[0]);
+    const std::uint64_t rhs = static_cast<std::uint64_t>(sample[1]);
+    const auto interpreted_and =
+        Interpreter::evaluate(and_function, sample.data(), sample.size());
+    const auto interpreted_or =
+        Interpreter::evaluate(or_function, sample.data(), sample.size());
+    const auto interpreted_xor =
+        Interpreter::evaluate(xor_function, sample.data(), sample.size());
+    expect(interpreted_and.ok() && interpreted_or.ok() &&
+               interpreted_xor.ok() &&
+               static_cast<std::uint64_t>(interpreted_and.value) ==
+                   (lhs & rhs) &&
+               static_cast<std::uint64_t>(interpreted_or.value) ==
+                   (lhs | rhs) &&
+               static_cast<std::uint64_t>(interpreted_xor.value) ==
+                   (lhs ^ rhs),
+           "Word bitwise interpreter semantics must preserve all 64 bits");
+    if (and_compilation.ok() && or_compilation.ok() && xor_compilation.ok()) {
+      const auto native_and =
+          and_compilation.function->invoke(sample.data(), sample.size());
+      const auto native_or =
+          or_compilation.function->invoke(sample.data(), sample.size());
+      const auto native_xor =
+          xor_compilation.function->invoke(sample.data(), sample.size());
+      expect(native_and.ok() && native_or.ok() && native_xor.ok() &&
+                 native_and.value == interpreted_and.value &&
+                 native_or.value == interpreted_or.value &&
+                 native_xor.value == interpreted_xor.value,
+             "native Word bitwise operations must match the interpreter");
+    }
+  }
+
+  FunctionBuilder simplified_builder(1);
+  const Value masked = simplified_builder.bitwise_and(
+      simplified_builder.parameter(0), simplified_builder.constant(-1));
+  const Value merged =
+      simplified_builder.bitwise_or(masked, simplified_builder.constant(0));
+  const Value restored =
+      simplified_builder.bitwise_xor(merged, simplified_builder.constant(0));
+  expect(simplified_builder.set_return(restored).ok(),
+         "bitwise simplification fixture must record its result");
+  const auto simplified =
+      unijit::ir::Optimizer::run(std::move(simplified_builder).build());
+  expect(simplified.ok() &&
+             simplified.stats.algebraic_simplifications >= 3 &&
+             simplified.function.nodes().size() == 1,
+         "optimizer must apply Word bitwise identity and annihilator rules");
+
+  unijit::ir::ControlFlowBuilder cfg_builder(2);
+  const Value first = cfg_builder.bitwise_xor(cfg_builder.parameter(0),
+                                               cfg_builder.parameter(1));
+  const Value duplicate = cfg_builder.bitwise_xor(cfg_builder.parameter(0),
+                                                   cfg_builder.parameter(1));
+  const Value cfg_result = cfg_builder.bitwise_or(
+      cfg_builder.bitwise_and(first, cfg_builder.parameter(0)), duplicate);
+  expect(cfg_builder.set_return(cfg_result).ok(),
+         "CFG Word bitwise fixture must record its result");
+  const auto cfg_function = std::move(cfg_builder).build();
+  expect(unijit::ir::verify(cfg_function).ok(),
+         "CFG Word bitwise operations must pass verification");
+  const auto cfg_optimization = unijit::ir::Optimizer::run(cfg_function);
+  expect(cfg_optimization.ok() &&
+             cfg_optimization.stats.common_subexpressions >= 1,
+         "CFG optimizer must value-number duplicate Word bitwise operations");
+  const auto cfg_compilation = Compiler::compile(cfg_function);
+  expect(cfg_compilation.ok(), "CFG Word bitwise operations must compile");
+  for (const auto& sample : kSamples) {
+    const auto interpreted = unijit::ir::ControlFlowInterpreter::evaluate(
+        cfg_function, sample.data(), sample.size());
+    if (cfg_compilation.ok()) {
+      const auto native =
+          cfg_compilation.function->invoke(sample.data(), sample.size());
+      expect(interpreted.ok() && native.ok() &&
+                 native.value == interpreted.value,
+             "native CFG Word bitwise operations must match the interpreter");
+    }
+  }
+
+  FunctionBuilder malformed(
+      std::vector<unijit::ir::ValueType>(2,
+                                         unijit::ir::ValueType::kFloat64));
+  const Value invalid =
+      malformed.bitwise_and(malformed.parameter(0), malformed.parameter(1));
+  expect(malformed.set_return(invalid).ok() &&
+             !unijit::ir::verify(std::move(malformed).build()).ok(),
+         "verifier must reject Word bitwise operations over Float64 operands");
+}
+
 void test_float64_negation() {
   using unijit::ir::ValueType;
   FunctionBuilder builder(std::vector<ValueType>{ValueType::kFloat64});
@@ -4240,6 +4370,7 @@ int main() {
   test_float64_ir_and_interpreter();
   test_float64_division();
   test_word_unary_operations();
+  test_word_bitwise_operations();
   test_float64_negation();
   test_float64_comparisons();
   test_float64_nonzero_guard();
