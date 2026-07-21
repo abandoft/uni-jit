@@ -3888,6 +3888,15 @@ void test_control_flow_safepoint() {
   if (compilation.ok()) {
     const unijit::jit::StackMapRecord* stack_map =
         compilation.function->stack_map(314);
+    std::vector<std::size_t> stack_offsets;
+    if (stack_map != nullptr) {
+      stack_offsets.reserve(stack_map->live_values.size());
+      for (const unijit::jit::StackMapValue& value :
+           stack_map->live_values) {
+        stack_offsets.push_back(value.frame_offset);
+      }
+      std::sort(stack_offsets.begin(), stack_offsets.end());
+    }
     expect(stack_map != nullptr &&
                stack_map->kind == unijit::jit::StackMapKind::kSafepoint &&
                stack_map->native_offset <
@@ -3900,13 +3909,15 @@ void test_control_flow_safepoint() {
                stack_map->find(zero) != nullptr &&
                stack_map->find(one) != nullptr &&
                stack_map->find(safepoint) == nullptr &&
+               std::adjacent_find(stack_offsets.begin(),
+                                  stack_offsets.end()) ==
+                   stack_offsets.end() &&
                std::all_of(
                    stack_map->live_values.begin(),
                    stack_map->live_values.end(),
                    [stack_map](const unijit::jit::StackMapValue& value) {
                      return value.type == unijit::ir::ValueType::kWord &&
-                            value.frame_offset ==
-                                value.value.id() * sizeof(Word) &&
+                            value.frame_offset % sizeof(Word) == 0 &&
                             value.frame_offset < stack_map->frame_size;
                    }),
            "CFG safepoints must publish precise loop-live canonical stack maps");
@@ -4713,6 +4724,66 @@ void test_control_flow_execution_budget() {
          "CFG interpreter must stop when its execution budget is exhausted");
 }
 
+void test_control_flow_compact_spill_frame() {
+  using unijit::ir::Block;
+  using unijit::ir::ControlFlowBuilder;
+  using unijit::jit::CompilationOptions;
+  using unijit::jit::OptimizationLevel;
+
+  ControlFlowBuilder builder(1);
+  const Value returned = builder.parameter(0);
+  std::vector<Block> blocks;
+  blocks.reserve(80);
+  for (std::size_t index = 0; index < 80; ++index) {
+    blocks.push_back(builder.create_block(0));
+  }
+  expect(builder.jump(blocks.front(), {}).ok(),
+         "large compact-frame CFG must enter its first block");
+  for (std::size_t index = 0; index < blocks.size(); ++index) {
+    expect(builder.set_insertion_block(blocks[index]).ok(),
+           "large compact-frame CFG block must exist");
+    std::array<Value, 16> locals;
+    for (std::size_t local_index = 0; local_index < locals.size();
+         ++local_index) {
+      locals[local_index] = builder.constant(
+          static_cast<Word>(index * locals.size() + local_index));
+    }
+    Value combined = locals.front();
+    for (std::size_t local_index = 1; local_index < locals.size();
+         ++local_index) {
+      combined = builder.add(combined, locals[local_index]);
+    }
+    (void)combined;
+    if (index + 1 < blocks.size()) {
+      expect(builder.jump(blocks[index + 1], {}).ok(),
+             "large compact-frame CFG blocks must remain connected");
+    } else {
+      expect(builder.set_return(returned).ok(),
+             "large compact-frame CFG must return its dominating input");
+    }
+  }
+  const auto function = std::move(builder).build();
+  expect(function.nodes().size() > 2048 && unijit::ir::verify(function).ok(),
+         "large compact-frame CFG fixture must exceed fixed AArch64 and "
+         "RISC-V node-indexed frame limits");
+
+  auto compilation = Compiler::compile(
+      function, CompilationOptions{OptimizationLevel::kBaseline});
+  expect(compilation.ok(),
+         "large CFGs with little cross-block state must compile");
+  if (!compilation.ok()) {
+    return;
+  }
+  const std::array<Word, 1> arguments = {0x123456789};
+  const auto result =
+      compilation.function->invoke(arguments.data(), arguments.size());
+  expect(result.ok() && result.value == arguments.front() &&
+             compilation.function->stats().input_ir_nodes > 2048 &&
+             compilation.function->stats().spill_slots <= 16,
+         "CFG spill frames must track actual stack-resident values, not SSA "
+         "node count");
+}
+
 void test_control_flow_split_register_classes() {
   using unijit::ir::Block;
   using unijit::ir::ControlFlowBuilder;
@@ -4852,6 +4923,7 @@ int main() {
   test_hotness_and_tiered_switching();
   test_compilation_scheduler();
   test_control_flow_split_register_classes();
+  test_control_flow_compact_spill_frame();
   test_control_flow_execution_budget();
   test_control_flow_builder_rejects_edge_arity();
 
