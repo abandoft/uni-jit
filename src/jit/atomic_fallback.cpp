@@ -7,6 +7,15 @@
 namespace unijit::jit::detail {
 namespace {
 
+static_assert(__atomic_always_lock_free(sizeof(std::uint8_t), nullptr),
+              "AArch64 byte atomics must be lock-free");
+static_assert(__atomic_always_lock_free(sizeof(std::uint16_t), nullptr),
+              "AArch64 halfword atomics must be lock-free");
+static_assert(__atomic_always_lock_free(sizeof(std::uint32_t), nullptr),
+              "AArch64 word atomics must be lock-free");
+static_assert(__atomic_always_lock_free(sizeof(std::uint64_t), nullptr),
+              "AArch64 doubleword atomics must be lock-free");
+
 std::uint64_t word_bits(ir::Word value) noexcept {
   std::uint64_t bits = 0;
   std::memcpy(&bits, &value, sizeof(bits));
