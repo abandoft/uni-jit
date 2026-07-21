@@ -82,6 +82,16 @@ Word bitwise_not_word(Word value) noexcept {
   return word_from_bits(~word_bits(value));
 }
 
+Word bitwise_binary_word(OpCode opcode, Word lhs, Word rhs) noexcept {
+  if (opcode == OP_BAND || opcode == OP_BANDK) {
+    return word_from_bits(word_bits(lhs) & word_bits(rhs));
+  }
+  if (opcode == OP_BOR || opcode == OP_BORK) {
+    return word_from_bits(word_bits(lhs) | word_bits(rhs));
+  }
+  return word_from_bits(word_bits(lhs) ^ word_bits(rhs));
+}
+
 enum class NumericMode : unsigned char {
   kInteger,
   kFloat64,
@@ -700,8 +710,11 @@ LoopHotnessPlan analyze_loop_hotness(const Proto &prototype) {
                 body_opcode == OP_MOVE || body_opcode == OP_LOADI ||
                 body_opcode == OP_LOADK || body_opcode == OP_ADDI ||
                 body_opcode == OP_ADDK || body_opcode == OP_SUBK ||
-                body_opcode == OP_MULK || body_opcode == OP_ADD ||
-                body_opcode == OP_SUB || body_opcode == OP_MUL ||
+                body_opcode == OP_MULK || body_opcode == OP_BANDK ||
+                body_opcode == OP_BORK || body_opcode == OP_BXORK ||
+                body_opcode == OP_ADD || body_opcode == OP_SUB ||
+                body_opcode == OP_MUL || body_opcode == OP_BAND ||
+                body_opcode == OP_BOR || body_opcode == OP_BXOR ||
                 body_opcode == OP_UNM || body_opcode == OP_BNOT;
             if (writes_destination &&
                 GETARG_A(prototype.code[body_pc]) == threshold_register) {
@@ -744,6 +757,42 @@ LoopHotnessPlan analyze_loop_hotness(const Proto &prototype) {
       } else {
         result = {};
       }
+      break;
+    }
+    case OP_BANDK:
+    case OP_BORK:
+    case OP_BXORK: {
+      const int source = GETARG_B(instruction);
+      const int constant_index = GETARG_C(instruction);
+      if (source < 0 || source >= prototype.maxstacksize ||
+          constant_index < 0 || constant_index >= prototype.sizek ||
+          !registers[static_cast<std::size_t>(source)].constant.has_value() ||
+          !ttisinteger(&prototype.k[constant_index])) {
+        result = {};
+        break;
+      }
+      result.constant = bitwise_binary_word(
+          opcode, registers[static_cast<std::size_t>(source)].constant.value(),
+          static_cast<Word>(ivalue(&prototype.k[constant_index])));
+      result.parameter.reset();
+      break;
+    }
+    case OP_BAND:
+    case OP_BOR:
+    case OP_BXOR: {
+      const int lhs = GETARG_B(instruction);
+      const int rhs = GETARG_C(instruction);
+      if (lhs < 0 || lhs >= prototype.maxstacksize || rhs < 0 ||
+          rhs >= prototype.maxstacksize ||
+          !registers[static_cast<std::size_t>(lhs)].constant.has_value() ||
+          !registers[static_cast<std::size_t>(rhs)].constant.has_value()) {
+        result = {};
+        break;
+      }
+      result.constant = bitwise_binary_word(
+          opcode, registers[static_cast<std::size_t>(lhs)].constant.value(),
+          registers[static_cast<std::size_t>(rhs)].constant.value());
+      result.parameter.reset();
       break;
     }
     case OP_UNM:
@@ -908,6 +957,41 @@ compile_straight_prototype(const Proto &prototype,
         break;
       }
 
+      case OP_BANDK:
+      case OP_BORK:
+      case OP_BXORK: {
+        const int source = GETARG_B(instruction);
+        const int constant_index = GETARG_C(instruction);
+        if (!valid_destination(registers, destination) ||
+            !valid_register(registers, source) || constant_index < 0 ||
+            constant_index >= prototype.sizek ||
+            !ttisinteger(&prototype.k[constant_index])) {
+          return translation_error(static_cast<std::size_t>(pc),
+                                   "invalid operand in constant bitwise operation");
+        }
+        const Value lhs = registers[static_cast<std::size_t>(source)];
+        const Value rhs = builder.constant(
+            static_cast<Word>(ivalue(&prototype.k[constant_index])));
+        if (opcode == OP_BANDK) {
+          registers[static_cast<std::size_t>(destination)] =
+              builder.bitwise_and(lhs, rhs);
+        } else if (opcode == OP_BORK) {
+          registers[static_cast<std::size_t>(destination)] =
+              builder.bitwise_or(lhs, rhs);
+        } else {
+          registers[static_cast<std::size_t>(destination)] =
+              builder.bitwise_xor(lhs, rhs);
+        }
+        if (pc + 1 >= prototype.sizecode ||
+            GET_OPCODE(prototype.code[pc + 1]) != OP_MMBINK) {
+          return translation_error(
+              static_cast<std::size_t>(pc),
+              "constant bitwise operation is missing its Lua metamethod fallback");
+        }
+        ++pc;
+        break;
+      }
+
       case OP_ADD:
       case OP_SUB:
       case OP_MUL: {
@@ -936,6 +1020,39 @@ compile_straight_prototype(const Proto &prototype,
           return translation_error(
               static_cast<std::size_t>(pc),
               "binary arithmetic is missing its Lua metamethod fallback");
+        }
+        ++pc;
+        break;
+      }
+
+      case OP_BAND:
+      case OP_BOR:
+      case OP_BXOR: {
+        const int lhs_index = GETARG_B(instruction);
+        const int rhs_index = GETARG_C(instruction);
+        if (!valid_destination(registers, destination) ||
+            !valid_register(registers, lhs_index) ||
+            !valid_register(registers, rhs_index)) {
+          return translation_error(static_cast<std::size_t>(pc),
+                                   "invalid register in binary bitwise operation");
+        }
+        const Value lhs = registers[static_cast<std::size_t>(lhs_index)];
+        const Value rhs = registers[static_cast<std::size_t>(rhs_index)];
+        if (opcode == OP_BAND) {
+          registers[static_cast<std::size_t>(destination)] =
+              builder.bitwise_and(lhs, rhs);
+        } else if (opcode == OP_BOR) {
+          registers[static_cast<std::size_t>(destination)] =
+              builder.bitwise_or(lhs, rhs);
+        } else {
+          registers[static_cast<std::size_t>(destination)] =
+              builder.bitwise_xor(lhs, rhs);
+        }
+        if (pc + 1 >= prototype.sizecode ||
+            GET_OPCODE(prototype.code[pc + 1]) != OP_MMBIN) {
+          return translation_error(
+              static_cast<std::size_t>(pc),
+              "binary bitwise operation is missing its Lua metamethod fallback");
         }
         ++pc;
         break;
@@ -1147,8 +1264,10 @@ CompilationResult compile_numeric_for_prototype(
         const bool writes_destination =
             opcode == OP_MOVE || opcode == OP_LOADI || opcode == OP_LOADK ||
             opcode == OP_ADDI || opcode == OP_ADDK || opcode == OP_SUBK ||
-            opcode == OP_MULK || opcode == OP_ADD || opcode == OP_SUB ||
-            opcode == OP_MUL || opcode == OP_UNM || opcode == OP_BNOT;
+            opcode == OP_MULK || opcode == OP_BANDK || opcode == OP_BORK ||
+            opcode == OP_BXORK || opcode == OP_ADD || opcode == OP_SUB ||
+            opcode == OP_MUL || opcode == OP_BAND || opcode == OP_BOR ||
+            opcode == OP_BXOR || opcode == OP_UNM || opcode == OP_BNOT;
         if (writes_destination && protected_state_base >= 0 &&
             destination >= protected_state_base &&
             destination <= protected_state_base + 2) {
@@ -1257,6 +1376,50 @@ CompilationResult compile_numeric_for_prototype(
           break;
         }
 
+        case OP_BANDK:
+        case OP_BORK:
+        case OP_BXORK: {
+          const int source = GETARG_B(instruction);
+          const int constant_index = GETARG_C(instruction);
+          if (!valid_destination(*values, destination) ||
+              !valid_register(*values, source) || constant_index < 0 ||
+              constant_index >= prototype.sizek ||
+              !ttisinteger(&prototype.k[constant_index])) {
+            return bytecode_error(pc,
+                                  "invalid operand in constant bitwise operation");
+          }
+          const Value lhs = (*values)[static_cast<std::size_t>(source)];
+          const Word constant =
+              static_cast<Word>(ivalue(&prototype.k[constant_index]));
+          const Value rhs = builder.constant(constant);
+          if (opcode == OP_BANDK) {
+            (*values)[static_cast<std::size_t>(destination)] =
+                builder.bitwise_and(lhs, rhs);
+          } else if (opcode == OP_BORK) {
+            (*values)[static_cast<std::size_t>(destination)] =
+                builder.bitwise_or(lhs, rhs);
+          } else {
+            (*values)[static_cast<std::size_t>(destination)] =
+                builder.bitwise_xor(lhs, rhs);
+          }
+          const std::optional<Word> source_constant =
+              (*constants)[static_cast<std::size_t>(source)];
+          if (source_constant.has_value()) {
+            (*constants)[static_cast<std::size_t>(destination)] =
+                bitwise_binary_word(opcode, source_constant.value(), constant);
+          } else {
+            (*constants)[static_cast<std::size_t>(destination)].reset();
+          }
+          if (pc + 1 >= end ||
+              GET_OPCODE(prototype.code[pc + 1]) != OP_MMBINK) {
+            return bytecode_error(
+                pc,
+                "constant bitwise operation is missing its Lua metamethod fallback");
+          }
+          ++pc;
+          break;
+        }
+
         case OP_ADD:
         case OP_SUB:
         case OP_MUL: {
@@ -1283,6 +1446,50 @@ CompilationResult compile_numeric_for_prototype(
           if (pc + 1 >= end || GET_OPCODE(prototype.code[pc + 1]) != OP_MMBIN) {
             return bytecode_error(
                 pc, "binary arithmetic is missing its Lua metamethod fallback");
+          }
+          ++pc;
+          break;
+        }
+
+        case OP_BAND:
+        case OP_BOR:
+        case OP_BXOR: {
+          const int lhs_index = GETARG_B(instruction);
+          const int rhs_index = GETARG_C(instruction);
+          if (!valid_destination(*values, destination) ||
+              !valid_register(*values, lhs_index) ||
+              !valid_register(*values, rhs_index)) {
+            return bytecode_error(pc,
+                                  "invalid register in binary bitwise operation");
+          }
+          const Value lhs = (*values)[static_cast<std::size_t>(lhs_index)];
+          const Value rhs = (*values)[static_cast<std::size_t>(rhs_index)];
+          if (opcode == OP_BAND) {
+            (*values)[static_cast<std::size_t>(destination)] =
+                builder.bitwise_and(lhs, rhs);
+          } else if (opcode == OP_BOR) {
+            (*values)[static_cast<std::size_t>(destination)] =
+                builder.bitwise_or(lhs, rhs);
+          } else {
+            (*values)[static_cast<std::size_t>(destination)] =
+                builder.bitwise_xor(lhs, rhs);
+          }
+          const std::optional<Word> lhs_constant =
+              (*constants)[static_cast<std::size_t>(lhs_index)];
+          const std::optional<Word> rhs_constant =
+              (*constants)[static_cast<std::size_t>(rhs_index)];
+          if (lhs_constant.has_value() && rhs_constant.has_value()) {
+            (*constants)[static_cast<std::size_t>(destination)] =
+                bitwise_binary_word(opcode, lhs_constant.value(),
+                                    rhs_constant.value());
+          } else {
+            (*constants)[static_cast<std::size_t>(destination)].reset();
+          }
+          if (pc + 1 >= end ||
+              GET_OPCODE(prototype.code[pc + 1]) != OP_MMBIN) {
+            return bytecode_error(
+                pc,
+                "binary bitwise operation is missing its Lua metamethod fallback");
           }
           ++pc;
           break;
@@ -1387,10 +1594,13 @@ CompilationResult compile_numeric_for_prototype(
           }
         };
         if (opcode == OP_MOVE || opcode == OP_ADDI || opcode == OP_ADDK ||
-            opcode == OP_SUBK || opcode == OP_MULK || opcode == OP_UNM ||
+            opcode == OP_SUBK || opcode == OP_MULK || opcode == OP_BANDK ||
+            opcode == OP_BORK || opcode == OP_BXORK || opcode == OP_UNM ||
             opcode == OP_BNOT) {
           note(GETARG_B(instruction));
-        } else if (opcode == OP_ADD || opcode == OP_SUB || opcode == OP_MUL) {
+        } else if (opcode == OP_ADD || opcode == OP_SUB || opcode == OP_MUL ||
+                   opcode == OP_BAND || opcode == OP_BOR ||
+                   opcode == OP_BXOR) {
           note(GETARG_B(instruction));
           note(GETARG_C(instruction));
         } else if (opcode == OP_EQ || opcode == OP_LT || opcode == OP_LE) {
