@@ -1119,6 +1119,135 @@ void test_word_shift_operations() {
          "verifier must reject Word shifts over Float64 operands");
 }
 
+void test_word_floor_arithmetic() {
+  FunctionBuilder divide_builder(2);
+  const Value divided = divide_builder.floor_divide(
+      divide_builder.parameter(0), divide_builder.parameter(1));
+  expect(divide_builder
+             .set_return(divide_builder.bitwise_xor(
+                 divided,
+                 divide_builder.bitwise_xor(divide_builder.parameter(0),
+                                            divide_builder.parameter(1))))
+             .ok(),
+         "Word floor-division fixture must record its result");
+  const Function divide_function = std::move(divide_builder).build();
+
+  FunctionBuilder modulo_builder(2);
+  const Value remainder = modulo_builder.floor_modulo(
+      modulo_builder.parameter(0), modulo_builder.parameter(1));
+  expect(modulo_builder
+             .set_return(modulo_builder.bitwise_xor(
+                 remainder,
+                 modulo_builder.bitwise_xor(modulo_builder.parameter(0),
+                                            modulo_builder.parameter(1))))
+             .ok(),
+         "Word floor-modulo fixture must record its result");
+  const Function modulo_function = std::move(modulo_builder).build();
+  expect(unijit::ir::verify(divide_function).ok() &&
+             unijit::ir::verify(modulo_function).ok(),
+         "typed Word floor arithmetic must pass verification");
+  const auto divide_compilation = Compiler::compile(divide_function);
+  const auto modulo_compilation = Compiler::compile(modulo_function);
+  expect(divide_compilation.ok() && modulo_compilation.ok(),
+         "Word floor arithmetic must compile to native code");
+
+  constexpr std::array<Word, 11> kValues = {
+      std::numeric_limits<Word>::min(), -17, -7, -3, -1, 0,
+      1,                                  2,   3,  7,
+      std::numeric_limits<Word>::max(),
+  };
+  for (const Word lhs : kValues) {
+    for (const Word rhs : kValues) {
+      const std::array<Word, 2> arguments = {lhs, rhs};
+      const Word preserved = lhs ^ rhs;
+      const Word expected_divide =
+          unijit::ir::floor_divide_word(lhs, rhs) ^ preserved;
+      const Word expected_modulo =
+          unijit::ir::floor_modulo_word(lhs, rhs) ^ preserved;
+      const auto interpreted_divide = Interpreter::evaluate(
+          divide_function, arguments.data(), arguments.size());
+      const auto interpreted_modulo = Interpreter::evaluate(
+          modulo_function, arguments.data(), arguments.size());
+      expect(interpreted_divide.ok() && interpreted_modulo.ok() &&
+                 interpreted_divide.value == expected_divide &&
+                 interpreted_modulo.value == expected_modulo,
+             "Word floor arithmetic interpreter must match the exact signed contract");
+      if (divide_compilation.ok() && modulo_compilation.ok()) {
+        const auto native_divide = divide_compilation.function->invoke(
+            arguments.data(), arguments.size());
+        const auto native_modulo = modulo_compilation.function->invoke(
+            arguments.data(), arguments.size());
+        expect(native_divide.ok() && native_modulo.ok() &&
+                   native_divide.value == expected_divide &&
+                   native_modulo.value == expected_modulo,
+               "native Word floor arithmetic must preserve live operands and match the interpreter");
+      }
+    }
+  }
+
+  FunctionBuilder guarded_builder(2);
+  expect(guarded_builder.guard_word_nonzero(guarded_builder.parameter(1), 91)
+             .valid(),
+         "Word nonzero guard must produce an SSA value");
+  expect(guarded_builder
+             .set_return(guarded_builder.floor_divide(
+                 guarded_builder.parameter(0), guarded_builder.parameter(1)))
+             .ok(),
+         "guarded division fixture must record its result");
+  const Function guarded_function = std::move(guarded_builder).build();
+  const auto guarded_compilation = Compiler::compile(guarded_function);
+  expect(guarded_compilation.ok() && guarded_compilation.function->requires_context(),
+         "Word guards must compile with execution-context support");
+  unijit::runtime::ExecutionContext context;
+  const std::array<Word, 2> zero_arguments = {7, 0};
+  if (guarded_compilation.ok()) {
+    const auto exited = guarded_compilation.function->invoke(
+        zero_arguments.data(), zero_arguments.size(), &context);
+    expect(!exited.ok() &&
+               exited.status.code() == unijit::StatusCode::kRuntimeExit &&
+               exited.status.location() == 91 && context.exit_site() == 91 &&
+               context.exit_value() == 0,
+           "native Word guard must report a precise runtime exit on zero");
+  }
+
+  unijit::ir::ControlFlowBuilder cfg_builder(2);
+  expect(cfg_builder.guard_word_nonzero(cfg_builder.parameter(1), 92).valid(),
+         "CFG Word nonzero guard must produce an SSA value");
+  const Value cfg_divide = cfg_builder.floor_divide(
+      cfg_builder.parameter(0), cfg_builder.parameter(1));
+  const Value cfg_modulo = cfg_builder.floor_modulo(
+      cfg_builder.parameter(0), cfg_builder.parameter(1));
+  expect(cfg_builder.set_return(cfg_builder.add(cfg_divide, cfg_modulo)).ok(),
+         "CFG floor-arithmetic fixture must record its result");
+  const auto cfg_function = std::move(cfg_builder).build();
+  expect(unijit::ir::verify(cfg_function).ok(),
+         "CFG Word guards and floor arithmetic must pass verification");
+  const auto cfg_optimized = unijit::ir::Optimizer::run(cfg_function);
+  expect(cfg_optimized.ok(),
+         "CFG optimizer must preserve Word guards and floor arithmetic");
+  const auto cfg_compilation = Compiler::compile(cfg_function);
+  expect(cfg_compilation.ok(),
+         "CFG Word guards and floor arithmetic must compile");
+  const std::array<Word, 2> cfg_arguments = {-17, 5};
+  if (cfg_compilation.ok()) {
+    const auto native = cfg_compilation.function->invoke(
+        cfg_arguments.data(), cfg_arguments.size(), &context);
+    expect(native.ok() &&
+               native.value == unijit::ir::floor_divide_word(-17, 5) +
+                                   unijit::ir::floor_modulo_word(-17, 5),
+           "native CFG floor arithmetic must implement signed floor semantics");
+  }
+
+  FunctionBuilder malformed(
+      std::vector<unijit::ir::ValueType>(2,
+                                         unijit::ir::ValueType::kFloat64));
+  const Value invalid = malformed.floor_divide(malformed.parameter(0),
+                                                malformed.parameter(1));
+  expect(malformed.set_return(invalid).ok() &&
+             !unijit::ir::verify(std::move(malformed).build()).ok(),
+         "verifier must reject Word floor arithmetic over Float64 operands");
+}
+
 void test_float64_negation() {
   using unijit::ir::ValueType;
   FunctionBuilder builder(std::vector<ValueType>{ValueType::kFloat64});
@@ -4498,6 +4627,7 @@ int main() {
   test_word_unary_operations();
   test_word_bitwise_operations();
   test_word_shift_operations();
+  test_word_floor_arithmetic();
   test_float64_negation();
   test_float64_comparisons();
   test_float64_nonzero_guard();
