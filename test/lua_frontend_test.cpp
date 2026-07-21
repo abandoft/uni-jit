@@ -181,6 +181,19 @@ compare(function(value)
 end, integer_unary_cases)
 checkpoint("integer unary arithmetic")
 
+local bitwise_cases = {
+  {0, 0}, {-1, 0}, {1, -1}, {42, 21}, {-97, 85},
+  {math.mininteger, math.maxinteger},
+  {0x5555555555555555, -0x5555555555555556},
+}
+compare(function(lhs, rhs)
+  return ((lhs & rhs) | (lhs ~ rhs)) ~ (lhs | rhs)
+end, bitwise_cases)
+compare(function(value)
+  return ((value & 0x55555555) | 0x100000000) ~ 0x12345678
+end, integer_unary_cases)
+checkpoint("integer binary bitwise arithmetic")
+
 compare(function()
   return 17
 end, {{}})
@@ -402,6 +415,33 @@ for _, values in ipairs({{0, math.mininteger}, {1, math.mininteger},
                           {9999, math.maxinteger}, {10000, -1}}) do
   assert(native_unary_loop(table.unpack(values)) ==
          unary_loop(table.unpack(values)))
+end
+
+local bitwise_loop = function(count, seed, mask)
+  local value = seed
+  for index = 1, count do
+    value = (value ~ index) & mask
+    value = value | (seed & index)
+  end
+  return value
+end
+local native_bitwise_loop = unijit.compile(bitwise_loop)
+local bitwise_loop_cases = {
+  {0, 0, -1}, {1, 0, -1}, {17, -97, 0x55555555},
+  {31, math.mininteger, math.maxinteger},
+  {32, math.maxinteger, -1},
+}
+for _, values in ipairs(bitwise_loop_cases) do
+  assert(native_bitwise_loop(table.unpack(values)) ==
+         bitwise_loop(table.unpack(values)))
+end
+assert(native_bitwise_loop(10000, math.mininteger, math.maxinteger) ==
+       bitwise_loop(10000, math.mininteger, math.maxinteger))
+assert(unijit.wait(native_bitwise_loop, 5000))
+assert(unijit.stats(native_bitwise_loop).active_tier == "optimized")
+for _, values in ipairs(bitwise_loop_cases) do
+  assert(native_bitwise_loop(table.unpack(values)) ==
+         bitwise_loop(table.unpack(values)))
 end
 
 checkpoint("numeric loops")
