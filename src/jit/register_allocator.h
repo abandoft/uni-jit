@@ -63,17 +63,24 @@ struct StackMapLiveness final {
   std::vector<std::vector<ir::Value>> live_values_by_node;
 };
 
-RegisterAllocation allocate_linear_scan(const ir::Function& function,
-                                        std::size_t register_count,
-                                        std::size_t maximum_spill_slots,
-                                        const StackMapRequirements&
-                                            requirements);
+enum class VectorRegisterMode : std::uint8_t {
+  kSharedWithFloat64,
+  kStackOnly,
+};
+
+RegisterAllocation allocate_linear_scan(
+    const ir::Function& function, std::size_t word_register_count,
+    std::size_t simd_register_count, std::size_t maximum_spill_slots,
+    const StackMapRequirements& requirements,
+    VectorRegisterMode vector_mode = VectorRegisterMode::kSharedWithFloat64);
 
 ControlFlowRegisterAllocation allocate_control_flow_registers(
     const ir::ControlFlowFunction& function, std::size_t word_register_count,
-    std::size_t float_register_count,
+    std::size_t simd_register_count,
     const StackMapRequirements& requirements,
-    bool reuse_final_float_lhs = false);
+    bool reuse_final_float_lhs = false,
+    VectorRegisterMode vector_mode =
+        VectorRegisterMode::kSharedWithFloat64);
 
 ControlFlowEdgeMoves plan_control_flow_edge_moves(
     const ir::ControlFlowFunction& function, const ir::ControlEdge& edge,

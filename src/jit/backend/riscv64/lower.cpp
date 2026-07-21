@@ -794,9 +794,10 @@ LoweringResult lower_impl(const ir::Function& function,
             0};
   }
 
-  RegisterAllocation allocation =
-      allocate_linear_scan(function, kAllocationRegisters.size(),
-                           kMaximumStackSize / sizeof(ir::Word), requirements);
+  RegisterAllocation allocation = allocate_linear_scan(
+      function, kAllocationRegisters.size(), kFloatAllocationRegisters.size(),
+      kMaximumStackSize / sizeof(ir::Word), requirements,
+      VectorRegisterMode::kStackOnly);
   if (!allocation.status.ok()) {
     return {allocation.status, {}, 0, {}};
   }
@@ -1920,7 +1921,7 @@ LoweringResult lower_control_flow_impl(
   }
   ControlFlowRegisterAllocation allocation = allocate_control_flow_registers(
       function, kAllocationRegisters.size(), kFloatAllocationRegisters.size(),
-      requirements);
+      requirements, false, VectorRegisterMode::kStackOnly);
   if (!allocation.status.ok()) {
     return {allocation.status, {}, 0, {}};
   }

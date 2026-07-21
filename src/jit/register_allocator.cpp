@@ -13,32 +13,46 @@ namespace {
 
 constexpr std::size_t kMaximumStackMapValues = 256U * 1024U;
 
-bool is_vector_opcode(ir::Opcode opcode) noexcept {
-  return opcode == ir::Opcode::kVectorConstant ||
-         opcode == ir::Opcode::kVectorSplat ||
-         opcode == ir::Opcode::kVectorExtractLane ||
-         opcode == ir::Opcode::kVectorInsertLane ||
-         opcode == ir::Opcode::kVectorUnary ||
-         opcode == ir::Opcode::kVectorBinary ||
-         opcode == ir::Opcode::kVectorCompare ||
-         opcode == ir::Opcode::kVectorSelect ||
-         opcode == ir::Opcode::kVectorLaneSignMask ||
-         opcode == ir::Opcode::kVectorShuffle ||
-         opcode == ir::Opcode::kVectorWiden;
+enum class RegisterBank : std::uint8_t {
+  kWord,
+  kSimd,
+  kStack,
+};
+
+RegisterBank register_bank(ir::ValueType type,
+                           VectorRegisterMode vector_mode) noexcept {
+  if (type == ir::ValueType::kWord) {
+    return RegisterBank::kWord;
+  }
+  if (type == ir::ValueType::kFloat64) {
+    return RegisterBank::kSimd;
+  }
+  return vector_mode == VectorRegisterMode::kSharedWithFloat64
+             ? RegisterBank::kSimd
+             : RegisterBank::kStack;
 }
 
-bool is_vector_opcode(ir::ControlOpcode opcode) noexcept {
-  return opcode == ir::ControlOpcode::kVectorConstant ||
-         opcode == ir::ControlOpcode::kVectorSplat ||
-         opcode == ir::ControlOpcode::kVectorExtractLane ||
-         opcode == ir::ControlOpcode::kVectorInsertLane ||
-         opcode == ir::ControlOpcode::kVectorUnary ||
-         opcode == ir::ControlOpcode::kVectorBinary ||
-         opcode == ir::ControlOpcode::kVectorCompare ||
-         opcode == ir::ControlOpcode::kVectorSelect ||
-         opcode == ir::ControlOpcode::kVectorLaneSignMask ||
-         opcode == ir::ControlOpcode::kVectorShuffle ||
-         opcode == ir::ControlOpcode::kVectorWiden;
+bool shares_physical_register_bank(ir::ValueType lhs,
+                                   ir::ValueType rhs) noexcept {
+  const bool lhs_simd =
+      lhs == ir::ValueType::kFloat64 || ir::is_vector_value_type(lhs);
+  const bool rhs_simd =
+      rhs == ir::ValueType::kFloat64 || ir::is_vector_value_type(rhs);
+  return lhs_simd == rhs_simd;
+}
+
+std::size_t stack_slot_width(ir::ValueType type) noexcept {
+  return ir::is_vector_value_type(type) ? 2U : 1U;
+}
+
+std::size_t reserve_stack_slot(ir::ValueType type,
+                               std::size_t* next_slot) noexcept {
+  if (ir::is_vector_value_type(type) && (*next_slot & 1U) != 0U) {
+    ++*next_slot;
+  }
+  const std::size_t result = *next_slot;
+  *next_slot += stack_slot_width(type);
+  return result;
 }
 
 template <typename Visitor>
@@ -127,20 +141,14 @@ void note_use(std::vector<std::size_t>* last_use, ir::Value value,
 }
 
 RegisterAllocation allocate_impl(const ir::Function& function,
-                                 std::size_t register_count,
+                                 std::size_t word_register_count,
+                                 std::size_t simd_register_count,
                                  std::size_t maximum_spill_slots,
-                                 const StackMapRequirements& requirements) {
-  if (register_count == 0) {
+                                 const StackMapRequirements& requirements,
+                                 VectorRegisterMode vector_mode) {
+  if (word_register_count == 0 || simd_register_count == 0) {
     return {{StatusCode::kInvalidArgument,
-             "linear scan requires at least one allocatable register"},
-            {}, 0, {}};
-  }
-  if (std::any_of(function.nodes().begin(), function.nodes().end(),
-                  [](const ir::Node& node) {
-                    return is_vector_opcode(node.opcode);
-                  })) {
-    return {{StatusCode::kCodeGenerationFailed,
-             "linear scan has no vector register class"},
+             "linear scan requires Word and SIMD registers"},
             {}, 0, {}};
   }
 
@@ -229,15 +237,32 @@ RegisterAllocation allocate_impl(const ir::Function& function,
   note_use(&last_use, function.return_value(), value_count);
 
   std::vector<ValueLocation> locations(value_count);
-  std::vector<std::size_t> active;
-  std::vector<std::size_t> free_registers;
-  free_registers.reserve(register_count);
-  for (std::size_t index = register_count; index > 0; --index) {
-    free_registers.push_back(index - 1);
+  std::vector<std::size_t> active_word;
+  std::vector<std::size_t> active_simd;
+  std::vector<std::size_t> free_word_registers;
+  free_word_registers.reserve(word_register_count);
+  for (std::size_t index = word_register_count; index > 0; --index) {
+    free_word_registers.push_back(index - 1);
+  }
+  std::vector<std::size_t> free_simd_registers;
+  free_simd_registers.reserve(simd_register_count);
+  for (std::size_t index = simd_register_count; index > 0; --index) {
+    free_simd_registers.push_back(index - 1);
   }
   std::size_t spill_slots = 0;
 
   for (std::size_t index = 0; index < value_count; ++index) {
+    const ir::ValueType type = function.nodes()[index].type;
+    const RegisterBank bank = register_bank(type, vector_mode);
+    if (bank == RegisterBank::kStack) {
+      locations[index].spill_slot = reserve_stack_slot(type, &spill_slots);
+      continue;
+    }
+    std::vector<std::size_t>& active =
+        bank == RegisterBank::kSimd ? active_simd : active_word;
+    std::vector<std::size_t>& free_registers =
+        bank == RegisterBank::kSimd ? free_simd_registers
+                                    : free_word_registers;
     auto active_it = active.begin();
     while (active_it != active.end()) {
       const std::size_t active_value = *active_it;
@@ -264,10 +289,11 @@ RegisterAllocation allocate_impl(const ir::Function& function,
       const std::size_t victim = *victim_it;
       locations[index].register_index = locations[victim].register_index;
       locations[victim].register_index = ValueLocation::kNone;
-      locations[victim].spill_slot = spill_slots++;
+      locations[victim].spill_slot =
+          reserve_stack_slot(function.nodes()[victim].type, &spill_slots);
       *victim_it = index;
     } else {
-      locations[index].spill_slot = spill_slots++;
+      locations[index].spill_slot = reserve_stack_slot(type, &spill_slots);
     }
   }
 
@@ -280,7 +306,8 @@ RegisterAllocation allocate_impl(const ir::Function& function,
       ValueLocation& location = locations[value_index];
       if (location.in_register() && last_use[value_index] > call_index &&
           location.spill_slot == ValueLocation::kNone) {
-        location.spill_slot = spill_slots++;
+        location.spill_slot = reserve_stack_slot(
+            function.nodes()[value_index].type, &spill_slots);
       }
     }
   }
@@ -296,20 +323,12 @@ RegisterAllocation allocate_impl(const ir::Function& function,
 
 ControlFlowRegisterAllocation allocate_control_flow_impl(
     const ir::ControlFlowFunction& function, std::size_t word_register_count,
-    std::size_t float_register_count,
+    std::size_t simd_register_count,
     const StackMapRequirements& requirements,
-    bool reuse_final_float_lhs) {
-  if (word_register_count == 0 || float_register_count == 0) {
+    bool reuse_final_float_lhs, VectorRegisterMode vector_mode) {
+  if (word_register_count == 0 || simd_register_count == 0) {
     return {{StatusCode::kInvalidArgument,
-             "control-flow allocation requires Word and Float64 registers"},
-            {}, {}, {}, {}, 0, {}};
-  }
-  if (std::any_of(function.nodes().begin(), function.nodes().end(),
-                  [](const ir::ControlNode& node) {
-                    return is_vector_opcode(node.opcode);
-                  })) {
-    return {{StatusCode::kCodeGenerationFailed,
-             "control-flow allocation has no vector register class"},
+             "control-flow allocation requires Word and SIMD registers"},
             {}, {}, {}, {}, 0, {}};
   }
 
@@ -463,19 +482,19 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
     for (std::size_t index = word_register_count; index > 0; --index) {
       free_word_registers.push_back(index - 1);
     }
-    std::vector<std::size_t> free_float_registers;
-    free_float_registers.reserve(float_register_count);
-    for (std::size_t index = float_register_count; index > 0; --index) {
-      free_float_registers.push_back(index - 1);
+    std::vector<std::size_t> free_simd_registers;
+    free_simd_registers.reserve(simd_register_count);
+    for (std::size_t index = simd_register_count; index > 0; --index) {
+      free_simd_registers.push_back(index - 1);
     }
     std::vector<std::size_t> active_word;
-    std::vector<std::size_t> active_float;
+    std::vector<std::size_t> active_simd;
     for (std::size_t index = 0; index < block.instructions.size(); ++index) {
       const ir::Value value = block.instructions[index];
       const ir::ControlOpcode opcode = function.nodes()[value.id()].opcode;
       if (opcode == ir::ControlOpcode::kCall) {
         std::vector<ir::Value>& live = live_across_calls[value.id()];
-        live.reserve(active_word.size() + active_float.size());
+        live.reserve(active_word.size() + active_simd.size());
         const auto note_live = [&](const std::vector<std::size_t>& active) {
           for (const std::size_t position : active) {
             if (last_use[position] > index) {
@@ -484,7 +503,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
           }
         };
         note_live(active_word);
-        note_live(active_float);
+        note_live(active_simd);
       }
       if (opcode == ir::ControlOpcode::kSafepoint ||
           opcode == ir::ControlOpcode::kGuardWordNonzero ||
@@ -502,14 +521,18 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
           }
         };
         require_live_stack(active_word);
-        require_live_stack(active_float);
+        require_live_stack(active_simd);
       }
-      const bool is_float =
-          function.value_type(value) == ir::ValueType::kFloat64;
+      const RegisterBank bank =
+          register_bank(function.value_type(value), vector_mode);
+      if (bank == RegisterBank::kStack) {
+        continue;
+      }
       std::vector<std::size_t>& free_registers =
-          is_float ? free_float_registers : free_word_registers;
+          bank == RegisterBank::kSimd ? free_simd_registers
+                                      : free_word_registers;
       std::vector<std::size_t>& active =
-          is_float ? active_float : active_word;
+          bank == RegisterBank::kSimd ? active_simd : active_word;
       auto active_iterator = active.begin();
       while (active_iterator != active.end()) {
         const std::size_t active_position = *active_iterator;
@@ -684,7 +707,8 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
   for (std::size_t value_index = 0; value_index < value_count;
        ++value_index) {
     if (requires_stack[value_index]) {
-      stack_indices[value_index] = stack_slots++;
+      stack_indices[value_index] =
+          reserve_stack_slot(function.nodes()[value_index].type, &stack_slots);
     }
   }
   const std::size_t persistent_slots = stack_slots;
@@ -696,7 +720,8 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
       }
       if (register_indices[value.id()] == ValueLocation::kNone ||
           needs_stack_slot[value.id()]) {
-        stack_indices[value.id()] = next_slot++;
+        stack_indices[value.id()] =
+            reserve_stack_slot(function.value_type(value), &next_slot);
       }
     }
     stack_slots = std::max(stack_slots, next_slot);
@@ -724,7 +749,7 @@ ControlFlowEdgeMoves plan_control_flow_edge_impl(
     const bool duplicate_destination = std::any_of(
         destinations.begin(), destinations.end(),
         [&](const ControlFlowRegisterMove& existing) {
-          return existing.type == type &&
+          return shares_physical_register_bank(existing.type, type) &&
                  existing.destination_index == destination;
         });
     if (destination == ValueLocation::kNone || duplicate_destination) {
@@ -744,7 +769,8 @@ ControlFlowEdgeMoves plan_control_flow_edge_impl(
         source_in_register ? allocation.register_indices[argument.id()]
                            : allocation.stack_indices[argument.id()];
     if (source_kind == ControlFlowMoveSource::kRegister &&
-        source == destination) {
+        source == destination &&
+        shares_physical_register_bank(function.value_type(argument), type)) {
       continue;
     }
     pending.push_back({source_kind, source, destination, type});
@@ -758,7 +784,7 @@ ControlFlowEdgeMoves plan_control_flow_edge_impl(
          ++candidate) {
       bool destination_is_source = false;
       for (const ControlFlowRegisterMove& move : pending) {
-        if (move.type == candidate->type &&
+        if (shares_physical_register_bank(move.type, candidate->type) &&
             move.source_kind == ControlFlowMoveSource::kRegister &&
             move.source_index == candidate->destination_index) {
           destination_is_source = true;
@@ -778,11 +804,20 @@ ControlFlowEdgeMoves plan_control_flow_edge_impl(
     }
 
     const std::size_t saved_register = pending.front().destination_index;
-    const ir::ValueType saved_type = pending.front().type;
+    ir::ValueType saved_type = pending.front().type;
+    for (const ControlFlowRegisterMove& move : pending) {
+      if (move.source_kind == ControlFlowMoveSource::kRegister &&
+          move.source_index == saved_register &&
+          shares_physical_register_bank(move.type, saved_type) &&
+          ir::is_vector_value_type(move.type)) {
+        saved_type = move.type;
+        break;
+      }
+    }
     result.moves.push_back({ControlFlowMoveSource::kRegister, saved_register,
                             ValueLocation::kNone, saved_type});
     for (ControlFlowRegisterMove& move : pending) {
-      if (move.type == saved_type &&
+      if (shares_physical_register_bank(move.type, saved_type) &&
           move.source_kind == ControlFlowMoveSource::kRegister &&
           move.source_index == saved_register) {
         move.source_kind = ControlFlowMoveSource::kTemporary;
@@ -810,7 +845,8 @@ StackMapLiveness plan_straight_stack_map_liveness_impl(
     std::vector<ir::Value>& site_values = live_values[node_index];
     for (std::size_t value_index = 0; value_index < node_index;
          ++value_index) {
-      if (allocation.last_uses[value_index] >= node_index) {
+      if (allocation.last_uses[value_index] >= node_index &&
+          !ir::is_vector_value_type(function.nodes()[value_index].type)) {
         if (site_values.size() ==
             runtime::ExecutionContext::kMaximumCapturedValues) {
           return {{StatusCode::kResourceExhausted,
@@ -984,7 +1020,8 @@ StackMapLiveness plan_control_stack_map_liveness_impl(
       std::vector<ir::Value>& site_values = live_values[value.id()];
       for (std::size_t value_index = 0; value_index < value_count;
            ++value_index) {
-        if (live[value_index]) {
+        if (live[value_index] &&
+            !ir::is_vector_value_type(function.nodes()[value_index].type)) {
           if (site_values.size() ==
               runtime::ExecutionContext::kMaximumCapturedValues) {
             return {{StatusCode::kResourceExhausted,
@@ -1007,14 +1044,13 @@ StackMapLiveness plan_control_stack_map_liveness_impl(
 
 }  // namespace
 
-RegisterAllocation allocate_linear_scan(const ir::Function& function,
-                                        std::size_t register_count,
-                                        std::size_t maximum_spill_slots,
-                                        const StackMapRequirements&
-                                            requirements) {
+RegisterAllocation allocate_linear_scan(
+    const ir::Function& function, std::size_t word_register_count,
+    std::size_t simd_register_count, std::size_t maximum_spill_slots,
+    const StackMapRequirements& requirements, VectorRegisterMode vector_mode) {
   try {
-    return allocate_impl(function, register_count, maximum_spill_slots,
-                         requirements);
+    return allocate_impl(function, word_register_count, simd_register_count,
+                         maximum_spill_slots, requirements, vector_mode);
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate linear-scan state"},
@@ -1024,13 +1060,13 @@ RegisterAllocation allocate_linear_scan(const ir::Function& function,
 
 ControlFlowRegisterAllocation allocate_control_flow_registers(
     const ir::ControlFlowFunction& function, std::size_t word_register_count,
-    std::size_t float_register_count,
+    std::size_t simd_register_count,
     const StackMapRequirements& requirements,
-    bool reuse_final_float_lhs) {
+    bool reuse_final_float_lhs, VectorRegisterMode vector_mode) {
   try {
     return allocate_control_flow_impl(function, word_register_count,
-                                      float_register_count, requirements,
-                                      reuse_final_float_lhs);
+                                      simd_register_count, requirements,
+                                      reuse_final_float_lhs, vector_mode);
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate control-flow register state"},

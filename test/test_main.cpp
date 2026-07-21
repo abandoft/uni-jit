@@ -3701,7 +3701,7 @@ void test_verifier_rejects_mixed_arithmetic() {
 }
 
 void test_float64_spill_path() {
-  constexpr std::size_t kParameters = 16;
+  constexpr std::size_t kParameters = 32;
   FunctionBuilder builder(std::vector<unijit::ir::ValueType>(
       kParameters, unijit::ir::ValueType::kFloat64));
   std::vector<Value> values;
@@ -6222,6 +6222,163 @@ void test_control_flow_split_register_classes() {
          "parallel copies must break one cycle in each register class");
 }
 
+void test_straight_line_vector_register_allocation() {
+  using unijit::ir::ValueType;
+  using unijit::ir::VectorBinaryOperation;
+  using unijit::jit::detail::StackMapRequirements;
+  using unijit::jit::detail::ValueLocation;
+  using unijit::jit::detail::VectorRegisterMode;
+
+  FunctionBuilder builder({ValueType::kWord, ValueType::kFloat64});
+  const Value word = builder.parameter(0);
+  const Value input_float = builder.parameter(1);
+  const Value vector = builder.vector_splat(ValueType::kI32x4, word);
+  const Value live_float =
+      builder.float64_add(input_float, builder.float64_constant(0.5));
+  const Value called = builder.call(sum_runtime_helper, {word});
+  const Value safepoint = builder.safepoint(920);
+  const Value sum =
+      builder.vector_binary(VectorBinaryOperation::kAdd, vector, vector);
+  const Value lane = builder.vector_extract_lane(sum, 0, true);
+  const Value positive =
+      builder.float64_less_than(builder.float64_constant(0.0), live_float);
+  expect(
+      builder.set_return(builder.add(builder.add(lane, positive), called)).ok(),
+      "straight vector allocation fixture must return a scalar projection");
+  const Function function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "straight vector allocation fixture must verify");
+
+  const StackMapRequirements requirements;
+  const auto allocation = unijit::jit::detail::allocate_linear_scan(
+      function, 2, 4, 64, requirements);
+  expect(allocation.status.ok() &&
+             allocation.locations[vector.id()].in_register() &&
+             allocation.locations[live_float.id()].in_register() &&
+             allocation.locations[vector.id()].register_index !=
+                 allocation.locations[live_float.id()].register_index,
+         "live Float64 and vector values must not alias in their shared SIMD "
+         "bank");
+  const auto& vector_location = allocation.locations[vector.id()];
+  expect(vector_location.spill_slot != ValueLocation::kNone &&
+             (vector_location.spill_slot & 1U) == 0U &&
+             allocation.spill_slots >= vector_location.spill_slot + 2,
+         "a vector live across a call must receive a complete aligned 16-byte "
+         "backup");
+
+  const auto liveness =
+      unijit::jit::detail::plan_stack_map_liveness(function, allocation);
+  const auto& captured = liveness.live_values_by_node[safepoint.id()];
+  const bool captures_vector =
+      liveness.status.ok() &&
+      std::any_of(captured.begin(), captured.end(), [&](Value value) {
+        return unijit::ir::is_vector_value_type(function.value_type(value));
+      });
+  expect(liveness.status.ok() && !captures_vector,
+         "non-reference vectors must stay out of scalar runtime-exit capture "
+         "payloads");
+
+  const auto stack_only = unijit::jit::detail::allocate_linear_scan(
+      function, 2, 4, 64, requirements, VectorRegisterMode::kStackOnly);
+  expect(stack_only.status.ok() &&
+             !stack_only.locations[vector.id()].in_register() &&
+             stack_only.locations[vector.id()].spill_slot !=
+                 ValueLocation::kNone &&
+             (stack_only.locations[vector.id()].spill_slot & 1U) == 0U &&
+             stack_only.locations[live_float.id()].in_register(),
+         "the no-vector-register profile must keep vectors aligned on stack "
+         "without disabling Float64 registers");
+}
+
+void test_control_flow_vector_register_allocation() {
+  using unijit::ir::Block;
+  using unijit::ir::ControlFlowBuilder;
+  using unijit::ir::ValueType;
+  using unijit::jit::detail::ControlFlowMoveSource;
+  using unijit::jit::detail::StackMapRequirements;
+  using unijit::jit::detail::ValueLocation;
+  using unijit::jit::detail::VectorRegisterMode;
+
+  ControlFlowBuilder builder({ValueType::kWord});
+  const Value vector =
+      builder.vector_splat(ValueType::kI32x4, builder.parameter(0));
+  const Value floating = builder.float64_constant(3.5);
+  const Block merge =
+      builder.create_block({ValueType::kFloat64, ValueType::kI32x4});
+  expect(builder.jump(merge, {floating, vector}).ok(),
+         "mixed SIMD-bank edge must accept typed arguments");
+  expect(builder.set_insertion_block(merge).ok(),
+         "mixed SIMD-bank merge block must exist");
+  const Value merged_float = builder.block_parameter(merge, 0);
+  const Value merged_vector = builder.block_parameter(merge, 1);
+  const Value safepoint = builder.safepoint(921);
+  const Value lane = builder.vector_extract_lane(merged_vector, 0, true);
+  const Value positive =
+      builder.float64_less_than(builder.float64_constant(0.0), merged_float);
+  expect(builder.set_return(builder.add(lane, positive)).ok(),
+         "mixed SIMD-bank merge must return a scalar projection");
+  const auto function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "mixed SIMD-bank allocation fixture must verify");
+
+  const StackMapRequirements requirements;
+  const auto allocation =
+      unijit::jit::detail::allocate_control_flow_registers(
+          function, 2, 2, requirements);
+  expect(allocation.status.ok() &&
+             allocation.register_indices[vector.id()] == 0 &&
+             allocation.register_indices[floating.id()] == 1 &&
+             allocation.register_indices[merged_float.id()] == 0 &&
+             allocation.register_indices[merged_vector.id()] == 1,
+         "Float64 and vector values must share one conflict-free physical SIMD "
+         "bank");
+  const auto moves = unijit::jit::detail::plan_control_flow_edge_moves(
+      function,
+      function.blocks()[function.entry_block().id()].terminator.true_edge,
+      allocation, function.entry_block().id());
+  const auto temporary = std::find_if(
+      moves.moves.begin(), moves.moves.end(), [](const auto& move) {
+        return move.source_kind == ControlFlowMoveSource::kRegister &&
+               move.destination_index == ValueLocation::kNone;
+      });
+  expect(moves.uses_registers && moves.moves.size() == 3 &&
+             temporary != moves.moves.end() &&
+             unijit::ir::is_vector_value_type(temporary->type),
+         "a mixed Float64/vector register cycle must preserve the full 128-bit "
+         "source in its scratch move");
+
+  const auto stack_only =
+      unijit::jit::detail::allocate_control_flow_registers(
+          function, 2, 2, requirements, false,
+          VectorRegisterMode::kStackOnly);
+  bool vector_slots_valid = stack_only.status.ok();
+  for (std::size_t index = 0; index < function.nodes().size(); ++index) {
+    if (!unijit::ir::is_vector_value_type(function.nodes()[index].type)) {
+      continue;
+    }
+    const std::size_t slot = stack_only.stack_indices[index];
+    vector_slots_valid =
+        vector_slots_valid &&
+        stack_only.register_indices[index] == ValueLocation::kNone &&
+        slot != ValueLocation::kNone && (slot & 1U) == 0U &&
+        stack_only.stack_slots >= slot + 2;
+  }
+  expect(vector_slots_valid,
+         "stack-only CFG vector values must occupy complete aligned 16-byte "
+         "slots");
+
+  const auto liveness =
+      unijit::jit::detail::plan_stack_map_liveness(function, requirements);
+  const auto& captured = liveness.live_values_by_node[safepoint.id()];
+  const bool captures_vector =
+      liveness.status.ok() &&
+      std::any_of(captured.begin(), captured.end(), [&](Value value) {
+        return unijit::ir::is_vector_value_type(function.value_type(value));
+      });
+  expect(liveness.status.ok() && !captures_vector,
+         "CFG runtime-exit capture must omit non-reference vector payloads");
+}
+
 void test_control_flow_float64_lhs_register_reuse() {
   using unijit::ir::ControlFlowBuilder;
   using unijit::ir::ValueType;
@@ -6787,6 +6944,8 @@ int main() {
   test_hotness_and_tiered_switching();
   test_compilation_scheduler();
   test_control_flow_split_register_classes();
+  test_straight_line_vector_register_allocation();
+  test_control_flow_vector_register_allocation();
   test_control_flow_float64_lhs_register_reuse();
   test_vector128_strict_semantics();
   test_vector128_straight_line_ir();

@@ -926,9 +926,9 @@ LoweringResult lower_impl(const ir::Function& function,
             0};
   }
 
-  RegisterAllocation allocation =
-      allocate_linear_scan(function, kAllocationRegisters.size(),
-                           kMaximumStackSize / sizeof(ir::Word), requirements);
+  RegisterAllocation allocation = allocate_linear_scan(
+      function, kAllocationRegisters.size(), kFloatAllocationRegisters.size(),
+      kMaximumStackSize / sizeof(ir::Word), requirements);
   if (!allocation.status.ok()) {
     return {allocation.status, {}, 0, {}};
   }
