@@ -10,10 +10,12 @@ reversal in both straight-line and CFG IR. It is implemented by the reference
 interpreters, optimizer, register allocator, AArch64, x86-64, and RISC-V 64
 native backends.
 
-The following related capabilities remain roadmap items and are not implied by
-the scalar-memory API: trusted runtime-object layouts, vector memory, atomics,
-and arbitrary address arithmetic. Fixed Word/Float64 frame-local slots are now
-delivered under the separate [`FRAME_LOCALS.md`](FRAME_LOCALS.md) contract.
+Trusted runtime-object layouts are now delivered as a separate fixed-offset
+provenance mode under [`TRUSTED_OBJECTS.md`](TRUSTED_OBJECTS.md); they are not
+an escape hatch from this dynamic bounded-region contract. Vector memory,
+atomics, and arbitrary address arithmetic remain roadmap items. Fixed
+Word/Float64 frame-local slots are delivered under the separate
+[`FRAME_LOCALS.md`](FRAME_LOCALS.md) contract.
 
 ## Region and descriptor model
 
@@ -145,9 +147,9 @@ x86-64, and real RISC-V 64 hardware. The versioned four-path microbenchmark and
 initial real-host records are documented in
 [`PORTABILITY.md`](PORTABILITY.md).
 
-The next memory milestone is trusted runtime layout access. The fixed
-Word/Float64 frame-slot floor is delivered; aligned vector/aggregate frame
-classes remain follow-on work. Strict 128-bit SIMD then builds on the same
-region, alias, endian, alignment, bounds, stack-map, and target-profile
-contracts. Atomics remain a later, naturally aligned contract with explicit
-memory ordering; they will not reuse the unaligned scalar fallback.
+The bounded-region, fixed frame-slot, and trusted primitive-layout floors are
+delivered. Aligned vector/aggregate frame classes remain follow-on work.
+Strict 128-bit SIMD now builds on the same region, alias, endian, alignment,
+bounds, stack-map, and target-profile contracts. Atomics remain a later,
+naturally aligned contract with explicit memory ordering; they will not reuse
+the unaligned scalar fallback.

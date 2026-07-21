@@ -14,6 +14,7 @@ regions.
 | Declared bounded memory regions | 64 |
 | Bounded memory accesses | 65,536 |
 | Controlled frame slots | 256 |
+| Trusted object bindings | 64 |
 | Stack maps and exit records | 4,096 |
 | Recovery and stack-map values | 262,144 |
 | Native code bytes per function | 16 MiB |
@@ -42,8 +43,10 @@ The compiler rejects excessive parameters, nodes, CFG blocks, flattened
 straight-line or CFG runtime-call arguments, CFG edge arguments, requested exit
 records, declared memory regions, memory accesses, and recovery operations
 before the IR verifier runs. Controlled frame slots are counted independently
-from allocator spills and rejected before layout or lowering. CFG call and
-edge arguments share the aggregate `maximum_ir_arguments` budget. This
+from allocator spills, and trusted-object bindings have their own table limit;
+both are rejected before layout or lowering. Each trusted layout is also
+verifier-limited to 2,048 bytes. CFG call and edge arguments share the
+aggregate `maximum_ir_arguments` budget. This
 ordering bounds verifier work, including CFG dominance state, rather than
 merely rejecting an oversized result afterward.
 

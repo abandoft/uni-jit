@@ -230,6 +230,21 @@ clearing code without requiring an execution context. The stronger claim that
 all historical register and spill copies of a secret are erased remains outside
 the delivered slot contract.
 
+## Trusted object-layout qualification
+
+The shared core suite covers fixed Word and Float64 object fields in both IR
+forms across the interpreters, optimizer, baseline compiler, optimized
+compiler, and native backends. It checks cross-block state, store results,
+read-only load-only bindings, untouched neighboring fields, compiled metadata,
+and effect preservation. Managed invocation must reject missing bindings,
+layout-identity mismatch, undersized or null storage, misaligned bases and
+fields, and insufficient write permission before any field changes. Descriptor
+shape, field range/type, and the 64-binding compilation limit have independent
+negative fixtures. Hosted validation must execute this matrix on real Ubuntu
+and Windows x86-64 as well as AArch64; real RISC-V 64 execution remains a
+release gate. The normative contract is in
+[`TRUSTED_OBJECTS.md`](TRUSTED_OBJECTS.md).
+
 ## CFG register-residency benchmark
 
 `unijit_cfg_float64_benchmark` executes one typed CFG with four loop-carried

@@ -8,12 +8,15 @@ std::int64_t generated(const std::int64_t* arguments,
                        unijit::runtime::ExecutionContext* context);
 ```
 
-Passing a null context disables runtime polling. This is the lowest-overhead
-path for trusted, bounded code. A non-null context enables diagnosed exits and
-cooperative interruption without embedding frontend-specific state in the IR
-or native backends. `CompiledFunction::requires_context()` identifies code with
-mandatory runtime guards; its managed `invoke` path supplies a private context
-when the caller does not provide one.
+Passing a null context disables runtime polling for functions that do not need
+other context state. This is the lowest-overhead path for trusted, bounded
+code. A non-null context enables diagnosed exits, cooperative interruption,
+bounded memory, and trusted-object bindings without embedding
+frontend-specific state in the IR or native backends.
+`CompiledFunction::requires_context()` identifies code with mandatory runtime
+guards or bindings; its managed `invoke` path supplies a private context when
+possible. Trusted-object functions still fail closed unless that context has
+the required bindings.
 
 ## Context ownership
 
@@ -30,6 +33,12 @@ increment, and store at code-generation time without disabling interruption.
 A context must not be shared by concurrent invocations. The fixed 64-value
 capture area avoids allocation on native exits; compilation rejects any one
 stack map that cannot fit it.
+
+Bounded-memory and trusted-object descriptor arrays are embedder-owned and
+must remain alive and structurally unchanged for the complete invocation.
+Trusted-object access receives an additional whole-function managed preflight;
+its table, layout, permission, and raw-entry rules are specified in
+[TRUSTED_OBJECTS.md](TRUSTED_OBJECTS.md).
 
 Interruption is sticky until `clear_interrupt()` is called. Invocation clears
 stale exit diagnostics but deliberately does not clear the interrupt request,

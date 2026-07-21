@@ -118,6 +118,17 @@ logical reconstruction slots and have an independent resource budget. The
 layout, optimizer, security, and future aggregate-frame boundaries are defined
 in `doc/FRAME_LOCALS.md`.
 
+Trusted runtime objects provide a second non-addressable provenance class for
+fixed Word and Float64 fields in embedder-owned records. Each function retains
+a semantic layout identity and native byte size; an execution context supplies
+the positional object bindings. Managed invocation validates the complete
+table, including layout identity, size, alignment, and write permission,
+before native entry, after which all three backends use direct fixed-offset
+loads and stores. Public raw entries are withheld for these functions so the
+preflight cannot be bypassed. IR never receives the object base or arbitrary
+address arithmetic. The exact ownership, optimizer, resource, and future GC
+boundaries are defined in `doc/TRUSTED_OBJECTS.md`.
+
 Effectful runtime helpers use one portable signature: a pointer to a flat
 value-bits argument area plus its element count, returning one value-bits word.
 Calls are explicit effectful SSA definitions in both straight-line and CFG IR
