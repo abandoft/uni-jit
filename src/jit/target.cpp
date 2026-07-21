@@ -3,6 +3,12 @@
 #include <cstddef>
 #include <cstdint>
 
+#if defined(UNIJIT_TARGET_AARCH64) && defined(__APPLE__)
+#include <sys/sysctl.h>
+#elif defined(UNIJIT_TARGET_AARCH64) && defined(__linux__)
+#include <sys/auxv.h>
+#endif
+
 #if defined(UNIJIT_TARGET_X86_64) && defined(_MSC_VER)
 #include <intrin.h>
 #elif defined(UNIJIT_TARGET_X86_64)
@@ -27,13 +33,33 @@ constexpr std::uint64_t kRiscVFeatures =
     target_feature_bit(TargetFeature::kRiscVIntegerMultiply) |
     target_feature_bit(TargetFeature::kRiscVFloat64);
 
-constexpr std::uint64_t kAArch64Allowed = kAArch64Features;
+constexpr std::uint64_t kAArch64Allowed =
+    kAArch64Features | target_feature_bit(TargetFeature::kAarch64Lse);
 constexpr std::uint64_t kX86Allowed =
     kX86Features | target_feature_bit(TargetFeature::kAvx) |
     target_feature_bit(TargetFeature::kAvx2) |
     target_feature_bit(TargetFeature::kFma);
 constexpr std::uint64_t kRiscVAllowed =
     kRiscVFeatures | target_feature_bit(TargetFeature::kRiscVVector);
+
+void discover_aarch64_features(TargetProfile* profile) noexcept {
+#if defined(UNIJIT_TARGET_AARCH64) && defined(__APPLE__)
+  int supported = 0;
+  std::size_t size = sizeof(supported);
+  if (sysctlbyname("hw.optional.arm.FEAT_LSE", &supported, &size, nullptr, 0) ==
+          0 &&
+      supported != 0) {
+    profile->features |= target_feature_bit(TargetFeature::kAarch64Lse);
+  }
+#elif defined(UNIJIT_TARGET_AARCH64) && defined(__linux__) && defined(AT_HWCAP)
+  constexpr unsigned long kAtomics = 1UL << 8U;
+  if ((getauxval(AT_HWCAP) & kAtomics) != 0) {
+    profile->features |= target_feature_bit(TargetFeature::kAarch64Lse);
+  }
+#else
+  (void)profile;
+#endif
+}
 
 #if defined(UNIJIT_TARGET_X86_64)
 std::uint64_t xgetbv0() noexcept {
@@ -197,7 +223,9 @@ TargetProfile baseline_target_profile() noexcept {
 
 TargetProfile host_target_profile() noexcept {
   TargetProfile profile = baseline_target_profile();
-  if (profile.architecture == TargetArchitecture::kX86_64) {
+  if (profile.architecture == TargetArchitecture::kAArch64) {
+    discover_aarch64_features(&profile);
+  } else if (profile.architecture == TargetArchitecture::kX86_64) {
     discover_x86_features(&profile);
   } else if (profile.architecture == TargetArchitecture::kRiscV64) {
     discover_riscv_features(&profile);

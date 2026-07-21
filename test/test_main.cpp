@@ -363,6 +363,16 @@ void test_target_profiles() {
              (host.vector_width_policy == VectorWidthPolicy::kNative &&
               host.maximum_vector_bits >= 256),
          "AVX host discovery must report an OS-authorized native width");
+  if (baseline.architecture == TargetArchitecture::kAArch64) {
+    TargetProfile lse = baseline;
+    lse.features |=
+        unijit::jit::target_feature_bit(TargetFeature::kAarch64Lse);
+    expect(unijit::jit::validate_target_profile(lse).ok() &&
+               (!unijit::jit::has_target_feature(
+                    host, TargetFeature::kAarch64Lse) ||
+                unijit::jit::target_profile_contains(host, lse)),
+           "AArch64 LSE discovery must be explicit and profile-compatible");
+  }
 
   TargetProfile malformed = baseline;
   malformed.endianness = TargetEndianness::kBig;
