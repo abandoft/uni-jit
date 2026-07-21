@@ -23,11 +23,10 @@ result bit-for-bit with the matching reference interpreter. Each corpus covers:
 - strict 128-bit SIMD across every integer and floating data shape, mask
   logic, selection, lane insertion/extraction, immutable shuffles, lane-sign
   masks, and integer widening, comparing straight-line and whole-vector-edge
-  CFG interpreters with both optimized forms and constant folding. On AArch64
-  and x86-64 the same generated programs additionally compare baseline and
-  optimized native execution with the reference interpreters; RISC-V 64 is
-  separately required to fail closed whenever a dynamic vector node survives
-  optimization.
+  CFG interpreters with both optimized forms and constant folding. On AArch64,
+  x86-64, and RISC-V 64 the same generated programs additionally compare
+  baseline and optimized native execution with the reference interpreters;
+  the RISC-V path verifies bounded RV64IMD scalarization without assuming RVV.
 
 Mismatch diagnostics contain the tier, seed, program index, input index,
 statuses, and exact result bits. A hosted failure can therefore be replayed

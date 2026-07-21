@@ -3,19 +3,19 @@
 ## Delivery status
 
 UniJIT now has the semantic core for explicit, fixed-width 128-bit SIMD in
-both straight-line SSA and CFG SSA, plus native AArch64 Advanced SIMD/NEON and
-x86-64 SSE2 lowering for the complete current explicit operation surface. The
-public types, verifier, two reference interpreters, optimizer folding,
-deterministic differential generator, table limits, allocation, legalizers,
-and encoders are implemented independently of SLJIT or another JIT backend.
+both straight-line SSA and CFG SSA, native AArch64 Advanced SIMD/NEON and
+x86-64 SSE2 lowering, and bounded RV64IMD scalar lowering for the complete
+current explicit operation surface. The public types, verifier, two reference
+interpreters, optimizer folding, deterministic differential generator, table
+limits, allocation, legalizers, and encoders are implemented independently of
+SLJIT or another JIT backend.
 
-This is an AArch64 and x86-64 native-SIMD delivery claim, not yet a
-three-backend or vector-memory claim. RISC-V RVV or verified scalar fallback,
-bounded vector memory, capability telemetry, and cross-host performance gates
-remain P0 work. On RISC-V 64, compilation returns
-`StatusCode::kCodeGenerationFailed` if a vector node survives optimization.
-An optimized program whose vector work folds completely to scalar SSA may use
-the existing scalar native backend on every target.
+This is a three-backend execution claim for the current explicit operation
+surface, not yet a vector-memory, RVV, telemetry, or complete-loop performance
+claim. RISC-V 64 does not require or claim RVV: it keeps each vector in an
+aligned two-word stack slot and emits a finite RV64IMD scalar sequence. Bounded
+vector memory, target-scoped capability reporting, cross-host performance
+gates, and an optional RVV fast path remain P0 work.
 
 ## Representation and lane order
 
@@ -110,15 +110,15 @@ The optimizer treats every vector operation as pure, retains all three select
 operands in liveness, remaps side tables, and folds complete constant vector
 expressions bit-for-bit. It can collapse a constant vector program to one
 scalar constant. Dynamic vector expressions remain explicit; they are never
-silently discarded or reinterpreted by allocation. AArch64 and x86-64 compile
-them natively, while targets without complete lowering reject them before an
-incomplete encoder can publish code.
+silently discarded or reinterpreted by allocation. All three product backends
+compile the current surface, while an incomplete future operation or target
+must still be rejected before its encoder can publish code.
 
 ## Qualification and remaining gates
 
 Core negative tests cover vector parameters/returns, malformed masks and
 shuffles, invalid comparison domains, dynamic mask construction, independent
-table limits, and native fail-closed behavior. The deterministic differential
+table limits, and native rejection boundaries. The deterministic differential
 corpus generates all six data shapes and compares straight-line SSA, CFG SSA
 with a whole-vector edge, both optimized forms, and constant folding across
 random arithmetic, mask logic, selection, lane movement, shuffling, sign-mask
@@ -133,8 +133,8 @@ AArch64 and x86-64 backends consume those plans for full-width loads, stores,
 mixed edge copies, and helper-call saves. x86-64 additionally aligns the
 generated frame itself before addressing even-numbered two-word vector slots
 and adjusts System V or Windows shadow-space calls from that aligned base. A
-stack-only vector mode is available to the RISC-V backend until RVV is
-selected. Non-reference vector lanes are deliberately excluded from the
+stack-only vector mode is consumed by the RISC-V backend without depending on
+RVV. Non-reference vector lanes are deliberately excluded from the
 scalar `ExecutionContext` capture payload; vector deoptimization remains
 unsupported.
 
@@ -155,6 +155,15 @@ temporaries and scalar GPR sequences because SSE2 has no complete direct
 instruction surface. These are native legalizations with no runtime helper,
 heap allocation, unbounded loop, or relaxed arithmetic.
 
+The RISC-V 64 encoder consumes the stack-only allocation plan and scalarizes
+each lane to bounded RV64IMD integer or floating-point sequences. Constants,
+spills, helper crossings, and CFG edges copy both 64-bit halves; shuffles and
+widening use a separate aligned temporary so source lanes cannot be destroyed.
+Integer and ordered floating comparisons materialize canonical all-zero or
+all-one masks. This path has no runtime helper, heap allocation, unbounded
+loop, RVV state requirement, or relaxed arithmetic. Discovered RVV capability
+is reserved for a later target-profile-specific fast path.
+
 Native qualification executes the current operation surface in both IR forms
 on a real Apple AArch64 host, including deliberate `v0` clobbering by a runtime
 helper, 24-way register pressure, aligned vector spills, vector CFG block
@@ -167,16 +176,19 @@ also passes in Rosetta x86-64, real Ubuntu GCC/Clang x86-64, and Windows MSVC
 x86-64 processes. Linux and Rosetta ASan/UBSan plus the Linux ThreadSanitizer
 suite pass with x86-64 vector compilation enabled; the real Ubuntu
 qualification executes the committed corpus and both extended 512-program
-seeds natively.
+seeds natively. A real Bianbu RISC-V 64 host executes the same current surface
+through the bounded scalar path, including baseline/optimized parity, stack
+pressure, helper crossings, typed CFG edges, the committed corpus, and both
+extended 512-program seeds.
 
 The P0 feature remains incomplete until all of the following are delivered:
 
 1. bounded aligned and unaligned vector loads/stores using the existing memory
    provenance and diagnosed-exit model;
-2. RVV lowering or an explicitly reported verified scalar fallback, including
-   spill, CFG-copy, helper-call, and ABI-specific vector-state paths;
-3. target-profile-scoped `native`/`legalized`/`scalarized`/`unsupported`
+2. target-profile-scoped `native`/`legalized`/`scalarized`/`unsupported`
    preflight and compilation telemetry;
-4. complete-loop SIMD performance evidence on real AArch64, Ubuntu and Windows
+3. complete-loop SIMD performance evidence on real AArch64, Ubuntu and Windows
    x86-64, and RISC-V 64 hosts, plus native differential, sanitizer, spill,
-   call, and edge-copy evidence on each newly enabled backend.
+   call, and edge-copy evidence for each newly enabled fast path;
+4. optional RVV lowering selected only by an explicit compatible target
+   profile and proven against the same scalar oracle and real-host matrix.

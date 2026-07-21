@@ -24,9 +24,11 @@ extension. Unknown optional features stay disabled.
 
 The current AArch64 backend targets the architectural 128-bit Advanced SIMD
 floor, and x86-64 targets mandatory SSE2 with bounded scalar legalization for
-operations absent from that baseline. RISC-V vector code is not emitted yet;
-the discovered RVV bit is retained for the forthcoming fixed-width vector
-lowering and does not by itself widen the portable profile.
+operations absent from that baseline. The RV64IMD baseline executes the same
+strict 128-bit IR through bounded stack-only scalar lowering, so it neither
+requires nor claims RVV. The discovered RVV bit is retained for a forthcoming
+profile-specific fixed-width fast path and does not by itself widen the
+portable profile.
 
 ## Compilation and execution rules
 

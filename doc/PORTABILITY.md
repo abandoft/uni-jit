@@ -121,18 +121,21 @@ commercial floor. The RISC-V unaligned big-endian path intentionally uses byte
 operations to avoid implementation-dependent misaligned traps, which is
 reflected in its latency and larger function.
 
-At commit `705db97`, the complete current explicit strict 128-bit SIMD surface
-passed baseline and optimized native/interpreter parity on Darwin arm64,
-Darwin x86-64 through Rosetta, hosted Ubuntu GCC/Clang x86-64, and hosted
-Windows MSVC x86-64. The matrix covers all six data shapes, direct and
+At commits `705db97` and `84a4f3f`, the complete current explicit strict
+128-bit SIMD surface passed baseline and optimized native/interpreter parity
+on Darwin arm64, Darwin x86-64 through Rosetta, hosted Ubuntu GCC/Clang x86-64,
+hosted Windows MSVC x86-64, and real Bianbu RISC-V 64. The matrix covers all
+six data shapes, direct and
 legalized arithmetic, ordered floating and signed/unsigned integer
 comparisons, canonical masks and selection, lane insert/extract and sign masks,
 constant shuffles, signed/unsigned widening, deliberate SIMD-register
 clobbering across runtime calls, 24-way spills, CFG vector block parameters,
 fallback typed edge temporaries, and mixed Float64/vector cycles. Linux and
 Rosetta ASan/UBSan plus Linux ThreadSanitizer passed with vector compilation
-enabled. Ubuntu also executed the committed 128-program differential corpus
-and two extended 512-program by 64-input seeds; RISC-V 64 remained fail-closed.
+enabled. Ubuntu and RISC-V 64 also executed the committed 128-program
+differential corpus and two extended 512-program by 64-input seeds. The
+RISC-V backend keeps vectors in aligned two-word stack slots and emits finite
+RV64IMD scalar sequences; this evidence does not claim RVV instruction use.
 
 The native test suite checks full-width constants, all bootstrap arithmetic
 operations, forced register spilling, invocation validation, and 5,000 seeded
