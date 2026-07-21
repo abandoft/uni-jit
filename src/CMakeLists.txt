@@ -5,6 +5,7 @@ add_library(unijit
   ir/memory_access.cpp
   ir/object_access.cpp
   ir/optimizer.cpp
+  ir/vector.cpp
   ir/verifier.cpp
   jit/compilation_scheduler.cpp
   jit/code_cache.cpp

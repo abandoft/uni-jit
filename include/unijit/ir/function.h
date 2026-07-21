@@ -9,10 +9,10 @@
 #include "unijit/status.h"
 #include "unijit/ir/memory.h"
 #include "unijit/ir/object.h"
+#include "unijit/ir/vector.h"
 
 namespace unijit::ir {
 
-using Word = std::int64_t;
 using RuntimeHelper = Word (*)(const Word* arguments, std::size_t count);
 
 Word pack_float64(double value) noexcept;
@@ -89,11 +89,6 @@ enum class Opcode : std::uint8_t {
   kStoreFrame,
   kLoadObject,
   kStoreObject,
-};
-
-enum class ValueType : std::uint8_t {
-  kWord,
-  kFloat64,
 };
 
 class FrameSlot final {
