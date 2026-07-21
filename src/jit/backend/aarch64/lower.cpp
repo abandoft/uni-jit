@@ -544,6 +544,36 @@ std::size_t spill_offset(const ValueLocation& location) noexcept {
   return location.spill_slot * sizeof(ir::Word);
 }
 
+void initialize_frame_slots(Assembler* assembler,
+                            const std::vector<ir::FrameSlotDescriptor>& slots,
+                            std::size_t frame_slot_base) {
+  if (slots.empty()) {
+    return;
+  }
+  assembler->move_immediate(kScratch0, 0);
+  for (std::size_t index = 0; index < slots.size(); ++index) {
+    assembler->store(kScratch0, kStackPointer,
+                     (frame_slot_base + index) * sizeof(ir::Word));
+  }
+}
+
+void clear_sensitive_frame_slots(
+    Assembler* assembler, const std::vector<ir::FrameSlotDescriptor>& slots,
+    std::size_t frame_slot_base) {
+  bool initialized = false;
+  for (std::size_t index = 0; index < slots.size(); ++index) {
+    if (!slots[index].sensitive) {
+      continue;
+    }
+    if (!initialized) {
+      assembler->move_immediate(kScratch0, 0);
+      initialized = true;
+    }
+    assembler->store(kScratch0, kStackPointer,
+                     (frame_slot_base + index) * sizeof(ir::Word));
+  }
+}
+
 int load_operand(Assembler* assembler, const ValueLocation& location,
                  int scratch) {
   if (location.in_register()) {
@@ -708,7 +738,9 @@ LoweringResult lower_impl(const ir::Function& function,
       has_context_operations = true;
     }
   }
-  const std::size_t call_argument_base = allocation.spill_slots;
+  const std::size_t frame_slot_base = allocation.spill_slots;
+  const std::size_t call_argument_base =
+      frame_slot_base + function.frame_slots().size();
   const std::size_t return_address_slot =
       call_argument_base + maximum_call_arguments;
   const std::size_t context_slot =
@@ -732,6 +764,7 @@ LoweringResult lower_impl(const ir::Function& function,
   if (stack_size != 0) {
     assembler.reserve_stack(stack_size);
   }
+  initialize_frame_slots(&assembler, function.frame_slots(), frame_slot_base);
   if (has_calls) {
     assembler.store(kReturnAddressRegister, kStackPointer,
                     return_address_slot * sizeof(ir::Word));
@@ -1048,6 +1081,8 @@ LoweringResult lower_impl(const ir::Function& function,
 
         const std::size_t exit = assembler.size();
         assembler.move_immediate(kReturnRegister, 0);
+        clear_sensitive_frame_slots(&assembler, function.frame_slots(),
+                                    frame_slot_base);
         if (has_calls) {
           assembler.load(kReturnAddressRegister, kStackPointer,
                          return_address_slot * sizeof(ir::Word));
@@ -1074,6 +1109,45 @@ LoweringResult lower_impl(const ir::Function& function,
         assembler.move_immediate(target, 0);
         if (!destination.in_register()) {
           assembler.store(target, kStackPointer, spill_offset(destination));
+        }
+        break;
+      }
+      case ir::Opcode::kLoadFrame:
+      case ir::Opcode::kStoreFrame: {
+        const std::size_t offset =
+            (frame_slot_base + node.frame_slot) * sizeof(ir::Word);
+        if (node.type == ir::ValueType::kFloat64) {
+          const int target = destination.in_register()
+                                 ? physical_float_register(destination)
+                                 : kFloatScratch0;
+          if (node.opcode == ir::Opcode::kLoadFrame) {
+            assembler.load_float(target, kStackPointer, offset);
+          } else {
+            const int stored = load_float_operand(
+                &assembler, allocation.locations[node.lhs.id()],
+                kFloatScratch0);
+            assembler.store_float(stored, kStackPointer, offset);
+            assembler.move_float_register(target, stored);
+          }
+          if (!destination.in_register()) {
+            assembler.store_float(target, kStackPointer,
+                                  spill_offset(destination));
+          }
+        } else {
+          const int target = destination.in_register()
+                                 ? physical_register(destination)
+                                 : kScratch0;
+          if (node.opcode == ir::Opcode::kLoadFrame) {
+            assembler.load(target, kStackPointer, offset);
+          } else {
+            const int stored = load_operand(
+                &assembler, allocation.locations[node.lhs.id()], kScratch0);
+            assembler.store(stored, kStackPointer, offset);
+            assembler.move_register(target, stored);
+          }
+          if (!destination.in_register()) {
+            assembler.store(target, kStackPointer, spill_offset(destination));
+          }
         }
         break;
       }
@@ -1240,6 +1314,8 @@ LoweringResult lower_impl(const ir::Function& function,
 
         const std::size_t exit = assembler.size();
         assembler.move_immediate(kReturnRegister, 0);
+        clear_sensitive_frame_slots(&assembler, function.frame_slots(),
+                                    frame_slot_base);
         if (has_calls) {
           assembler.load(kReturnAddressRegister, kStackPointer,
                          return_address_slot * sizeof(ir::Word));
@@ -1320,6 +1396,8 @@ LoweringResult lower_impl(const ir::Function& function,
         assembler.store(kScratch1, kScratch0,
                         runtime::ExecutionContext::exit_reason_offset());
         assembler.move_immediate(kReturnRegister, 0);
+        clear_sensitive_frame_slots(&assembler, function.frame_slots(),
+                                    frame_slot_base);
         if (has_calls) {
           assembler.load(kReturnAddressRegister, kStackPointer,
                          return_address_slot * sizeof(ir::Word));
@@ -1366,6 +1444,8 @@ LoweringResult lower_impl(const ir::Function& function,
   } else {
     assembler.load(kReturnRegister, kStackPointer, spill_offset(returned));
   }
+  clear_sensitive_frame_slots(&assembler, function.frame_slots(),
+                              frame_slot_base);
   if (has_calls) {
     assembler.load(kReturnAddressRegister, kStackPointer,
                    return_address_slot * sizeof(ir::Word));
@@ -1692,7 +1772,9 @@ LoweringResult lower_control_flow_impl(
   }
   const std::size_t spill_slots =
       allocation.stack_slots + maximum_block_parameters;
-  const std::size_t context_slot = spill_slots;
+  const std::size_t frame_slot_base = spill_slots;
+  const std::size_t context_slot =
+      frame_slot_base + function.frame_slots().size();
   const std::size_t call_argument_base =
       context_slot + static_cast<std::size_t>(has_context_operations);
   const std::size_t return_address_slot =
@@ -1719,6 +1801,7 @@ LoweringResult lower_control_flow_impl(
   if (stack_size != 0) {
     assembler.reserve_stack(stack_size);
   }
+  initialize_frame_slots(&assembler, function.frame_slots(), frame_slot_base);
   if (has_context_operations) {
     assembler.store(kContextArgumentRegister, kStackPointer,
                     context_slot * sizeof(ir::Word));
@@ -1905,6 +1988,8 @@ LoweringResult lower_control_flow_impl(
 
           const std::size_t exit = assembler.size();
           assembler.move_immediate(kReturnRegister, 0);
+          clear_sensitive_frame_slots(&assembler, function.frame_slots(),
+                                      frame_slot_base);
           if (has_calls) {
             assembler.load(kReturnAddressRegister, kStackPointer,
                            return_address_slot * sizeof(ir::Word));
@@ -1930,6 +2015,42 @@ LoweringResult lower_control_flow_impl(
               allocation.requires_stack[value.id()]) {
             assembler.store(word_destination, kStackPointer,
                             destination_offset);
+          }
+          break;
+        }
+        case ir::ControlOpcode::kLoadFrame:
+        case ir::ControlOpcode::kStoreFrame: {
+          const std::size_t offset =
+              (frame_slot_base + node.frame_slot) * sizeof(ir::Word);
+          if (destination_is_float) {
+            if (node.opcode == ir::ControlOpcode::kLoadFrame) {
+              assembler.load_float(float_destination, kStackPointer, offset);
+            } else {
+              const int stored = load_control_float(
+                  &assembler, allocation, node.lhs, block_index,
+                  kFloatScratch0);
+              assembler.store_float(stored, kStackPointer, offset);
+              assembler.move_float_register(float_destination, stored);
+            }
+            if (allocated_float < 0 ||
+                allocation.requires_stack[value.id()]) {
+              assembler.store_float(float_destination, kStackPointer,
+                                    destination_offset);
+            }
+          } else {
+            if (node.opcode == ir::ControlOpcode::kLoadFrame) {
+              assembler.load(word_destination, kStackPointer, offset);
+            } else {
+              const int stored = load_control_word(
+                  &assembler, allocation, node.lhs, block_index, kScratch0);
+              assembler.store(stored, kStackPointer, offset);
+              assembler.move_register(word_destination, stored);
+            }
+            if (allocated_word < 0 ||
+                allocation.requires_stack[value.id()]) {
+              assembler.store(word_destination, kStackPointer,
+                              destination_offset);
+            }
           }
           break;
         }
@@ -2088,6 +2209,8 @@ LoweringResult lower_control_flow_impl(
 
           const std::size_t exit = assembler.size();
           assembler.move_immediate(kReturnRegister, 0);
+          clear_sensitive_frame_slots(&assembler, function.frame_slots(),
+                                      frame_slot_base);
           if (has_calls) {
             assembler.load(kReturnAddressRegister, kStackPointer,
                            return_address_slot * sizeof(ir::Word));
@@ -2168,6 +2291,8 @@ LoweringResult lower_control_flow_impl(
           assembler.store(kScratch1, kScratch0,
                           runtime::ExecutionContext::exit_reason_offset());
           assembler.move_immediate(kReturnRegister, 0);
+          clear_sensitive_frame_slots(&assembler, function.frame_slots(),
+                                      frame_slot_base);
           if (has_calls) {
             assembler.load(kReturnAddressRegister, kStackPointer,
                            return_address_slot * sizeof(ir::Word));
@@ -2360,6 +2485,8 @@ LoweringResult lower_control_flow_impl(
           assembler.move_register(kReturnRegister, returned);
         }
       }
+      clear_sensitive_frame_slots(&assembler, function.frame_slots(),
+                                  frame_slot_base);
       if (has_calls) {
         assembler.load(kReturnAddressRegister, kStackPointer,
                        return_address_slot * sizeof(ir::Word));
