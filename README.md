@@ -62,6 +62,9 @@ preflight, compiled telemetry, and profile-scoped caches.
 Float32/Float64 storage, standalone byte reversal, byte-exact endian and
 unaligned semantics, diagnosed failures, live-value stack maps, native
 lowering, resource limits, and the remaining memory roadmap.
+[doc/ATOMICS.md](doc/ATOMICS.md) defines the independent generated-code atomic
+operation, memory-order, bounded provenance, progress, target-lowering, and
+concurrency qualification contract.
 [doc/FRAME_LOCALS.md](doc/FRAME_LOCALS.md) defines fixed typed invocation
 storage, zero initialization, sensitive-slot clearing, optimizer rules,
 resource limits, and the boundary for future vector and aggregate frames.

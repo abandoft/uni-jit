@@ -292,6 +292,10 @@ baseline profile on real hardware.
 
 ## Atomic operations
 
+The normative operation, memory-order, provenance, progress, and qualification
+contract is now frozen in [`ATOMICS.md`](ATOMICS.md). Implementation remains in
+progress and is not yet a delivered capability.
+
 Generated-code atomics operate on naturally aligned 8-, 16-, 32-, or 64-bit
 integer locations from a verified memory region. The IR supports atomic load,
 store, exchange, compare-exchange, fetch add/and/or/xor, and fences with
