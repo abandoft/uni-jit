@@ -35,6 +35,8 @@ struct ControlFlowRegisterAllocation final {
   std::vector<std::size_t> register_indices;
   std::vector<std::size_t> owner_blocks;
   std::vector<bool> requires_stack;
+  std::vector<std::size_t> stack_indices;
+  std::size_t stack_slots{0};
   std::vector<std::vector<ir::Value>> live_across_calls;
 };
 

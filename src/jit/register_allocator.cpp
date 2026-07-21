@@ -209,7 +209,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
   if (word_register_count == 0 || float_register_count == 0) {
     return {{StatusCode::kInvalidArgument,
              "control-flow allocation requires Word and Float64 registers"},
-            {}, {}, {}, {}};
+            {}, {}, {}, {}, 0, {}};
   }
 
   const std::size_t value_count = function.nodes().size();
@@ -228,6 +228,8 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
 
   std::vector<std::size_t> register_indices(value_count,
                                              ValueLocation::kNone);
+  std::vector<bool> requires_stack(value_count, false);
+  std::vector<bool> needs_stack_slot(value_count, false);
   std::vector<std::vector<ir::Value>> live_across_calls(value_count);
   for (std::size_t block_index = 0; block_index < function.blocks().size();
        ++block_index) {
@@ -339,7 +341,8 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
     std::vector<std::size_t> active_float;
     for (std::size_t index = 0; index < block.instructions.size(); ++index) {
       const ir::Value value = block.instructions[index];
-      if (function.nodes()[value.id()].opcode == ir::ControlOpcode::kCall) {
+      const ir::ControlOpcode opcode = function.nodes()[value.id()].opcode;
+      if (opcode == ir::ControlOpcode::kCall) {
         std::vector<ir::Value>& live = live_across_calls[value.id()];
         live.reserve(active_word.size() + active_float.size());
         const auto note_live = [&](const std::vector<std::size_t>& active) {
@@ -351,6 +354,20 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         };
         note_live(active_word);
         note_live(active_float);
+      }
+      if (opcode == ir::ControlOpcode::kSafepoint ||
+          opcode == ir::ControlOpcode::kGuardWordNonzero ||
+          opcode == ir::ControlOpcode::kGuardFloatNonzero) {
+        const auto require_live_stack =
+            [&](const std::vector<std::size_t>& active) {
+          for (const std::size_t position : active) {
+            if (last_use[position] >= index) {
+              needs_stack_slot[block.instructions[position].id()] = true;
+            }
+          }
+        };
+        require_live_stack(active_word);
+        require_live_stack(active_float);
       }
       const bool is_float =
           function.value_type(value) == ir::ValueType::kFloat64;
@@ -379,7 +396,6 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
     }
   }
 
-  std::vector<bool> requires_stack(value_count, false);
   const auto note_nonlocal_use = [&](std::size_t block_index,
                                      ir::Value value) {
     if (value.valid() && owners[value.id()] != block_index) {
@@ -469,8 +485,39 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
     }
   }
 
+  for (const std::vector<ir::Value>& live : live_across_calls) {
+    for (const ir::Value value : live) {
+      needs_stack_slot[value.id()] = true;
+    }
+  }
+
+  std::vector<std::size_t> stack_indices(value_count,
+                                          ValueLocation::kNone);
+  std::size_t stack_slots = 0;
+  for (std::size_t value_index = 0; value_index < value_count;
+       ++value_index) {
+    if (requires_stack[value_index]) {
+      stack_indices[value_index] = stack_slots++;
+    }
+  }
+  const std::size_t persistent_slots = stack_slots;
+  for (const ir::BasicBlock& block : function.blocks()) {
+    std::size_t next_slot = persistent_slots;
+    for (const ir::Value value : block.instructions) {
+      if (stack_indices[value.id()] != ValueLocation::kNone) {
+        continue;
+      }
+      if (register_indices[value.id()] == ValueLocation::kNone ||
+          needs_stack_slot[value.id()]) {
+        stack_indices[value.id()] = next_slot++;
+      }
+    }
+    stack_slots = std::max(stack_slots, next_slot);
+  }
+
   return {Status::ok_status(), std::move(register_indices),
           std::move(owners), std::move(requires_stack),
+          std::move(stack_indices), stack_slots,
           std::move(live_across_calls)};
 }
 
@@ -508,7 +555,7 @@ ControlFlowEdgeMoves plan_control_flow_edge_impl(
                            : ControlFlowMoveSource::kStack;
     const std::size_t source =
         source_in_register ? allocation.register_indices[argument.id()]
-                           : argument.id();
+                           : allocation.stack_indices[argument.id()];
     if (source_kind == ControlFlowMoveSource::kRegister &&
         source == destination) {
       continue;
@@ -792,7 +839,7 @@ ControlFlowRegisterAllocation allocate_control_flow_registers(
   } catch (const std::bad_alloc&) {
     return {{StatusCode::kResourceExhausted,
              "unable to allocate control-flow register state"},
-            {}, {}, {}, {}};
+            {}, {}, {}, {}, 0, {}};
   }
 }
 

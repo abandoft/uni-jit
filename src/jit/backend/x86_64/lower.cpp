@@ -1187,6 +1187,12 @@ std::size_t control_spill_offset(std::size_t slot) noexcept {
   return slot * sizeof(ir::Word);
 }
 
+std::size_t control_value_offset(
+    const ControlFlowRegisterAllocation& allocation,
+    ir::Value value) noexcept {
+  return control_spill_offset(allocation.stack_indices[value.id()]);
+}
+
 int control_word_register(
     const ControlFlowRegisterAllocation& allocation, ir::Value value,
     std::size_t current_block) noexcept {
@@ -1216,7 +1222,7 @@ int load_control_word(Assembler* assembler,
   if (allocated >= 0) {
     return allocated;
   }
-  assembler->load(scratch, kRsp, control_spill_offset(value.id()));
+  assembler->load(scratch, kRsp, control_value_offset(allocation, value));
   return scratch;
 }
 
@@ -1229,7 +1235,8 @@ int load_control_float(Assembler* assembler,
   if (allocated >= 0) {
     return allocated;
   }
-  assembler->load_float(scratch, kRsp, control_spill_offset(value.id()));
+  assembler->load_float(scratch, kRsp,
+                        control_value_offset(allocation, value));
   return scratch;
 }
 
@@ -1243,13 +1250,14 @@ void spill_control_stack_map_values(
           control_float_register(allocation, value, current_block);
       if (source >= 0) {
         assembler->store_float(source, kRsp,
-                               control_spill_offset(value.id()));
+                               control_value_offset(allocation, value));
       }
     } else {
       const int source =
           control_word_register(allocation, value, current_block);
       if (source >= 0) {
-        assembler->store(source, kRsp, control_spill_offset(value.id()));
+        assembler->store(source, kRsp,
+                         control_value_offset(allocation, value));
       }
     }
   }
@@ -1263,11 +1271,11 @@ void save_control_live_across_call(
     if (function.value_type(value) == ir::ValueType::kFloat64) {
       assembler->store_float(
           control_float_register(allocation, value, current_block), kRsp,
-          control_spill_offset(value.id()));
+          control_value_offset(allocation, value));
     } else {
       assembler->store(
           control_word_register(allocation, value, current_block), kRsp,
-          control_spill_offset(value.id()));
+          control_value_offset(allocation, value));
     }
   }
 }
@@ -1280,21 +1288,21 @@ void restore_control_live_across_call(
     if (function.value_type(value) == ir::ValueType::kFloat64) {
       assembler->load_float(
           control_float_register(allocation, value, current_block), kRsp,
-          control_spill_offset(value.id()));
+          control_value_offset(allocation, value));
     } else {
       assembler->load(
           control_word_register(allocation, value, current_block), kRsp,
-          control_spill_offset(value.id()));
+          control_value_offset(allocation, value));
     }
   }
 }
 
 void capture_control_stack_map_values(
-    Assembler* assembler, const std::vector<ir::Value>& live_values,
-    int context) {
+    Assembler* assembler, const ControlFlowRegisterAllocation& allocation,
+    const std::vector<ir::Value>& live_values, int context) {
   for (std::size_t index = 0; index < live_values.size(); ++index) {
     assembler->load(kScratch1, kRsp,
-                    control_spill_offset(live_values[index].id()));
+                    control_value_offset(allocation, live_values[index]));
     assembler->store(
         kScratch1, context,
         runtime::ExecutionContext::captured_values_offset() +
@@ -1309,6 +1317,7 @@ void capture_control_stack_map_values(
 
 StackMapRecord make_stack_map_record(
     const ir::ControlFlowFunction& function, const ir::ControlNode& node,
+    const ControlFlowRegisterAllocation& allocation,
     const std::vector<ir::Value>& live_values, std::size_t native_offset,
     std::size_t frame_size) {
   StackMapRecord record;
@@ -1321,7 +1330,8 @@ StackMapRecord make_stack_map_record(
   record.live_values.reserve(live_values.size());
   for (const ir::Value value : live_values) {
     record.live_values.push_back(
-        {value, function.value_type(value), control_spill_offset(value.id())});
+        {value, function.value_type(value),
+         control_value_offset(allocation, value)});
   }
   return record;
 }
@@ -1373,12 +1383,12 @@ void copy_edge_arguments(Assembler* assembler,
           const int source = control_float_register(
               allocation, parameter, edge.target.id());
           assembler->store_float(source, kRsp,
-                                 control_spill_offset(parameter.id()));
+                                 control_value_offset(allocation, parameter));
         } else {
           const int source = control_word_register(
               allocation, parameter, edge.target.id());
           assembler->store(source, kRsp,
-                           control_spill_offset(parameter.id()));
+                           control_value_offset(allocation, parameter));
         }
       }
     }
@@ -1408,16 +1418,20 @@ void copy_edge_arguments(Assembler* assembler,
           allocated >= 0 ? allocated : kFloatScratch0;
       assembler->load_float(destination, kRsp,
                             control_spill_offset(temporary_base + index));
-      assembler->store_float(destination, kRsp,
-                             control_spill_offset(parameter.id()));
+      if (allocated < 0 || allocation.requires_stack[parameter.id()]) {
+        assembler->store_float(destination, kRsp,
+                               control_value_offset(allocation, parameter));
+      }
     } else {
       const int allocated =
           control_word_register(allocation, parameter, edge.target.id());
       const int destination = allocated >= 0 ? allocated : kScratch0;
       assembler->load(destination, kRsp,
                       control_spill_offset(temporary_base + index));
-      assembler->store(destination, kRsp,
-                       control_spill_offset(parameter.id()));
+      if (allocated < 0 || allocation.requires_stack[parameter.id()]) {
+        assembler->store(destination, kRsp,
+                         control_value_offset(allocation, parameter));
+      }
     }
   }
 }
@@ -1459,8 +1473,14 @@ LoweringResult lower_control_flow_impl(
                    static_cast<std::size_t>(node.argument_count));
     }
   }
+  ControlFlowRegisterAllocation allocation = allocate_control_flow_registers(
+      function, kAllocationRegisters.size(), kFloatAllocationRegisters.size(),
+      requirements);
+  if (!allocation.status.ok()) {
+    return {allocation.status, {}, 0, {}};
+  }
   const std::size_t spill_slots =
-      function.nodes().size() + maximum_block_parameters;
+      allocation.stack_slots + maximum_block_parameters;
   const std::size_t context_slot = spill_slots;
   const std::size_t call_argument_base =
       context_slot + static_cast<std::size_t>(has_context_operations);
@@ -1475,12 +1495,6 @@ LoweringResult lower_control_flow_impl(
             0};
   }
 
-  ControlFlowRegisterAllocation allocation = allocate_control_flow_registers(
-      function, kAllocationRegisters.size(), kFloatAllocationRegisters.size(),
-      requirements);
-  if (!allocation.status.ok()) {
-    return {allocation.status, {}, 0, {}};
-  }
   StackMapLiveness stack_map_liveness =
       plan_stack_map_liveness(function, requirements);
   if (!stack_map_liveness.status.ok()) {
@@ -1501,7 +1515,7 @@ LoweringResult lower_control_flow_impl(
   std::vector<std::size_t> labels(function.blocks().size(), no_label);
   std::vector<BranchFixup> fixups;
   std::vector<StackMapRecord> stack_maps;
-  const std::size_t temporary_base = function.nodes().size();
+  const std::size_t temporary_base = allocation.stack_slots;
 
   for (std::size_t block_index = 0; block_index < function.blocks().size();
        ++block_index) {
@@ -1509,7 +1523,10 @@ LoweringResult lower_control_flow_impl(
     const ir::BasicBlock& block = function.blocks()[block_index];
     for (const ir::Value value : block.instructions) {
       const ir::ControlNode& node = function.nodes()[value.id()];
-      const std::size_t destination_offset = control_spill_offset(value.id());
+      const std::size_t destination_offset =
+          allocation.stack_indices[value.id()] == ValueLocation::kNone
+              ? 0
+              : control_value_offset(allocation, value);
       const bool destination_is_float =
           function.value_type(value) == ir::ValueType::kFloat64;
       const int allocated_word =
@@ -1532,7 +1549,8 @@ LoweringResult lower_control_flow_impl(
         spill_control_stack_map_values(&assembler, function, allocation,
                                        live_values, block_index);
         stack_maps.push_back(make_stack_map_record(
-            function, node, live_values, assembler.size(), stack_size));
+            function, node, allocation, live_values, assembler.size(),
+            stack_size));
       }
       switch (node.opcode) {
         case ir::ControlOpcode::kParameter:
@@ -1648,8 +1666,8 @@ LoweringResult lower_control_flow_impl(
           const std::size_t no_context = assembler.branch_zero(kScratch0);
           assembler.store(kScratch1, kScratch0,
                           runtime::ExecutionContext::exit_value_offset());
-          capture_control_stack_map_values(&assembler, live_values,
-                                           kScratch0);
+          capture_control_stack_map_values(&assembler, allocation,
+                                           live_values, kScratch0);
           assembler.move_immediate(kScratch1, node.immediate);
           assembler.store(kScratch1, kScratch0,
                           runtime::ExecutionContext::exit_site_offset());
@@ -1703,8 +1721,8 @@ LoweringResult lower_control_flow_impl(
           assembler.move_immediate(kScratch1, 0);
           assembler.store(kScratch1, kScratch0,
                           runtime::ExecutionContext::exit_value_offset());
-          capture_control_stack_map_values(&assembler, live_values,
-                                           kScratch0);
+          capture_control_stack_map_values(&assembler, allocation,
+                                           live_values, kScratch0);
           assembler.move_immediate(kScratch1, node.immediate);
           assembler.store(kScratch1, kScratch0,
                           runtime::ExecutionContext::exit_site_offset());
