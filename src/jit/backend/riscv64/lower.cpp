@@ -821,7 +821,9 @@ LoweringResult lower_impl(const ir::Function& function,
                node.opcode == ir::Opcode::kLoadWord ||
                node.opcode == ir::Opcode::kStoreWord ||
                node.opcode == ir::Opcode::kLoadFloat ||
-               node.opcode == ir::Opcode::kStoreFloat) {
+               node.opcode == ir::Opcode::kStoreFloat ||
+               node.opcode == ir::Opcode::kLoadObject ||
+               node.opcode == ir::Opcode::kStoreObject) {
       has_context_operations = true;
     }
   }
@@ -1226,6 +1228,54 @@ LoweringResult lower_impl(const ir::Function& function,
             const int stored = load_operand(
                 &assembler, allocation.locations[node.lhs.id()], kScratch0);
             assembler.store(stored, kStackPointer, offset);
+            assembler.move_register(target, stored);
+          }
+          if (!destination.in_register()) {
+            assembler.store(target, kStackPointer, spill_offset(destination));
+          }
+        }
+        break;
+      }
+      case ir::Opcode::kLoadObject:
+      case ir::Opcode::kStoreObject: {
+        const std::size_t binding_offset =
+            static_cast<std::size_t>(node.trusted_object) *
+                sizeof(runtime::TrustedObject) +
+            runtime::TrustedObject::data_offset();
+        assembler.load(kScratch0, kStackPointer,
+                       context_slot * sizeof(ir::Word));
+        assembler.load(kScratch0, kScratch0,
+                       runtime::ExecutionContext::trusted_objects_offset());
+        assembler.load(kScratch0, kScratch0, binding_offset);
+        const std::size_t field_offset =
+            static_cast<std::size_t>(node.immediate);
+        if (node.type == ir::ValueType::kFloat64) {
+          const int target = destination.in_register()
+                                 ? physical_float_register(destination)
+                                 : kFloatScratch0;
+          if (node.opcode == ir::Opcode::kLoadObject) {
+            assembler.load_float(target, kScratch0, field_offset);
+          } else {
+            const int stored = load_float_operand(
+                &assembler, allocation.locations[node.lhs.id()],
+                kFloatScratch0);
+            assembler.store_float(stored, kScratch0, field_offset);
+            assembler.move_float_register(target, stored);
+          }
+          if (!destination.in_register()) {
+            assembler.store_float(target, kStackPointer,
+                                  spill_offset(destination));
+          }
+        } else {
+          const int target = destination.in_register()
+                                 ? physical_register(destination)
+                                 : kScratch1;
+          if (node.opcode == ir::Opcode::kLoadObject) {
+            assembler.load(target, kScratch0, field_offset);
+          } else {
+            const int stored = load_operand(
+                &assembler, allocation.locations[node.lhs.id()], kScratch1);
+            assembler.store(stored, kScratch0, field_offset);
             assembler.move_register(target, stored);
           }
           if (!destination.in_register()) {
@@ -1839,7 +1889,9 @@ LoweringResult lower_control_flow_impl(
                node.opcode == ir::ControlOpcode::kLoadWord ||
                node.opcode == ir::ControlOpcode::kStoreWord ||
                node.opcode == ir::ControlOpcode::kLoadFloat ||
-               node.opcode == ir::ControlOpcode::kStoreFloat;
+               node.opcode == ir::ControlOpcode::kStoreFloat ||
+               node.opcode == ir::ControlOpcode::kLoadObject ||
+               node.opcode == ir::ControlOpcode::kStoreObject;
       });
   std::size_t maximum_call_arguments = 0;
   bool has_calls = false;
@@ -2131,6 +2183,53 @@ LoweringResult lower_control_flow_impl(
               const int stored = load_control_word(
                   &assembler, allocation, node.lhs, block_index, kScratch0);
               assembler.store(stored, kStackPointer, offset);
+              assembler.move_register(word_destination, stored);
+            }
+            if (allocated_word < 0 ||
+                allocation.requires_stack[value.id()]) {
+              assembler.store(word_destination, kStackPointer,
+                              destination_offset);
+            }
+          }
+          break;
+        }
+        case ir::ControlOpcode::kLoadObject:
+        case ir::ControlOpcode::kStoreObject: {
+          const std::size_t binding_offset =
+              static_cast<std::size_t>(node.trusted_object) *
+                  sizeof(runtime::TrustedObject) +
+              runtime::TrustedObject::data_offset();
+          assembler.load(kScratch0, kStackPointer,
+                         context_slot * sizeof(ir::Word));
+          assembler.load(
+              kScratch0, kScratch0,
+              runtime::ExecutionContext::trusted_objects_offset());
+          assembler.load(kScratch0, kScratch0, binding_offset);
+          const std::size_t field_offset =
+              static_cast<std::size_t>(node.immediate);
+          if (destination_is_float) {
+            if (node.opcode == ir::ControlOpcode::kLoadObject) {
+              assembler.load_float(float_destination, kScratch0,
+                                   field_offset);
+            } else {
+              const int stored = load_control_float(
+                  &assembler, allocation, node.lhs, block_index,
+                  kFloatScratch0);
+              assembler.store_float(stored, kScratch0, field_offset);
+              assembler.move_float_register(float_destination, stored);
+            }
+            if (allocated_float < 0 ||
+                allocation.requires_stack[value.id()]) {
+              assembler.store_float(float_destination, kStackPointer,
+                                    destination_offset);
+            }
+          } else {
+            if (node.opcode == ir::ControlOpcode::kLoadObject) {
+              assembler.load(word_destination, kScratch0, field_offset);
+            } else {
+              const int stored = load_control_word(
+                  &assembler, allocation, node.lhs, block_index, kScratch1);
+              assembler.store(stored, kScratch0, field_offset);
               assembler.move_register(word_destination, stored);
             }
             if (allocated_word < 0 ||
