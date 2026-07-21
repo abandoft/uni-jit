@@ -110,7 +110,7 @@ bool is_vector(ir::ControlOpcode opcode) noexcept {
 Status validate_native_operation_set(const ir::Function& function) {
   for (std::size_t index = 0; index < function.nodes().size(); ++index) {
     if (is_vector(function.nodes()[index].opcode)) {
-#if defined(UNIJIT_TARGET_AARCH64)
+#if defined(UNIJIT_TARGET_AARCH64) || defined(UNIJIT_TARGET_X86_64)
       continue;
 #else
       return {StatusCode::kCodeGenerationFailed,
@@ -127,7 +127,7 @@ Status validate_native_operation_set(
     const ir::ControlFlowFunction& function) {
   for (std::size_t index = 0; index < function.nodes().size(); ++index) {
     if (is_vector(function.nodes()[index].opcode)) {
-#if defined(UNIJIT_TARGET_AARCH64)
+#if defined(UNIJIT_TARGET_AARCH64) || defined(UNIJIT_TARGET_X86_64)
       continue;
 #else
       return {StatusCode::kCodeGenerationFailed,
