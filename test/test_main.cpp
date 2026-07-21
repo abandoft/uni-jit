@@ -1334,6 +1334,151 @@ void test_float64_negation() {
          "verifier must reject Float64 negation over a Word operand");
 }
 
+void test_word_comparisons() {
+  FunctionBuilder builder(2);
+  const Value lhs = builder.parameter(0);
+  const Value rhs = builder.parameter(1);
+  const Value less = builder.less_than(lhs, rhs);
+  const Value less_equal = builder.less_equal(lhs, rhs);
+  const Value equal = builder.equal(lhs, rhs);
+  const Value not_equal = builder.not_equal(lhs, rhs);
+  const Value encoded = builder.add(
+      builder.multiply(less, builder.constant(1000)),
+      builder.add(builder.multiply(less_equal, builder.constant(100)),
+                  builder.add(builder.multiply(equal, builder.constant(10)),
+                              not_equal)));
+  expect(builder.set_return(encoded).ok(),
+         "Word comparison fixture must record its result");
+  const Function function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "Word comparisons must satisfy straight-line verification");
+  const auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "Word comparisons must compile to native code");
+
+  const auto check = [&](Word left, Word right, Word expected,
+                         const char* message) {
+    const std::array<Word, 2> arguments = {left, right};
+    const auto interpreted =
+        Interpreter::evaluate(function, arguments.data(), arguments.size());
+    expect(interpreted.ok() && interpreted.value == expected, message);
+    if (compilation.ok()) {
+      const auto native =
+          compilation.function->invoke(arguments.data(), arguments.size());
+      expect(native.ok() && native.value == interpreted.value,
+             "native Word comparisons must match the interpreter");
+    }
+  };
+  check(std::numeric_limits<Word>::min(), std::numeric_limits<Word>::max(),
+        1101, "signed Word minimum must compare below the maximum");
+  check(-1, 0, 1101, "negative Word values must compare below zero");
+  check(0, 0, 110, "equal Word values must set inclusive and equality flags");
+  check(1, 0, 1, "greater Word values must only set inequality");
+  check(std::numeric_limits<Word>::max(), std::numeric_limits<Word>::min(), 1,
+        "signed Word maximum must compare above the minimum");
+
+  FunctionBuilder constant_builder(0);
+  const Value constant_comparison = constant_builder.not_equal(
+      constant_builder.constant(-17), constant_builder.constant(5));
+  expect(constant_builder.set_return(constant_comparison).ok(),
+         "constant Word comparison fixture must record its result");
+  const auto constant_optimized =
+      unijit::ir::Optimizer::run(std::move(constant_builder).build());
+  expect(constant_optimized.ok() &&
+             constant_optimized.function.nodes().size() == 1 &&
+             constant_optimized.function.nodes()[0].opcode ==
+                 unijit::ir::Opcode::kConstant &&
+             constant_optimized.function.nodes()[0].immediate == 1,
+         "optimizer must fold constant Word comparisons to canonical flags");
+
+  FunctionBuilder identity_builder(1);
+  const Value identity = identity_builder.equal(identity_builder.parameter(0),
+                                                identity_builder.parameter(0));
+  expect(identity_builder.set_return(identity).ok(),
+         "Word comparison identity fixture must record its result");
+  const auto identity_optimized =
+      unijit::ir::Optimizer::run(std::move(identity_builder).build());
+  expect(identity_optimized.ok() &&
+             identity_optimized.stats.algebraic_simplifications == 1 &&
+             identity_optimized.function.nodes().size() == 2 &&
+             identity_optimized.function
+                     .nodes()[identity_optimized.function.return_value().id()]
+                     .opcode == unijit::ir::Opcode::kConstant &&
+             identity_optimized.function
+                     .nodes()[identity_optimized.function.return_value().id()]
+                     .immediate == 1,
+         "optimizer must reduce self equality to canonical true");
+
+  using unijit::ir::ValueType;
+  FunctionBuilder malformed(
+      std::vector<ValueType>{ValueType::kFloat64, ValueType::kFloat64});
+  const Value invalid =
+      malformed.equal(malformed.parameter(0), malformed.parameter(1));
+  expect(malformed.set_return(invalid).ok() &&
+             !unijit::ir::verify(std::move(malformed).build()).ok(),
+         "verifier must reject Word comparisons over Float64 operands");
+
+  unijit::ir::ControlFlowBuilder cfg_builder(2);
+  const Value cfg_lhs = cfg_builder.parameter(0);
+  const Value cfg_rhs = cfg_builder.parameter(1);
+  const Value cfg_encoded = cfg_builder.add(
+      cfg_builder.multiply(cfg_builder.less_than(cfg_lhs, cfg_rhs),
+                           cfg_builder.constant(1000)),
+      cfg_builder.add(
+          cfg_builder.multiply(cfg_builder.less_equal(cfg_lhs, cfg_rhs),
+                               cfg_builder.constant(100)),
+          cfg_builder.add(
+              cfg_builder.multiply(cfg_builder.equal(cfg_lhs, cfg_rhs),
+                                   cfg_builder.constant(10)),
+              cfg_builder.not_equal(cfg_lhs, cfg_rhs))));
+  expect(cfg_builder.set_return(cfg_encoded).ok(),
+         "CFG Word comparison fixture must record its result");
+  const auto cfg_function = std::move(cfg_builder).build();
+  expect(unijit::ir::verify(cfg_function).ok(),
+         "CFG Word comparisons must satisfy verification");
+  const auto cfg_compilation = Compiler::compile(cfg_function);
+  expect(cfg_compilation.ok(),
+         "CFG Word comparisons must compile to native code");
+  constexpr std::array<std::array<Word, 2>, 5> kPairs = {{
+      {std::numeric_limits<Word>::min(), std::numeric_limits<Word>::max()},
+      {-1, 0},
+      {0, 0},
+      {1, 0},
+      {std::numeric_limits<Word>::max(), std::numeric_limits<Word>::min()},
+  }};
+  for (const auto& arguments : kPairs) {
+    const auto interpreted = unijit::ir::ControlFlowInterpreter::evaluate(
+        cfg_function, arguments.data(), arguments.size());
+    if (cfg_compilation.ok()) {
+      const auto native =
+          cfg_compilation.function->invoke(arguments.data(), arguments.size());
+      expect(
+          interpreted.ok() && native.ok() && native.value == interpreted.value,
+          "native CFG Word comparisons must match signed interpreter "
+          "semantics");
+    }
+  }
+
+  unijit::ir::ControlFlowBuilder cse_builder(2);
+  const Value first =
+      cse_builder.equal(cse_builder.parameter(0), cse_builder.parameter(1));
+  const Value duplicate =
+      cse_builder.equal(cse_builder.parameter(0), cse_builder.parameter(1));
+  expect(cse_builder.set_return(cse_builder.add(first, duplicate)).ok(),
+         "CFG comparison CSE fixture must record its result");
+  const auto cse_optimized =
+      unijit::ir::Optimizer::run(std::move(cse_builder).build());
+  expect(cse_optimized.ok() && cse_optimized.stats.common_subexpressions == 1,
+         "CFG optimizer must value-number duplicate Word comparisons");
+
+  unijit::ir::ControlFlowBuilder malformed_cfg(
+      std::vector<ValueType>{ValueType::kFloat64, ValueType::kFloat64});
+  const Value invalid_cfg = malformed_cfg.not_equal(malformed_cfg.parameter(0),
+                                                    malformed_cfg.parameter(1));
+  expect(malformed_cfg.set_return(invalid_cfg).ok() &&
+             !unijit::ir::verify(std::move(malformed_cfg).build()).ok(),
+         "CFG verifier must reject Word comparisons over Float64 operands");
+}
+
 void test_float64_comparisons() {
   using unijit::ir::ValueType;
   FunctionBuilder builder(
@@ -4659,6 +4804,7 @@ int main() {
   test_word_bitwise_operations();
   test_word_shift_operations();
   test_word_floor_arithmetic();
+  test_word_comparisons();
   test_float64_negation();
   test_float64_comparisons();
   test_float64_nonzero_guard();

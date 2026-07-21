@@ -92,7 +92,7 @@ bool fuzz_word_function(std::mt19937_64* random, const Options& options,
     }
     const Value lhs = values[(*random)() % values.size()];
     const Value rhs = values[(*random)() % values.size()];
-    switch ((*random)() % 11ULL) {
+    switch ((*random)() % 15ULL) {
       case 0:
         values.push_back(builder.add(lhs, rhs));
         break;
@@ -123,8 +123,20 @@ bool fuzz_word_function(std::mt19937_64* random, const Options& options,
       case 9:
         values.push_back(builder.floor_divide(lhs, rhs));
         break;
-      default:
+      case 10:
         values.push_back(builder.floor_modulo(lhs, rhs));
+        break;
+      case 11:
+        values.push_back(builder.less_than(lhs, rhs));
+        break;
+      case 12:
+        values.push_back(builder.less_equal(lhs, rhs));
+        break;
+      case 13:
+        values.push_back(builder.equal(lhs, rhs));
+        break;
+      default:
+        values.push_back(builder.not_equal(lhs, rhs));
         break;
     }
   }
@@ -257,7 +269,7 @@ std::vector<Value> make_cfg_arm(ControlFlowBuilder* builder,
       const Word constant_value =
           static_cast<Word>(static_cast<std::int64_t>((*random)() % 17ULL) - 8);
       const Value constant = builder->constant(constant_value);
-      switch ((*random)() % 11ULL) {
+      switch ((*random)() % 15ULL) {
         case 0:
           result.push_back(builder->add(source, constant));
           break;
@@ -288,8 +300,20 @@ std::vector<Value> make_cfg_arm(ControlFlowBuilder* builder,
         case 9:
           result.push_back(builder->floor_divide(source, constant));
           break;
-        default:
+        case 10:
           result.push_back(builder->floor_modulo(source, constant));
+          break;
+        case 11:
+          result.push_back(builder->less_than(source, constant));
+          break;
+        case 12:
+          result.push_back(builder->less_equal(source, constant));
+          break;
+        case 13:
+          result.push_back(builder->equal(source, constant));
+          break;
+        default:
+          result.push_back(builder->not_equal(source, constant));
           break;
       }
     }

@@ -287,6 +287,41 @@ int main() {
       floor_result.value != -37) {
     return 63;
   }
+  unijit::ir::FunctionBuilder word_comparison_builder(2);
+  const auto word_comparison_lhs = word_comparison_builder.parameter(0);
+  const auto word_comparison_rhs = word_comparison_builder.parameter(1);
+  if (!word_comparison_builder
+           .set_return(word_comparison_builder.add(
+               word_comparison_builder.multiply(
+                   word_comparison_builder.less_than(word_comparison_lhs,
+                                                     word_comparison_rhs),
+                   word_comparison_builder.constant(1000)),
+               word_comparison_builder.add(
+                   word_comparison_builder.multiply(
+                       word_comparison_builder.less_equal(word_comparison_lhs,
+                                                          word_comparison_rhs),
+                       word_comparison_builder.constant(100)),
+                   word_comparison_builder.add(
+                       word_comparison_builder.multiply(
+                           word_comparison_builder.equal(word_comparison_lhs,
+                                                         word_comparison_rhs),
+                           word_comparison_builder.constant(10)),
+                       word_comparison_builder.not_equal(
+                           word_comparison_lhs, word_comparison_rhs)))))
+           .ok()) {
+    return 66;
+  }
+  auto word_comparison_compilation = unijit::jit::Compiler::compile(
+      std::move(word_comparison_builder).build());
+  const auto word_comparison_result =
+      word_comparison_compilation.ok()
+          ? word_comparison_compilation.function->invoke(
+                floor_arguments.data(), floor_arguments.size())
+          : unijit::ir::EvaluationResult{};
+  if (!word_comparison_compilation.ok() || !word_comparison_result.ok() ||
+      word_comparison_result.value != 1101) {
+    return 67;
+  }
   unijit::jit::CompilationLimits package_limits;
   package_limits.maximum_ir_nodes = 2;
   const auto limited_compilation = unijit::jit::Compiler::compile(
@@ -471,6 +506,29 @@ int main() {
   if (!cfg_floor.ok() || !cfg_floor_result.ok() ||
       cfg_floor_result.value != -1) {
     return 65;
+  }
+  unijit::ir::ControlFlowBuilder cfg_word_comparison_builder(2);
+  if (!cfg_word_comparison_builder
+           .set_return(cfg_word_comparison_builder.add(
+               cfg_word_comparison_builder.equal(
+                   cfg_word_comparison_builder.parameter(0),
+                   cfg_word_comparison_builder.parameter(1)),
+               cfg_word_comparison_builder.not_equal(
+                   cfg_word_comparison_builder.parameter(0),
+                   cfg_word_comparison_builder.parameter(1))))
+           .ok()) {
+    return 68;
+  }
+  auto cfg_word_comparison = unijit::jit::Compiler::compile(
+      std::move(cfg_word_comparison_builder).build());
+  const auto cfg_word_comparison_result =
+      cfg_word_comparison.ok()
+          ? cfg_word_comparison.function->invoke(floor_arguments.data(),
+                                                 floor_arguments.size())
+          : unijit::ir::EvaluationResult{};
+  if (!cfg_word_comparison.ok() || !cfg_word_comparison_result.ok() ||
+      cfg_word_comparison_result.value != 1) {
+    return 69;
   }
   unijit::ir::FunctionBuilder safepoint_builder(0);
   if (!safepoint_builder.safepoint(23).valid() ||
