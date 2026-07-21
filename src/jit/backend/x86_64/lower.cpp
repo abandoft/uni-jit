@@ -47,7 +47,12 @@ constexpr int kScratch1 = kR10;
 constexpr int kFloatScratch0 = 0;
 constexpr int kFloatScratch1 = 5;
 constexpr std::array<int, 4> kAllocationRegisters = {kRcx, kRdx, kR8, kR9};
+#if defined(_WIN32)
 constexpr std::array<int, 4> kFloatAllocationRegisters = {1, 2, 3, 4};
+#else
+constexpr std::array<int, 14> kFloatAllocationRegisters = {
+    1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15};
+#endif
 constexpr std::size_t kMaximumStackSize = 1024U * 1024U;
 constexpr std::size_t kMaximumOffset =
     static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max());
