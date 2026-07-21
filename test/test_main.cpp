@@ -993,6 +993,132 @@ void test_word_bitwise_operations() {
          "verifier must reject Word bitwise operations over Float64 operands");
 }
 
+void test_word_shift_operations() {
+  FunctionBuilder builder(2);
+  const Value shifted =
+      builder.shift_left(builder.parameter(0), builder.parameter(1));
+  const Value live_inputs =
+      builder.add(builder.parameter(0), builder.parameter(1));
+  expect(builder.set_return(builder.bitwise_xor(shifted, live_inputs)).ok(),
+         "Word shift fixture must record its result");
+  const Function function = std::move(builder).build();
+  expect(unijit::ir::verify(function).ok(),
+         "typed Word shifts must pass verification");
+  const auto compilation = Compiler::compile(function);
+  expect(compilation.ok(), "Word shifts must compile to native code");
+
+  constexpr std::array<Word, 7> kValues = {
+      0,
+      1,
+      -1,
+      static_cast<Word>(UINT64_C(0x0123456789abcdef)),
+      static_cast<Word>(UINT64_C(0x8000000000000000)),
+      std::numeric_limits<Word>::min(),
+      std::numeric_limits<Word>::max(),
+  };
+  constexpr std::array<Word, 13> kAmounts = {
+      std::numeric_limits<Word>::min(), -65, -64, -63, -1, 0,  1,
+      31, 63,                                64,  65, 127,
+      std::numeric_limits<Word>::max(),
+  };
+  const auto expected_shift = [](Word value, Word amount) {
+    const auto value_bits = static_cast<std::uint64_t>(value);
+    const auto amount_bits = static_cast<std::uint64_t>(amount);
+    if (amount < 0) {
+      const std::uint64_t magnitude = UINT64_C(0) - amount_bits;
+      return magnitude >= 64U ? UINT64_C(0) : value_bits >> magnitude;
+    }
+    return amount_bits >= 64U ? UINT64_C(0) : value_bits << amount_bits;
+  };
+  for (const Word value : kValues) {
+    for (const Word amount : kAmounts) {
+      const std::array<Word, 2> arguments = {value, amount};
+      const std::uint64_t expected =
+          expected_shift(value, amount) ^
+          (static_cast<std::uint64_t>(value) +
+           static_cast<std::uint64_t>(amount));
+      const auto interpreted =
+          Interpreter::evaluate(function, arguments.data(), arguments.size());
+      expect(interpreted.ok() &&
+                 static_cast<std::uint64_t>(interpreted.value) == expected,
+             "Word shift interpreter must implement exact bidirectional semantics");
+      if (compilation.ok()) {
+        const auto native =
+            compilation.function->invoke(arguments.data(), arguments.size());
+        expect(native.ok() && native.value == interpreted.value,
+               "native Word shifts must preserve live inputs and match the interpreter");
+      }
+    }
+  }
+
+  FunctionBuilder optimized_builder(1);
+  const Value zero = optimized_builder.constant(0);
+  const Value zero_shift =
+      optimized_builder.shift_left(zero, optimized_builder.parameter(0));
+  const Value identity =
+      optimized_builder.shift_left(zero_shift, optimized_builder.constant(0));
+  expect(optimized_builder.set_return(identity).ok(),
+         "Word shift optimization fixture must record its result");
+  const auto optimized =
+      unijit::ir::Optimizer::run(std::move(optimized_builder).build());
+  expect(optimized.ok() &&
+             optimized.stats.algebraic_simplifications >= 1 &&
+             optimized.stats.constants_folded >= 1,
+         "optimizer must simplify zero values and zero shift amounts");
+
+  FunctionBuilder folded_builder(0);
+  expect(folded_builder
+             .set_return(folded_builder.shift_left(
+                 folded_builder.constant(-1),
+                 folded_builder.constant(std::numeric_limits<Word>::min())))
+             .ok(),
+         "constant Word shift fixture must record its result");
+  const auto folded =
+      unijit::ir::Optimizer::run(std::move(folded_builder).build());
+  expect(folded.ok() && folded.stats.constants_folded >= 1 &&
+             folded.function.nodes().size() == 1 &&
+             folded.function.nodes().front().immediate == 0,
+         "optimizer must fold extreme signed shift amounts to zero");
+
+  unijit::ir::ControlFlowBuilder cfg_builder(2);
+  const Value cfg_first =
+      cfg_builder.shift_left(cfg_builder.parameter(0), cfg_builder.parameter(1));
+  const Value cfg_duplicate =
+      cfg_builder.shift_left(cfg_builder.parameter(0), cfg_builder.parameter(1));
+  expect(cfg_builder.set_return(cfg_builder.add(cfg_first, cfg_duplicate)).ok(),
+         "CFG Word shift fixture must record its result");
+  const auto cfg_function = std::move(cfg_builder).build();
+  expect(unijit::ir::verify(cfg_function).ok(),
+         "CFG Word shifts must pass verification");
+  const auto cfg_optimized = unijit::ir::Optimizer::run(cfg_function);
+  expect(cfg_optimized.ok() &&
+             cfg_optimized.stats.common_subexpressions >= 1,
+         "CFG optimizer must value-number duplicate Word shifts");
+  const auto cfg_compilation = Compiler::compile(cfg_function);
+  expect(cfg_compilation.ok(), "CFG Word shifts must compile to native code");
+  for (const Word amount : kAmounts) {
+    const std::array<Word, 2> arguments = {-1, amount};
+    const auto interpreted = unijit::ir::ControlFlowInterpreter::evaluate(
+        cfg_function, arguments.data(), arguments.size());
+    if (cfg_compilation.ok()) {
+      const auto native =
+          cfg_compilation.function->invoke(arguments.data(), arguments.size());
+      expect(interpreted.ok() && native.ok() &&
+                 native.value == interpreted.value,
+             "native CFG Word shifts must match the interpreter");
+    }
+  }
+
+  FunctionBuilder malformed(
+      std::vector<unijit::ir::ValueType>(2,
+                                         unijit::ir::ValueType::kFloat64));
+  const Value invalid =
+      malformed.shift_left(malformed.parameter(0), malformed.parameter(1));
+  expect(malformed.set_return(invalid).ok() &&
+             !unijit::ir::verify(std::move(malformed).build()).ok(),
+         "verifier must reject Word shifts over Float64 operands");
+}
+
 void test_float64_negation() {
   using unijit::ir::ValueType;
   FunctionBuilder builder(std::vector<ValueType>{ValueType::kFloat64});
@@ -4371,6 +4497,7 @@ int main() {
   test_float64_division();
   test_word_unary_operations();
   test_word_bitwise_operations();
+  test_word_shift_operations();
   test_float64_negation();
   test_float64_comparisons();
   test_float64_nonzero_guard();
