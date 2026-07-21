@@ -183,6 +183,10 @@ bool is_frame(Opcode opcode) noexcept {
   return opcode == Opcode::kLoadFrame || opcode == Opcode::kStoreFrame;
 }
 
+bool is_object(Opcode opcode) noexcept {
+  return opcode == Opcode::kLoadObject || opcode == Opcode::kStoreObject;
+}
+
 bool is_nonzero_guard(ControlOpcode opcode) noexcept {
   return opcode == ControlOpcode::kGuardWordNonzero ||
          opcode == ControlOpcode::kGuardFloatNonzero;
@@ -198,6 +202,11 @@ bool is_memory(ControlOpcode opcode) noexcept {
 bool is_frame(ControlOpcode opcode) noexcept {
   return opcode == ControlOpcode::kLoadFrame ||
          opcode == ControlOpcode::kStoreFrame;
+}
+
+bool is_object(ControlOpcode opcode) noexcept {
+  return opcode == ControlOpcode::kLoadObject ||
+         opcode == ControlOpcode::kStoreObject;
 }
 
 bool is_control_binary(ControlOpcode opcode) noexcept {
@@ -483,6 +492,7 @@ PassResult transform_once(
     if (input.nodes()[index].opcode == Opcode::kCall ||
         is_memory(input.nodes()[index].opcode) ||
         is_frame(input.nodes()[index].opcode) ||
+        is_object(input.nodes()[index].opcode) ||
         is_nonzero_guard(input.nodes()[index].opcode) ||
         input.nodes()[index].opcode == Opcode::kSafepoint) {
       live[index] = true;
@@ -519,7 +529,8 @@ PassResult transform_once(
           node.opcode == Opcode::kStoreFloat) {
         live[node.rhs.id()] = true;
       }
-    } else if (node.opcode == Opcode::kStoreFrame) {
+    } else if (node.opcode == Opcode::kStoreFrame ||
+               node.opcode == Opcode::kStoreObject) {
       live[node.lhs.id()] = true;
     }
   }
@@ -533,6 +544,9 @@ PassResult transform_once(
                           input.memory_region_count());
   for (const FrameSlotDescriptor& slot : input.frame_slots()) {
     builder.create_frame_slot(slot.type, slot.sensitive);
+  }
+  for (const TrustedObjectDescriptor& object : input.trusted_objects()) {
+    builder.create_trusted_object(object.layout_identity, object.byte_size);
   }
   std::vector<Value> mapped(node_count);
   std::vector<bool> known_constant(node_count, false);
@@ -610,6 +624,16 @@ PassResult transform_once(
       mapped[index] = node.opcode == Opcode::kLoadFrame
                           ? builder.load_frame(slot)
                           : builder.store_frame(slot, mapped[node.lhs.id()]);
+      continue;
+    }
+
+    if (is_object(node.opcode)) {
+      const TrustedObjectSlot object{node.trusted_object};
+      const std::size_t offset = static_cast<std::size_t>(node.immediate);
+      mapped[index] = node.opcode == Opcode::kLoadObject
+                          ? builder.load_object(object, offset, node.type)
+                          : builder.store_object(object, offset,
+                                                 mapped[node.lhs.id()]);
       continue;
     }
 
@@ -967,6 +991,9 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
   for (const FrameSlotDescriptor& slot : input.frame_slots()) {
     builder.create_frame_slot(slot.type, slot.sensitive);
   }
+  for (const TrustedObjectDescriptor& object : input.trusted_objects()) {
+    builder.create_trusted_object(object.layout_identity, object.byte_size);
+  }
   std::vector<Block> blocks(block_count);
   blocks[input.entry_block().id()] = builder.entry_block();
   std::vector<Value> mapped(node_count);
@@ -1010,6 +1037,7 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
                    opcode == ControlOpcode::kCall ||
                    is_memory(opcode) ||
                    is_frame(opcode) ||
+                   is_object(opcode) ||
                    is_nonzero_guard(opcode) ||
                    opcode == ControlOpcode::kSafepoint);
   }
@@ -1071,7 +1099,8 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
           node.opcode == ControlOpcode::kStoreFloat) {
         live[node.rhs.id()] = true;
       }
-    } else if (node.opcode == ControlOpcode::kStoreFrame) {
+    } else if (node.opcode == ControlOpcode::kStoreFrame ||
+               node.opcode == ControlOpcode::kStoreObject) {
       live[node.lhs.id()] = true;
     } else if (is_control_unary(node.opcode)) {
       live[node.lhs.id()] = true;
@@ -1165,6 +1194,13 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
       mapped[index] = node.opcode == ControlOpcode::kLoadFrame
                           ? builder.load_frame(slot)
                           : builder.store_frame(slot, mapped[node.lhs.id()]);
+    } else if (is_object(node.opcode)) {
+      const TrustedObjectSlot object{node.trusted_object};
+      const std::size_t offset = static_cast<std::size_t>(node.immediate);
+      mapped[index] =
+          node.opcode == ControlOpcode::kLoadObject
+              ? builder.load_object(object, offset, node.type)
+              : builder.store_object(object, offset, mapped[node.lhs.id()]);
     } else if (is_nonzero_guard(node.opcode)) {
       mapped[index] =
           node.opcode == ControlOpcode::kGuardWordNonzero
@@ -1187,7 +1223,7 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
               {}, {}, 0, 0};
     }
     if (node.opcode == ControlOpcode::kCall || is_memory(node.opcode) ||
-        is_frame(node.opcode) ||
+        is_frame(node.opcode) || is_object(node.opcode) ||
         is_nonzero_guard(node.opcode) ||
         node.opcode == ControlOpcode::kSafepoint) {
       available[owner].clear();
@@ -1344,6 +1380,9 @@ ControlFlowOptimizationResult Optimizer::run(
                                function.memory_region_count());
     for (const FrameSlotDescriptor& slot : function.frame_slots()) {
       builder.create_frame_slot(slot.type, slot.sensitive);
+    }
+    for (const TrustedObjectDescriptor& object : function.trusted_objects()) {
+      builder.create_trusted_object(object.layout_identity, object.byte_size);
     }
     std::vector<Block> blocks(block_count);
     blocks[function.entry_block().id()] = builder.entry_block();
@@ -1523,6 +1562,7 @@ ControlFlowOptimizationResult Optimizer::run(
                     opcode == ControlOpcode::kCall ||
                     is_memory(opcode) ||
                     is_frame(opcode) ||
+                    is_object(opcode) ||
                     is_nonzero_guard(opcode) ||
                     opcode == ControlOpcode::kSafepoint;
     }
@@ -1569,7 +1609,8 @@ ControlFlowOptimizationResult Optimizer::run(
             node.opcode == ControlOpcode::kStoreFloat) {
           live[node.rhs.id()] = true;
         }
-      } else if (node.opcode == ControlOpcode::kStoreFrame) {
+      } else if (node.opcode == ControlOpcode::kStoreFrame ||
+                 node.opcode == ControlOpcode::kStoreObject) {
         live[node.lhs.id()] = true;
       } else if (is_control_unary(node.opcode)) {
         if (replacement[index] != node_count) {
@@ -1644,6 +1685,13 @@ ControlFlowOptimizationResult Optimizer::run(
         mapped[index] = node.opcode == ControlOpcode::kLoadFrame
                             ? builder.load_frame(slot)
                             : builder.store_frame(slot, mapped[node.lhs.id()]);
+      } else if (is_object(node.opcode)) {
+        const TrustedObjectSlot object{node.trusted_object};
+        const std::size_t offset = static_cast<std::size_t>(node.immediate);
+        mapped[index] =
+            node.opcode == ControlOpcode::kLoadObject
+                ? builder.load_object(object, offset, node.type)
+                : builder.store_object(object, offset, mapped[node.lhs.id()]);
       } else if (is_nonzero_guard(node.opcode)) {
         mapped[index] =
             node.opcode == ControlOpcode::kGuardWordNonzero
