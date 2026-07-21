@@ -60,12 +60,31 @@ differential corpus; the riscv64 core run also executed the greater-than-2,048
 node compact-frame regression inside its signed 12-bit stack-addressing limit.
 
 Also on 2026-07-21, bounded Word memory was executed natively on Darwin arm64,
-Darwin x86-64 through Rosetta, and the Bianbu riscv64 host. The shared matrix
-checks 8/16/32/64-bit loads and stores, native/little/big byte order, signed
-extension, naturally aligned fast paths, deliberately unaligned paths, exact
-stored bytes, diagnosed failures, and stack-map ownership against the reference
-interpreter. The riscv64 run used GCC 14.2 with warnings as errors and passed
-the full eight-test qualification configuration.
+Darwin x86-64 through Rosetta, Ubuntu x86-64, Windows x86-64, and the Bianbu
+riscv64 host. The shared matrix checks 8/16/32/64-bit loads and stores,
+native/little/big byte order, signed extension, naturally aligned fast paths,
+deliberately unaligned paths, exact stored bytes, diagnosed failures, and
+stack-map ownership against the reference interpreter. Ubuntu used GCC 13.3,
+Windows used MinGW GCC 14.2, and Bianbu used GCC 14.2; each warnings-as-errors
+build passed the full eight-test qualification configuration. The Windows host
+could not reach GitHub during this run, so the exact `main` Git bundle was
+transferred over its registered SSH channel before the native build.
+
+The versioned bounded-memory benchmark was also run at commit `c9d338b` with
+1,000 warmup iterations, three samples of 10,000 iterations, exact checksum and
+byte comparison, and no release threshold:
+
+| Native host | Aligned native u64 | Unaligned big-endian u64 | Interpreter speedup |
+|---|---:|---:|---:|
+| Darwin arm64 | 6.021 ns | 5.125 ns | 20.050x / 21.009x |
+| Ubuntu x86-64 | 3.772 ns | 3.595 ns | 10.971x / 11.865x |
+| Windows x86-64 | 4.510 ns | 4.280 ns | 24.186x / 25.797x |
+| Bianbu riscv64 | 53.782 ns | 71.898 ns | 11.045x / 8.369x |
+
+These values establish replayable architecture baselines rather than a
+commercial floor. The RISC-V unaligned big-endian path intentionally uses byte
+operations to avoid implementation-dependent misaligned traps, which is
+reflected in its latency and larger 608-byte function.
 
 The native test suite checks full-width constants, all bootstrap arithmetic
 operations, forced register spilling, invocation validation, and 5,000 seeded

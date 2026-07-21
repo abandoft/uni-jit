@@ -121,7 +121,9 @@ Qualification covers both IR forms, permission and range failures, null
 contexts, optimizer preservation, stack maps, all four widths, both explicit
 byte orders, native order, signed extension, natural-alignment fast paths, and
 unaligned byte paths. The native matrix is checked against the interpreter and
-the expected byte layout on AArch64, x86-64, and real RISC-V 64 hardware.
+the expected byte layout on AArch64, real Ubuntu and Windows x86-64, and real
+RISC-V 64 hardware. The versioned two-path microbenchmark and initial real-host
+records are documented in [`PORTABILITY.md`](PORTABILITY.md).
 
 The next memory milestones are Float32/Float64 values and standalone byte
 reversal, followed by verified frame slots. Strict 128-bit SIMD then builds on

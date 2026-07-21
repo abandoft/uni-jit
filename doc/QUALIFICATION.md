@@ -193,6 +193,24 @@ extensions rather than the MSVC C frontend. Linux ASan/UBSan repeats all three
 frontend suites, while the separate Windows MSVC ASan lane covers Lua's
 `longjmp` bridge under the native sanitizer runtime.
 
+## Bounded memory qualification
+
+Core unit tests execute bounded Word memory through straight-line and CFG
+interpreters and native code. They cover region binding, read-only rejection,
+unsigned overflow-free bounds, null contexts, absolute alignment, diagnosed
+exit site/value capture, stack maps, optimizer effect preservation, and a
+matrix of 8/16/32/64-bit native/little/big-endian accesses with signed and
+unsigned loads. The same matrix forces both naturally aligned target fast paths
+and deliberately unaligned byte-exact paths and checks the final bytes against
+the reference interpreter.
+
+`unijit_bounded_memory_benchmark` retains separate aligned native-order u64 and
+unaligned big-endian u64 store/load records. Each sample is checksum- and
+byte-matched with the interpreter and reports compilation latency, native code
+bytes, median latency, and speedup. Initial real-host records are target
+baselines, not release floors; [`PORTABILITY.md`](PORTABILITY.md) records the
+current AArch64, Ubuntu/Windows x86-64, and RISC-V 64 results.
+
 ## CFG register-residency benchmark
 
 `unijit_cfg_float64_benchmark` executes one typed CFG with four loop-carried
