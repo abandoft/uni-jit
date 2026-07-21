@@ -11,8 +11,9 @@ interpreters, optimizer, register allocator, AArch64, x86-64, and RISC-V 64
 native backends.
 
 The following related capabilities remain roadmap items and are not implied by
-the scalar-memory API: trusted runtime-object layouts, frame-local slots,
-vector memory, atomics, and arbitrary address arithmetic.
+the scalar-memory API: trusted runtime-object layouts, vector memory, atomics,
+and arbitrary address arithmetic. Fixed Word/Float64 frame-local slots are now
+delivered under the separate [`FRAME_LOCALS.md`](FRAME_LOCALS.md) contract.
 
 ## Region and descriptor model
 
@@ -144,8 +145,9 @@ x86-64, and real RISC-V 64 hardware. The versioned four-path microbenchmark and
 initial real-host records are documented in
 [`PORTABILITY.md`](PORTABILITY.md).
 
-The next memory milestones are trusted runtime layouts and verified frame
-slots. Strict 128-bit SIMD then builds on the same region, alias, endian,
-alignment, bounds, stack-map, and target-profile contracts. Atomics remain a
-later, naturally aligned contract with explicit memory ordering; they will not
-reuse the unaligned scalar fallback.
+The next memory milestone is trusted runtime layout access. The fixed
+Word/Float64 frame-slot floor is delivered; aligned vector/aggregate frame
+classes remain follow-on work. Strict 128-bit SIMD then builds on the same
+region, alias, endian, alignment, bounds, stack-map, and target-profile
+contracts. Atomics remain a later, naturally aligned contract with explicit
+memory ordering; they will not reuse the unaligned scalar fallback.

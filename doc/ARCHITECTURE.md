@@ -110,6 +110,14 @@ share that contract. AArch64 lowers through `CMP` plus conditional select,
 x86-64 through `CMP` plus the signed/equality `SETcc` family, and RISC-V 64
 through `SLT`, `XOR`, `SLTIU`, and `SLTU`, without frontend-specific helpers.
 
+Controlled frame locals provide non-addressable Word and Float64 invocation
+state in both IR forms. Slots are zero-initialized at every entry, typed stores
+return their source SSA value, and optional sensitive metadata clears the slot
+on every native return path. They remain distinct from allocator spills and
+logical reconstruction slots and have an independent resource budget. The
+layout, optimizer, security, and future aggregate-frame boundaries are defined
+in `doc/FRAME_LOCALS.md`.
+
 Effectful runtime helpers use one portable signature: a pointer to a flat
 value-bits argument area plus its element count, returning one value-bits word.
 Calls are explicit effectful SSA definitions in both straight-line and CFG IR

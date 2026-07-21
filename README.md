@@ -48,6 +48,9 @@ portable baselines, immutable compilation identity, and profile-scoped caches.
 Float32/Float64 storage, standalone byte reversal, byte-exact endian and
 unaligned semantics, diagnosed failures, live-value stack maps, native
 lowering, resource limits, and the remaining memory roadmap.
+[doc/FRAME_LOCALS.md](doc/FRAME_LOCALS.md) defines fixed typed invocation
+storage, zero initialization, sensitive-slot clearing, optimizer rules,
+resource limits, and the boundary for future vector and aggregate frames.
 [doc/QUALIFICATION.md](doc/QUALIFICATION.md) defines deterministic fuzzing,
 concurrency stress, sanitizers, and commercial performance floors.
 [doc/LUA_FRONTEND.md](doc/LUA_FRONTEND.md) describes the stock Lua 5.5

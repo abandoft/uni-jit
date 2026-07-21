@@ -13,6 +13,7 @@ regions.
 | Call or CFG edge arguments | 262,144 |
 | Declared bounded memory regions | 64 |
 | Bounded memory accesses | 65,536 |
+| Controlled frame slots | 256 |
 | Stack maps and exit records | 4,096 |
 | Recovery and stack-map values | 262,144 |
 | Native code bytes per function | 16 MiB |
@@ -40,10 +41,11 @@ auto cfg_result = unijit::jit::Compiler::compile(cfg, cfg_options);
 The compiler rejects excessive parameters, nodes, CFG blocks, flattened
 straight-line or CFG runtime-call arguments, CFG edge arguments, requested exit
 records, declared memory regions, memory accesses, and recovery operations
-before the IR verifier runs. CFG call and edge arguments share the aggregate
-`maximum_ir_arguments` budget. This ordering bounds verifier work, including
-CFG dominance state, rather than merely rejecting an oversized result
-afterward.
+before the IR verifier runs. Controlled frame slots are counted independently
+from allocator spills and rejected before layout or lowering. CFG call and
+edge arguments share the aggregate `maximum_ir_arguments` budget. This
+ordering bounds verifier work, including CFG dominance state, rather than
+merely rejecting an oversized result afterward.
 
 After optimization and recovery preparation, UniJIT bounds stack-map record
 and live-value requirements before native lowering. It checks emitted stack

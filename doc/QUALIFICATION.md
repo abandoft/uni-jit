@@ -217,6 +217,19 @@ records are target baselines, not release floors;
 [`PORTABILITY.md`](PORTABILITY.md) records the current AArch64,
 Ubuntu/Windows x86-64, and RISC-V 64 results.
 
+## Controlled frame-local qualification
+
+The shared core suite exercises zero-initialized Word and Float64 slots in both
+IR forms, stores returning their source values, repeated calls that cannot
+observe a prior invocation, and state carried across CFG edges. Optimized IR is
+checked against the reference interpreters so frame effects cannot be removed
+or commoned across stores. Negative cases reject undeclared slots, mismatched
+SSA types, and resource-limit overflow. Native qualification also checks the
+reported frame-slot count and verifies that a sensitive slot adds return-path
+clearing code without requiring an execution context. The stronger claim that
+all historical register and spill copies of a secret are erased remains outside
+the delivered slot contract.
+
 ## CFG register-residency benchmark
 
 `unijit_cfg_float64_benchmark` executes one typed CFG with four loop-carried
