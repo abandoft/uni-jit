@@ -767,8 +767,15 @@ void test_float64_comparisons() {
       builder.float64_less_than(builder.parameter(0), builder.parameter(1));
   const Value less_equal =
       builder.float64_less_equal(builder.parameter(0), builder.parameter(1));
-  const Value encoded =
-      builder.add(builder.multiply(less, builder.constant(10)), less_equal);
+  const Value equal =
+      builder.float64_equal(builder.parameter(0), builder.parameter(1));
+  const Value not_equal =
+      builder.float64_not_equal(builder.parameter(0), builder.parameter(1));
+  const Value encoded = builder.add(
+      builder.multiply(less, builder.constant(1000)),
+      builder.add(builder.multiply(less_equal, builder.constant(100)),
+                  builder.add(builder.multiply(equal, builder.constant(10)),
+                              not_equal)));
   expect(builder.set_return(encoded).ok(),
          "Float64 comparison fixture must record its Word result");
   const Function function = std::move(builder).build();
@@ -792,11 +799,16 @@ void test_float64_comparisons() {
              "native Float64 comparison must match the interpreter");
     }
   };
-  check(1.0, 2.0, 11, "less operands must set both comparison flags");
-  check(2.0, 2.0, 1, "equal operands must only set the inclusive flag");
-  check(3.0, 2.0, 0, "greater operands must clear both comparison flags");
-  check(std::numeric_limits<double>::quiet_NaN(), 2.0, 0,
-        "unordered operands must clear both comparison flags");
+  check(1.0, 2.0, 1101,
+        "less operands must set ordered and inequality flags");
+  check(2.0, 2.0, 110,
+        "equal operands must set inclusive and equality flags");
+  check(3.0, 2.0, 1,
+        "greater operands must only set the inequality flag");
+  check(0.0, -0.0, 110,
+        "signed zeroes must compare equal under Float64 semantics");
+  check(std::numeric_limits<double>::quiet_NaN(), 2.0, 1,
+        "unordered operands must compare unequal");
 
   FunctionBuilder constant_builder(0);
   const Value constant_result = constant_builder.float64_less_than(
@@ -812,6 +824,27 @@ void test_float64_comparisons() {
                  unijit::ir::Opcode::kConstant &&
              optimized.function.nodes()[0].immediate == 1,
          "optimizer must fold a constant Float64 comparison to a Word");
+
+  FunctionBuilder unordered_builder(0);
+  const Value nan = unordered_builder.float64_constant(
+      std::numeric_limits<double>::quiet_NaN());
+  const Value unordered_equal = unordered_builder.float64_equal(nan, nan);
+  const Value unordered_not_equal =
+      unordered_builder.float64_not_equal(nan, nan);
+  const Value unordered_result = unordered_builder.add(
+      unordered_builder.multiply(unordered_equal,
+                                 unordered_builder.constant(10)),
+      unordered_not_equal);
+  expect(unordered_builder.set_return(unordered_result).ok(),
+         "unordered comparison fixture must record its result");
+  const auto unordered_optimized =
+      unijit::ir::Optimizer::run(std::move(unordered_builder).build());
+  expect(unordered_optimized.ok() &&
+             unordered_optimized.function.nodes().size() == 1 &&
+             unordered_optimized.function.nodes()[0].opcode ==
+                 unijit::ir::Opcode::kConstant &&
+             unordered_optimized.function.nodes()[0].immediate == 1,
+         "optimizer must fold NaN equality and inequality exactly");
 
   FunctionBuilder malformed(2);
   const Value invalid =
@@ -2721,8 +2754,15 @@ void test_control_flow_float64_comparisons() {
       builder.float64_less_than(builder.parameter(0), builder.parameter(1));
   const Value less_equal =
       builder.float64_less_equal(builder.parameter(0), builder.parameter(1));
-  const Value encoded =
-      builder.add(builder.multiply(less, builder.constant(10)), less_equal);
+  const Value equal =
+      builder.float64_equal(builder.parameter(0), builder.parameter(1));
+  const Value not_equal =
+      builder.float64_not_equal(builder.parameter(0), builder.parameter(1));
+  const Value encoded = builder.add(
+      builder.multiply(less, builder.constant(1000)),
+      builder.add(builder.multiply(less_equal, builder.constant(100)),
+                  builder.add(builder.multiply(equal, builder.constant(10)),
+                              not_equal)));
   expect(builder.set_return(encoded).ok(),
          "Float64 CFG comparison fixture must return its encoded flags");
   const unijit::ir::ControlFlowFunction function = std::move(builder).build();
@@ -2745,11 +2785,16 @@ void test_control_flow_float64_comparisons() {
              "native Float64 CFG comparison must match the interpreter");
     }
   };
-  check(1.0, 2.0, 11, "less operands must set both comparison flags");
-  check(2.0, 2.0, 1, "equal operands must only set the inclusive flag");
-  check(3.0, 2.0, 0, "greater operands must clear both comparison flags");
-  check(std::numeric_limits<double>::quiet_NaN(), 2.0, 0,
-        "unordered operands must clear both comparison flags");
+  check(1.0, 2.0, 1101,
+        "less operands must set ordered and inequality flags");
+  check(2.0, 2.0, 110,
+        "equal operands must set inclusive and equality flags");
+  check(3.0, 2.0, 1,
+        "greater operands must only set the inequality flag");
+  check(0.0, -0.0, 110,
+        "signed zeroes must compare equal under Float64 semantics");
+  check(std::numeric_limits<double>::quiet_NaN(), 2.0, 1,
+        "unordered operands must compare unequal");
 }
 
 void test_control_flow_merge() {
