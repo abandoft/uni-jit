@@ -19,7 +19,7 @@ qualifying the shared commercial contract on those three targets.
 | Capability | Current UniJIT state | Product decision | Priority |
 |---|---|---|---|
 | Scalar Word and Float64 operations | Implemented in both IR forms and all three backends | Continue expanding through the same typed contract | Delivered |
-| SIMD | The strict 128-bit type/operation contract, both IR forms, verifier, interpreters, CFG whole-vector edges, folding, limits, differential generation, and fail-closed native boundary are delivered; vector allocation and native lowering are not | Complete bounded vector memory, spills/calls, NEON, SSE2, RVV or reported scalar fallback, capability telemetry, and real-host gates before wider profiles or loop vectorization | P0 partial |
+| SIMD | The strict 128-bit type/operation contract, both IR forms, verifier, interpreters, CFG whole-vector edges, folding, limits, differential generation, fail-closed native boundary, typed shared-SIMD allocation, aligned two-word vector slots, mixed-bank parallel-copy planning, and RISC-V stack-only allocation mode are delivered; backend vector spills/calls and native lowering are not | Complete bounded vector memory, backend spill/call integration, NEON, SSE2, RVV or reported scalar fallback, capability telemetry, and real-host gates before wider profiles or loop vectorization | P0 partial |
 | Typed memory, unaligned access, byte reversal | Bounded 8/16/32/64-bit Word memory, Float32/Float64 storage, standalone 16/32/64-bit byte reversal, fixed Word/Float64 frame slots, and preflighted trusted Word/Float64 object layouts are delivered in both IR forms, the interpreter, optimizer, and all three native backends | Use the completed scalar provenance floor for SIMD, atomics, and later FFI lowering | Delivered scalar floor |
 | Generated-code atomics | Runtime control structures use C++ atomics; generated IR has none | Add typed atomic IR with explicit memory order and natural-alignment rules | P1 |
 | Fast internal calls | Calls currently use the portable runtime-helper ABI | Add a private JIT-to-JIT convention without weakening external ABI safety | P1 |
@@ -101,22 +101,24 @@ stored and invalidated independently from baseline code.
 
 ## Scalar and vector register foundation
 
-The scalar Float64 allocator and the future vector allocator share physical
-SIMD/FP files, but they remain distinct typed allocation classes at the IR and
-MIR boundaries. A backend register description records allocatable,
+The delivered typed allocator maps Float64 and vector values into one
+conflict-free physical SIMD/FP bank while keeping their IR types and operation
+constraints distinct. It can instead force vectors onto aligned 16-byte stack
+slots for targets without an enabled vector register file. A backend register
+description records allocatable,
 caller-clobbered, callee-preserved, argument, result, and scratch roles instead
 of assuming that instruction support alone makes the full register file safe.
 
-The AArch64 scalar backend already exposes caller-clobbered `v0`–`v7` and
-`v16`–`v29` to CFG allocation, reserves `v30`/`v31` as lowering scratch, and
+The AArch64 scalar backend exposes caller-clobbered `v0`–`v7` and
+`v16`–`v29` to straight-line and CFG allocation, reserves `v30`/`v31` as lowering scratch, and
 does not allocate callee-preserved `v8`–`v15` until prologue/epilogue save
 selection is implemented. Live Float64 values are saved around runtime-helper
 calls, so widening this pool does not weaken the helper ABI. x86-64 currently
 allocates XMM1–XMM4 plus XMM6–XMM15 under System V while reserving XMM0/XMM5
 for lowering scratch. Windows retains the common volatile XMM1–XMM4 floor;
 using XMM6–XMM15 there requires target-specific nonvolatile save tracking.
-RV64 uses its existing caller-clobbered floating-point pool. These scalar
-decisions are prerequisites for SIMD but do not count as vector-IR delivery.
+RV64 uses its existing caller-clobbered floating-point pool for Float64 and the
+explicit stack-only policy for vectors until RVV selection is qualified.
 The x86-64 backend asks CFG allocation to let a final-use Float64 left operand
 donate its physical register to the result, which maps recurrent SSA arithmetic
 to destructive two-address SSE2 instructions without an avoidable move.
@@ -208,10 +210,13 @@ therefore remains reproducible across tiers. NaN-sensitive operations not
 covered by the scalar contract, such as target-specific minimum/maximum, are
 deferred until their exact semantics are specified.
 
-Vector values use an independent register class. Spills are 16-byte aligned,
-edge copies remain parallel, call liveness identifies vector caller-clobbers,
-and stack maps describe the vector as one typed value. The first release does
-not allow GC references inside vector lanes.
+Vector values retain an independent typed class while sharing the physical
+SIMD/FP allocation bank with Float64 where the architecture requires it. Spill
+and caller-clobber backup plans use 16-byte-aligned two-word slots, edge copies
+remain parallel across mixed Float64/vector cycles, and call liveness identifies
+vector caller-clobbers. The first release does not allow GC references inside
+vector lanes, so scalar runtime-exit capture excludes vectors and vector
+deoptimization remains unsupported.
 
 ### Backend mapping
 
@@ -252,8 +257,9 @@ per-op probe flags with one cacheable, target-profile-scoped contract.
 
 1. Land explicit vector IR, verifier, interpreter, and folding. This semantic
    slice is delivered and specified in
-   [`PORTABLE_SIMD.md`](PORTABLE_SIMD.md); allocation and three-backend
-   lowering remain in progress.
+   [`PORTABLE_SIMD.md`](PORTABLE_SIMD.md); the shared/stack-only allocation
+   foundation is also delivered, while three-backend lowering remains in
+   progress.
 2. Add superword-level parallelism for independent isomorphic scalar nodes.
 3. Add a counted-loop vectorizer with dependence and alias proofs, guarded
    alignment/bounds checks, a scalar epilogue, and deoptimization metadata.
@@ -383,9 +389,10 @@ byte-identical packages for identical inputs and target profiles.
    aligned/lifetime frame classes remain.
 2. Complete strict 128-bit SIMD. The typed IR, interpreter parity, optimizer,
    CFG whole-vector edge copies, resource limits, negative tests, differential
-   corpus, and fail-closed native boundary are delivered; vector memory,
-   spills, calls, feature preflight, three-backend lowering, and scalar
-   fallback where required remain.
+   corpus, fail-closed native boundary, shared SIMD allocation, aligned spill
+   plans, call liveness, mixed-bank edge-cycle planning, and RISC-V stack-only
+   mode are delivered; vector memory, backend spill/call emission, feature
+   preflight, three-backend lowering, and scalar fallback execution remain.
 3. Add explicit SIMD and complete-loop performance gates on real AArch64,
    Ubuntu/Windows x86-64, and RISC-V 64 hosts; emulation is supplemental only.
 4. Deliver atomic memory operations and data-only patch cells with concurrency,

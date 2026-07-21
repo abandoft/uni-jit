@@ -110,8 +110,8 @@ The optimizer treats every vector operation as pure, retains all three select
 operands in liveness, remaps side tables, and folds complete constant vector
 expressions bit-for-bit. It can collapse a constant vector program to one
 scalar constant. Dynamic vector expressions remain explicit; they are never
-silently scalarized by the scalar register allocator or ignored by a native
-encoder.
+silently discarded or reinterpreted by allocation. Native compilation still
+rejects them before an incomplete encoder can publish code.
 
 ## Qualification and remaining gates
 
@@ -123,13 +123,22 @@ with a whole-vector edge, both optimized forms, and constant folding across
 random arithmetic, mask logic, selection, lane movement, shuffling, sign-mask
 extraction, and widening.
 
+The typed allocation foundation is delivered. Straight-line and CFG allocation
+use independent Word and physical SIMD banks, allow Float64 and vectors to
+share the latter without overlap, reserve aligned two-word spill and
+caller-clobber backup slots, detect mixed Float64/vector CFG register cycles by
+physical bank, and preserve a full 128-bit cycle source when required. A
+stack-only vector mode is available to the RISC-V backend until RVV is selected.
+Non-reference vector lanes are deliberately excluded from the scalar
+`ExecutionContext` capture payload; vector deoptimization remains unsupported.
+
 The P0 feature remains incomplete until all of the following are delivered:
 
 1. bounded aligned and unaligned vector loads/stores using the existing memory
    provenance and diagnosed-exit model;
-2. a vector allocation class sharing physical SIMD/FP files safely with
-   Float64, including 16-byte spills, CFG parallel copies, helper-call
-   preservation, and ABI-specific nonvolatile saves;
+2. backend integration of the delivered allocation plans for 16-byte spills,
+   CFG parallel copies, helper-call preservation, and any ABI-specific
+   nonvolatile saves;
 3. independent NEON and SSE2 lowering plus RVV lowering or an explicitly
    reported verified scalar fallback;
 4. target-profile-scoped `native`/`legalized`/`scalarized`/`unsupported`
