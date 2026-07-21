@@ -12,8 +12,8 @@ seed, compiles them with the production pipeline, and compares every native
 result bit-for-bit with the matching reference interpreter. Each corpus covers:
 
 - straight-line Word SSA with random constants, addition, subtraction,
-  multiplication, exact negation and bitwise-not, spills, and optimizer input
-  shapes;
+  multiplication, exact negation, bitwise-not, AND, OR, and XOR, spills, and
+  optimizer input shapes;
 - straight-line Float64 SSA with bounded finite inputs, all four binary
   arithmetic operations, and exact unary negation;
 - typed Word and Float64 CFGs with diamonds, 1 to 12 loop-carried state values,
@@ -122,6 +122,15 @@ and loop-carried baseline/optimized code across asynchronous promotion; its
 Float64 specialization separately checks both signed zeroes. The deterministic
 generator emits both Word operations in straight-line and CFG forms, and the
 installed-package consumer builds both public builders.
+
+Word binary bitwise qualification combines complementary, sparse, signed, and
+boundary patterns through AND, OR, and XOR in straight-line and CFG interpreter
+and native execution. It requires exact 64-bit results, optimizer constant and
+identity rules, duplicate CFG value numbering, verifier rejection of Float64
+operands, and public installed-package construction. Stock Lua exercises both
+register-register and constant-K bytecodes inside straight-line and
+loop-carried baseline/optimized code across asynchronous promotion; the
+deterministic generator emits all three operations in both IR forms.
 
 Strided-loop coverage executes QuickJS prefix/postfix decrement and `+=`/`-=`
 updates plus PocketPy one-, two-, and three-argument `range` forms. Positive

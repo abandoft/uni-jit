@@ -72,6 +72,12 @@ overflow; bitwise-not flips all 64 bits. The optimizer folds these definitions,
 cancels paired identical unary operations, and preserves them in local value
 numbering. AArch64 lowers them to `NEG`/`MVN`, x86-64 to `NEG`/`NOT`, and
 RISC-V 64 to zero-based `SUB`/`XORI -1` without helper calls.
+Typed Word AND, OR, and XOR likewise operate on all 64 bits in both IR forms.
+Their optimizer rules cover constant folding, zero/all-ones identities and
+annihilators, identical operands, dead values, and block-local duplicates.
+The native mappings are AArch64 `AND`/`ORR`/`EOR`, x86-64
+`AND`/`OR`/`XOR`, and RISC-V 64 `AND`/`OR`/`XOR`, so no frontend bitwise
+operation crosses a runtime-helper boundary.
 
 Effectful runtime helpers use one portable signature: a pointer to a flat
 value-bits argument area plus its element count, returning one value-bits word.
@@ -133,9 +139,10 @@ fuzzed infinite loops fail deterministically.
 
 CFG signatures, constants, instructions, and block parameters carry the same
 Word/Float64 types as straight-line SSA. Edges must preserve each destination
-parameter's type; Word negation and bitwise-not retain exact modulo/bitwise
-semantics, while Float64 addition, subtraction, negation, multiplication, and
-division retain exact value bits through loop backedges. Ordered Float64
+parameter's type; Word unary and binary bitwise operations retain exact
+modulo/bitwise semantics, while Float64 addition, subtraction, negation,
+multiplication, and division retain exact value bits through loop backedges.
+Ordered Float64
 comparisons return false for NaN inputs and produce Word conditions suitable
 for CFG branches. Equality is false and inequality is true for unordered
 operands, while both signed zeroes compare equal. Effectful CFG Float64
