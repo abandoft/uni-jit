@@ -690,6 +690,125 @@ void test_bounded_memory_control_flow_interpreter() {
   }
 }
 
+void test_native_bounded_memory_matrix() {
+  using unijit::ir::MemoryAccessDescriptor;
+  using unijit::ir::MemoryByteOrder;
+  using unijit::ir::MemoryWidth;
+  using unijit::runtime::ExecutionContext;
+  using unijit::runtime::MemoryRegion;
+
+  struct MemoryCase final {
+    MemoryWidth width;
+    MemoryByteOrder byte_order;
+    std::uint8_t alignment;
+    Word offset;
+    Word value;
+    bool sign_extend;
+    const char* name;
+  };
+  const std::array<MemoryCase, 12> cases = {{
+      {MemoryWidth::k8, MemoryByteOrder::kNative, 1, 0, 0xA5, false,
+       "native-u8"},
+      {MemoryWidth::k8, MemoryByteOrder::kNative, 1, 1, -91, true,
+       "native-i8"},
+      {MemoryWidth::k16, MemoryByteOrder::kLittleEndian, 2, 2, 0xA1B2,
+       false, "aligned-little-u16"},
+      {MemoryWidth::k16, MemoryByteOrder::kBigEndian, 1, 3, 0xB2C3, false,
+       "unaligned-big-u16"},
+      {MemoryWidth::k16, MemoryByteOrder::kBigEndian, 2, 4, 0xD4E5, false,
+       "aligned-big-u16"},
+      {MemoryWidth::k32, MemoryByteOrder::kLittleEndian, 1, 1, 0x12345678,
+       false, "unaligned-little-u32"},
+      {MemoryWidth::k32, MemoryByteOrder::kNative, 4, 4, 0x76543210, false,
+       "aligned-native-u32"},
+      {MemoryWidth::k32, MemoryByteOrder::kBigEndian, 4, 8, 0x23456701,
+       false, "aligned-big-u32"},
+      {MemoryWidth::k32, MemoryByteOrder::kLittleEndian, 4, 12,
+       -2147483647, true, "aligned-little-i32"},
+      {MemoryWidth::k64, MemoryByteOrder::kNative, 8, 8,
+       0x0123456789ABCDEF, false, "aligned-native-u64"},
+      {MemoryWidth::k64, MemoryByteOrder::kLittleEndian, 1, 3,
+       0x1023456789ABCDEF, false, "unaligned-little-u64"},
+      {MemoryWidth::k64, MemoryByteOrder::kBigEndian, 1, 5,
+       0x203456789ABCDEF1, false, "unaligned-big-u64"},
+  }};
+
+  for (std::size_t index = 0; index < cases.size(); ++index) {
+    const MemoryCase& memory_case = cases[index];
+    alignas(8) std::array<std::uint8_t, 32> reference_bytes{};
+    alignas(8) std::array<std::uint8_t, 32> native_bytes{};
+    reference_bytes.fill(0xCC);
+    native_bytes.fill(0xCC);
+    MemoryRegion reference_region{reference_bytes.data(),
+                                  reference_bytes.size(), true};
+    MemoryRegion native_region{native_bytes.data(), native_bytes.size(), true};
+    ExecutionContext reference_context;
+    ExecutionContext native_context;
+    const std::string label = memory_case.name;
+    expect(reference_context.bind_memory_regions(&reference_region, 1).ok() &&
+               native_context.bind_memory_regions(&native_region, 1).ok(),
+           label + " contexts must bind their bounded regions");
+
+    MemoryAccessDescriptor store_access;
+    store_access.width = memory_case.width;
+    store_access.alignment = memory_case.alignment;
+    store_access.byte_order = memory_case.byte_order;
+    MemoryAccessDescriptor load_access = store_access;
+    load_access.sign_extend = memory_case.sign_extend;
+    const std::size_t store_site = 1000 + index * 2;
+    const std::size_t load_site = store_site + 1;
+    FunctionBuilder builder(2, 1);
+    builder.store_word(builder.parameter(0), builder.parameter(1),
+                       store_access, store_site);
+    const Value loaded = builder.load_word(builder.parameter(0), load_access,
+                                           load_site);
+    expect(builder.set_return(loaded).ok(),
+           label + " fixture must have a return value");
+    const Function function = std::move(builder).build();
+    expect(unijit::ir::verify(function).ok(),
+           label + " fixture must pass IR verification");
+
+    const std::array<Word, 2> arguments = {memory_case.offset,
+                                           memory_case.value};
+    const auto reference = Interpreter::evaluate(
+        function, arguments.data(), arguments.size(), &reference_context);
+    auto compilation = Compiler::compile(function);
+    const auto native =
+        compilation.ok()
+            ? compilation.function->invoke(arguments.data(), arguments.size(),
+                                           &native_context)
+            : unijit::ir::EvaluationResult{compilation.status, 0};
+
+    const std::size_t width =
+        unijit::ir::memory_width_bytes(memory_case.width);
+    const std::uint64_t stored_bits =
+        static_cast<std::uint64_t>(memory_case.value);
+    bool byte_exact = true;
+    for (std::size_t byte = 0; byte < width; ++byte) {
+      const std::size_t shift =
+          (memory_case.byte_order == MemoryByteOrder::kBigEndian
+               ? width - byte - 1
+               : byte) *
+          8U;
+      const std::uint8_t expected =
+          static_cast<std::uint8_t>(stored_bits >> shift);
+      const std::size_t position =
+          static_cast<std::size_t>(memory_case.offset) + byte;
+      byte_exact = byte_exact && reference_bytes[position] == expected &&
+                   native_bytes[position] == expected;
+    }
+    expect(reference.ok() && native.ok() &&
+               reference.value == memory_case.value &&
+               native.value == reference.value &&
+               reference_bytes == native_bytes && byte_exact &&
+               compilation.function->requires_context() &&
+               compilation.function->stack_map(store_site) != nullptr &&
+               compilation.function->stack_map(load_site) != nullptr,
+           label +
+               " native lowering must match the byte-exact interpreter");
+  }
+}
+
 void test_code_cache_lifecycle() {
   using unijit::jit::CodeCache;
   using unijit::jit::CodeCacheLimits;
@@ -5320,6 +5439,7 @@ int main() {
   test_target_profiles();
   test_bounded_memory_interpreter();
   test_bounded_memory_control_flow_interpreter();
+  test_native_bounded_memory_matrix();
   test_code_cache_lifecycle();
   test_code_cache_concurrency();
   test_verifier_rejects_forward_reference();
