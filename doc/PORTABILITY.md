@@ -45,6 +45,13 @@ treated as errors for the library:
 | Windows 11 | x86-64 | MinGW GCC 14.2 | passed |
 | Bianbu Linux 6.6 | riscv64 (Spacemit X60) | GCC 14.2 | passed |
 
+On 2026-07-21 the Word-comparison, compact-CFG-frame, and Lua structured
+`if/else` change set was rerun natively on Darwin arm64, Darwin x86-64 through
+Rosetta, and the Bianbu riscv64 host. Each target passed the core suite, live
+baseline-to-optimized Lua suite, and the same 512-program by 64-input extended
+differential corpus; the riscv64 core run also executed the greater-than-2,048
+node compact-frame regression inside its signed 12-bit stack-addressing limit.
+
 The native test suite checks full-width constants, all bootstrap arithmetic
 operations, forced register spilling, invocation validation, and 5,000 seeded
 random comparisons against the interpreter oracle. It also checks helper calls

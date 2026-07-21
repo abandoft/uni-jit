@@ -124,12 +124,14 @@ zero-iteration loops, and strides that cross zero preserve stock Lua results.
 The loop body may contain one single-level integer condition using `==`, `~=`,
 `<`, `<=`, `>`, or `>=`. Its true arm may be a straight-line supported
 arithmetic region, `break`, or a one-value early `return`, with straight-line
-statements allowed before and after the guard. Branch merges and exits carry
-the exact loop-local state. The baseline emits a compact scalar CFG; the
-optimized tier expands eight independently guarded source iterations while
-retaining one cooperative poll per group and a 0–7 iteration tail. Multiple
-conditions, `else` arms, nested loops, calls, tables, and arbitrary jumps remain
-explicitly rejected.
+statements allowed before and after the guard. A structured `else` is accepted
+when both arms contain supported straight-line integer arithmetic; each arm
+receives its own CFG block and the continuation merges the exact loop-local
+state. Branch merges and exits carry the exact loop-local state. The baseline
+emits a compact scalar CFG; the optimized tier expands eight independently
+guarded source iterations while retaining one cooperative poll per group and a
+0–7 iteration tail. Multiple conditions, nested loops, calls, tables, and
+arbitrary jumps remain explicitly rejected.
 
 The compiled closure owns shared tier state through a Lua userdata upvalue. Its
 finalizer cancels outstanding compilation and is idempotent, so collection and

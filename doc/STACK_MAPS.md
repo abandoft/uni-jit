@@ -20,14 +20,18 @@ and Float64 entries both occupy one value-bits slot; the retained `ValueType`
 controls interpretation.
 
 Straight-line lowering reserves a separate canonical area when the function
-contains a guard or safepoint. CFG lowering reuses its value-ID-indexed frame
-area. A backward liveness pass excludes dead definitions, preserves operands
-needed after the effect, and translates live successor block parameters back
-to the matching predecessor edge arguments. Loop-carried state is resolved by
-a fixed-point dataflow calculation. Each site is limited to 64 live values so
-its complete state fits the execution context's fixed capture area, and a
-function is limited to 262,144 total live-value entries. These limits bound
-metadata and exit work for adversarial graphs.
+contains a guard or safepoint. CFG lowering assigns stable compact slots to
+cross-block state, then reuses one block-local slot range for actual spills,
+values preserved across calls, and values captured at runtime exits. Edge-copy
+temporaries follow that compact range. Frame size therefore follows the
+largest real block requirement instead of total SSA node count. A backward
+liveness pass excludes dead definitions, preserves operands needed after the
+effect, and translates live successor block parameters back to the matching
+predecessor edge arguments. Loop-carried state is resolved by a fixed-point
+dataflow calculation. Each site is limited to 64 live values so its complete
+state fits the execution context's fixed capture area, and a function is
+limited to 262,144 total live-value entries. These limits bound metadata and
+exit work for adversarial graphs.
 
 ## Metadata ownership
 

@@ -105,6 +105,13 @@ a conditionally updated recurrence, and an unconditional suffix update. Hosted
 validation retains another balanced three-trial record and enforces the same
 1.25x stock-Lua and 1.10x LuaJIT floors against exact three-engine checksums.
 
+Passing `--script benchmark/lua/integer_conditional_loop.lua` measures the
+same parameterized boundary with nontrivial arithmetic in both the true and
+`else` arms. Hosted validation retains an independent balanced three-trial
+record and applies the unchanged 1.25x stock-Lua and 1.10x LuaJIT floors, so
+structured arm merging is performance-qualified rather than only tested for
+semantic equivalence.
+
 Passing `--script benchmark/lua/float_call.lua` measures the guarded Float64
 specialization with identical floating-point inputs in stock Lua, UniJIT, and
 LuaJIT. Checksums are compared without integer truncation before performance

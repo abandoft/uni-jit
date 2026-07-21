@@ -13,7 +13,8 @@ result bit-for-bit with the matching reference interpreter. Each corpus covers:
 
 - straight-line Word SSA with random constants, addition, subtraction,
   multiplication, exact negation, bitwise-not, AND, OR, XOR, and signed
-  bidirectional shifts, spills, and optimizer input shapes;
+  bidirectional shifts, all four signed comparisons, spills, and optimizer
+  input shapes;
 - straight-line Float64 SSA with bounded finite inputs, all four binary
   arithmetic operations, and exact unary negation;
 - typed Word and Float64 CFGs with diamonds, 1 to 12 loop-carried state values,
@@ -152,6 +153,21 @@ fuzzing, and both installed-package builders. Stock Lua executes constant-K and
 register `IDIV`/`MOD` bytecodes in straight-line and numeric-loop baseline and
 optimized tiers, compares every nonzero-divisor result against the unmodified
 VM, and requires the exact Lua error class after guard exits in either tier.
+
+Word comparison qualification crosses signed minima, maxima, negative values,
+zero, and equality through straight-line and CFG interpreter/native execution.
+It requires exact zero-or-one results for `<`, `<=`, `==`, and `!=`, constant
+folding, self-comparison identities, duplicate CFG value numbering, verifier
+rejection of Float64 operands, deterministic fuzzing, and both installed
+package builders. Stock Lua executes dynamic ordered and equality conditions
+with structured true/else arithmetic arms in scalar baseline and eight-way
+optimized numeric loops, then compares both tiers with the unmodified VM.
+
+Compact-frame qualification compiles and executes a baseline CFG with more
+than 2,048 SSA nodes and repeated local register oversubscription while
+requiring no more than sixteen frame slots. The fixture proves block-local
+spill-slot reuse independently of total graph size and runs natively on every
+backend, including the RISC-V 64 signed 12-bit stack-offset limit.
 
 Strided-loop coverage executes QuickJS prefix/postfix decrement and `+=`/`-=`
 updates plus PocketPy one-, two-, and three-argument `range` forms. Positive

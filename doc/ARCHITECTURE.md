@@ -96,6 +96,12 @@ language error place an effectful Word nonzero guard before the operation.
 AArch64 uses `SDIV` plus `MSUB`, x86-64 splits zero and overflow before `IDIV`,
 and RISC-V 64 uses `DIV`/`REM`; each target applies the same non-exact negative
 quotient or remainder correction inline without a runtime helper.
+Word `<`, `<=`, `==`, and `!=` compare signed 64-bit values and always produce
+the canonical Word flag zero or one. Both IR forms, interpreters, constant
+folding, algebraic identities, local value numbering, and register allocation
+share that contract. AArch64 lowers through `CMP` plus conditional select,
+x86-64 through `CMP` plus the signed/equality `SETcc` family, and RISC-V 64
+through `SLT`, `XOR`, `SLTIU`, and `SLTU`, without frontend-specific helpers.
 
 Effectful runtime helpers use one portable signature: a pointer to a flat
 value-bits argument area plus its element count, returning one value-bits word.
@@ -181,6 +187,11 @@ and real spills.
 Native CFG lowering applies block-local lifetime analysis on AArch64, x86-64,
 and RISC-V 64. Values stay in registers within a block; only actual spills and
 definitions consumed directly by another block need canonical stack storage.
+Cross-block values receive stable persistent slots, while block-local spills,
+call preservation, and exit capture reuse one compact per-block area sized to
+the maximum simultaneous requirement rather than total SSA node count. This
+keeps large unrolled CFGs within target immediate-offset limits, including the
+signed 12-bit RISC-V frame window.
 An architecture-independent edge planner resolves parallel block-parameter
 moves independently for each register class, breaks Word and Float64 cycles
 through their respective reserved scratch registers, and falls back to typed
