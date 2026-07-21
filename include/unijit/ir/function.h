@@ -47,6 +47,8 @@ enum class Opcode : std::uint8_t {
   kAdd,
   kSubtract,
   kMultiply,
+  kNegate,
+  kBitwiseNot,
   kFloatAdd,
   kFloatSubtract,
   kFloatNegate,
@@ -127,6 +129,8 @@ class FunctionBuilder final {
   Value add(Value lhs, Value rhs);
   Value subtract(Value lhs, Value rhs);
   Value multiply(Value lhs, Value rhs);
+  Value negate(Value value);
+  Value bitwise_not(Value value);
   Value float64_add(Value lhs, Value rhs);
   Value float64_subtract(Value lhs, Value rhs);
   Value float64_negate(Value value);

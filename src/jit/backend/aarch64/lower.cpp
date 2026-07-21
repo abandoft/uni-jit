@@ -158,6 +158,14 @@ class Assembler final {
                      reg(destination));
   }
 
+  void negate(int destination, int source) {
+    subtract(destination, 31, source);
+  }
+
+  void bitwise_not(int destination, int source) {
+    buffer_.emit_u32(0xAA2003E0U | (reg(source) << 16U) | reg(destination));
+  }
+
   void multiply(int destination, int lhs, int rhs) {
     buffer_.emit_u32(0x9B007C00U | (reg(rhs) << 16U) | (reg(lhs) << 5U) |
                      reg(destination));
@@ -565,6 +573,23 @@ LoweringResult lower_impl(const ir::Function& function,
           assembler.subtract(target, lhs, rhs);
         } else {
           assembler.multiply(target, lhs, rhs);
+        }
+        if (!destination.in_register()) {
+          assembler.store(target, kStackPointer, spill_offset(destination));
+        }
+        break;
+      }
+      case ir::Opcode::kNegate:
+      case ir::Opcode::kBitwiseNot: {
+        const int source = load_operand(
+            &assembler, allocation.locations[node.lhs.id()], kScratch0);
+        const int target = destination.in_register()
+                               ? physical_register(destination)
+                               : kScratch0;
+        if (node.opcode == ir::Opcode::kNegate) {
+          assembler.negate(target, source);
+        } else {
+          assembler.bitwise_not(target, source);
         }
         if (!destination.in_register()) {
           assembler.store(target, kStackPointer, spill_offset(destination));
@@ -1430,6 +1455,22 @@ LoweringResult lower_control_flow_impl(
               allocation.requires_stack[value.id()]) {
             assembler.store_float(float_destination, kStackPointer,
                                   destination_offset);
+          }
+          break;
+        }
+        case ir::ControlOpcode::kNegate:
+        case ir::ControlOpcode::kBitwiseNot: {
+          const int source = load_control_word(
+              &assembler, allocation, node.lhs, block_index, kScratch0);
+          if (node.opcode == ir::ControlOpcode::kNegate) {
+            assembler.negate(word_destination, source);
+          } else {
+            assembler.bitwise_not(word_destination, source);
+          }
+          if (allocated_word < 0 ||
+              allocation.requires_stack[value.id()]) {
+            assembler.store(word_destination, kStackPointer,
+                            destination_offset);
           }
           break;
         }

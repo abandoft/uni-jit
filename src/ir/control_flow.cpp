@@ -40,6 +40,8 @@ bool is_binary(ControlOpcode opcode) {
   case ControlOpcode::kParameter:
   case ControlOpcode::kBlockParameter:
   case ControlOpcode::kConstant:
+  case ControlOpcode::kNegate:
+  case ControlOpcode::kBitwiseNot:
   case ControlOpcode::kFloatNegate:
   case ControlOpcode::kCall:
   case ControlOpcode::kGuardFloatNonzero:
@@ -50,7 +52,9 @@ bool is_binary(ControlOpcode opcode) {
 }
 
 bool is_unary(ControlOpcode opcode) {
-  return opcode == ControlOpcode::kFloatNegate;
+  return opcode == ControlOpcode::kNegate ||
+         opcode == ControlOpcode::kBitwiseNot ||
+         opcode == ControlOpcode::kFloatNegate;
 }
 
 Status invalid_control_flow(std::size_t location, const char *message) {
@@ -306,13 +310,17 @@ Status verify_impl(const ControlFlowFunction &function) {
         continue;
       }
       if (is_unary(node.opcode)) {
+        const ValueType operand_type =
+            node.opcode == ControlOpcode::kFloatNegate
+                ? ValueType::kFloat64
+                : ValueType::kWord;
         if (!available(node.lhs, block_index, instruction_index) ||
-            node.rhs.valid() || node.type != ValueType::kFloat64 ||
-            function.value_type(node.lhs) != ValueType::kFloat64 ||
+            node.rhs.valid() || node.type != operand_type ||
+            function.value_type(node.lhs) != operand_type ||
             node.immediate != 0 || node.argument_begin != 0 ||
             node.argument_count != 0) {
           return invalid_control_flow(
-              value.id(), "control-flow Float64 unary operation is malformed");
+              value.id(), "control-flow unary operation is malformed");
         }
         continue;
       }
@@ -427,6 +435,12 @@ Word evaluate_node(ControlOpcode opcode, Word lhs, Word rhs) noexcept {
   }
   if (opcode == ControlOpcode::kMultiply) {
     return from_bits(to_bits(lhs) * to_bits(rhs));
+  }
+  if (opcode == ControlOpcode::kNegate) {
+    return from_bits(UINT64_C(0) - to_bits(lhs));
+  }
+  if (opcode == ControlOpcode::kBitwiseNot) {
+    return from_bits(~to_bits(lhs));
   }
   if (opcode == ControlOpcode::kFloatAdd) {
     return pack_float64(unpack_float64(lhs) + unpack_float64(rhs));
@@ -585,6 +599,14 @@ Value ControlFlowBuilder::subtract(Value lhs, Value rhs) {
 
 Value ControlFlowBuilder::multiply(Value lhs, Value rhs) {
   return append_binary(ControlOpcode::kMultiply, lhs, rhs);
+}
+
+Value ControlFlowBuilder::negate(Value value) {
+  return append_unary(ControlOpcode::kNegate, value, ValueType::kWord);
+}
+
+Value ControlFlowBuilder::bitwise_not(Value value) {
+  return append_unary(ControlOpcode::kBitwiseNot, value, ValueType::kWord);
 }
 
 Value ControlFlowBuilder::float64_add(Value lhs, Value rhs) {

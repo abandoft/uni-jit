@@ -111,6 +111,26 @@ Value FunctionBuilder::multiply(Value lhs, Value rhs) {
   return append_binary(Opcode::kMultiply, lhs, rhs);
 }
 
+Value FunctionBuilder::negate(Value value) {
+  if (function_.nodes_.size() >= Value::kInvalidId) {
+    return {};
+  }
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  function_.nodes_.push_back(
+      Node{Opcode::kNegate, value, {}, 0, ValueType::kWord});
+  return Value{id};
+}
+
+Value FunctionBuilder::bitwise_not(Value value) {
+  if (function_.nodes_.size() >= Value::kInvalidId) {
+    return {};
+  }
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  function_.nodes_.push_back(
+      Node{Opcode::kBitwiseNot, value, {}, 0, ValueType::kWord});
+  return Value{id};
+}
+
 Value FunctionBuilder::float64_add(Value lhs, Value rhs) {
   return append_binary(Opcode::kFloatAdd, lhs, rhs);
 }

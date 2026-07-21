@@ -83,7 +83,28 @@ bool is_binary(Opcode opcode) noexcept {
 }
 
 bool is_unary(Opcode opcode) noexcept {
-  return opcode == Opcode::kFloatNegate;
+  return opcode == Opcode::kNegate || opcode == Opcode::kBitwiseNot ||
+         opcode == Opcode::kFloatNegate;
+}
+
+Word fold_unary(Opcode opcode, Word value) noexcept {
+  if (opcode == Opcode::kNegate) {
+    return from_bits(UINT64_C(0) - to_bits(value));
+  }
+  if (opcode == Opcode::kBitwiseNot) {
+    return from_bits(~to_bits(value));
+  }
+  return from_bits(to_bits(value) ^ (UINT64_C(1) << 63U));
+}
+
+Value emit_unary(FunctionBuilder* builder, Opcode opcode, Value value) {
+  if (opcode == Opcode::kNegate) {
+    return builder->negate(value);
+  }
+  if (opcode == Opcode::kBitwiseNot) {
+    return builder->bitwise_not(value);
+  }
+  return builder->float64_negate(value);
 }
 
 bool is_float_binary(Opcode opcode) noexcept {
@@ -123,7 +144,30 @@ bool is_control_binary(ControlOpcode opcode) noexcept {
 }
 
 bool is_control_unary(ControlOpcode opcode) noexcept {
-  return opcode == ControlOpcode::kFloatNegate;
+  return opcode == ControlOpcode::kNegate ||
+         opcode == ControlOpcode::kBitwiseNot ||
+         opcode == ControlOpcode::kFloatNegate;
+}
+
+Word fold_control_unary(ControlOpcode opcode, Word value) noexcept {
+  if (opcode == ControlOpcode::kNegate) {
+    return from_bits(UINT64_C(0) - to_bits(value));
+  }
+  if (opcode == ControlOpcode::kBitwiseNot) {
+    return from_bits(~to_bits(value));
+  }
+  return from_bits(to_bits(value) ^ (UINT64_C(1) << 63U));
+}
+
+Value emit_control_unary(ControlFlowBuilder* builder, ControlOpcode opcode,
+                         Value value) {
+  if (opcode == ControlOpcode::kNegate) {
+    return builder->negate(value);
+  }
+  if (opcode == ControlOpcode::kBitwiseNot) {
+    return builder->bitwise_not(value);
+  }
+  return builder->float64_negate(value);
 }
 
 bool is_control_float_binary(ControlOpcode opcode) noexcept {
@@ -402,14 +446,21 @@ PassResult transform_once(
     if (is_unary(node.opcode)) {
       const std::size_t operand_id = node.lhs.id();
       if (known_constant[operand_id]) {
-        constant_value[index] = from_bits(
-            to_bits(constant_value[operand_id]) ^ (UINT64_C(1) << 63U));
-        mapped[index] = builder.float64_constant_bits(constant_value[index]);
+        constant_value[index] =
+            fold_unary(node.opcode, constant_value[operand_id]);
+        mapped[index] = node.type == ValueType::kFloat64
+                            ? builder.float64_constant_bits(
+                                  constant_value[index])
+                            : builder.constant(constant_value[index]);
         known_constant[index] = true;
         ++folded;
         changed = true;
+      } else if (input.nodes()[operand_id].opcode == node.opcode) {
+        mapped[index] = mapped[input.nodes()[operand_id].lhs.id()];
+        ++simplified;
+        changed = true;
       } else {
-        mapped[index] = builder.float64_negate(mapped[operand_id]);
+        mapped[index] = emit_unary(&builder, node.opcode, mapped[operand_id]);
       }
       continue;
     }
@@ -803,7 +854,8 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
       mapped[index] = builder.guard_float64_nonzero(
           mapped[node.lhs.id()], static_cast<std::size_t>(node.immediate));
     } else if (is_control_unary(node.opcode)) {
-      mapped[index] = builder.float64_negate(mapped[node.lhs.id()]);
+      mapped[index] =
+          emit_control_unary(&builder, node.opcode, mapped[node.lhs.id()]);
     } else if (is_control_binary(node.opcode)) {
       mapped[index] = emit_control_binary(
           &builder, node.opcode, mapped[node.lhs.id()], mapped[node.rhs.id()]);
@@ -1039,10 +1091,14 @@ ControlFlowOptimizationResult Optimizer::run(
       } else if (is_control_unary(node.opcode)) {
         const std::size_t operand_id = node.lhs.id();
         if (known_constant[operand_id]) {
-          constant_value[index] = from_bits(
-              to_bits(constant_value[operand_id]) ^ (UINT64_C(1) << 63U));
+          constant_value[index] =
+              fold_control_unary(node.opcode, constant_value[operand_id]);
           known_constant[index] = true;
           folded_node[index] = true;
+        } else if (function.nodes()[operand_id].opcode == node.opcode) {
+          replacement[index] = function.nodes()[operand_id].lhs.id();
+          known_constant[index] = known_constant[replacement[index]];
+          constant_value[index] = constant_value[replacement[index]];
         }
       } else if (is_control_binary(node.opcode)) {
         const std::size_t lhs_id = node.lhs.id();
@@ -1131,7 +1187,9 @@ ControlFlowOptimizationResult Optimizer::run(
       } else if (node.opcode == ControlOpcode::kGuardFloatNonzero) {
         live[node.lhs.id()] = true;
       } else if (is_control_unary(node.opcode)) {
-        if (!folded_node[index]) {
+        if (replacement[index] != node_count) {
+          live[replacement[index]] = true;
+        } else if (!folded_node[index]) {
           live[node.lhs.id()] = true;
         }
       } else if (is_control_binary(node.opcode)) {
@@ -1181,11 +1239,17 @@ ControlFlowOptimizationResult Optimizer::run(
             mapped[node.lhs.id()], static_cast<std::size_t>(node.immediate));
       } else if (is_control_unary(node.opcode)) {
         if (folded_node[index]) {
-          mapped[index] =
-              builder.float64_constant_bits(constant_value[index]);
+          mapped[index] = node.type == ValueType::kFloat64
+                              ? builder.float64_constant_bits(
+                                    constant_value[index])
+                              : builder.constant(constant_value[index]);
           ++folded;
+        } else if (replacement[index] != node_count) {
+          mapped[index] = mapped[replacement[index]];
+          ++simplified;
         } else {
-          mapped[index] = builder.float64_negate(mapped[node.lhs.id()]);
+          mapped[index] = emit_control_unary(
+              &builder, node.opcode, mapped[node.lhs.id()]);
         }
       } else if (is_control_binary(node.opcode)) {
         const std::size_t lhs_id = node.lhs.id();

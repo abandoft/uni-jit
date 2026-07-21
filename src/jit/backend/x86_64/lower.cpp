@@ -219,6 +219,23 @@ class Assembler final {
     emit_modrm(3, rhs, destination);
   }
 
+  void unary_word(int destination, int source, int extension) {
+    if (destination != source) {
+      move_register(destination, source);
+    }
+    emit_rex(0, destination);
+    buffer_.emit_u8(0xF7U);
+    emit_modrm(3, extension, destination);
+  }
+
+  void negate(int destination, int source) {
+    unary_word(destination, source, 3);
+  }
+
+  void bitwise_not(int destination, int source) {
+    unary_word(destination, source, 2);
+  }
+
   void multiply(int destination, int lhs, int rhs) {
     prepare_binary(destination, lhs);
     emit_rex(destination, rhs);
@@ -637,6 +654,23 @@ LoweringResult lower_impl(const ir::Function& function,
           assembler.subtract(target, lhs, rhs);
         } else {
           assembler.multiply(target, lhs, rhs);
+        }
+        if (!destination.in_register()) {
+          assembler.store(target, kRsp, spill_offset(destination));
+        }
+        break;
+      }
+      case ir::Opcode::kNegate:
+      case ir::Opcode::kBitwiseNot: {
+        const int source = load_operand(
+            &assembler, allocation.locations[node.lhs.id()], kScratch0);
+        const int target = destination.in_register()
+                               ? physical_register(destination)
+                               : kScratch0;
+        if (node.opcode == ir::Opcode::kNegate) {
+          assembler.negate(target, source);
+        } else {
+          assembler.bitwise_not(target, source);
         }
         if (!destination.in_register()) {
           assembler.store(target, kRsp, spill_offset(destination));
@@ -1458,6 +1492,21 @@ LoweringResult lower_control_flow_impl(
               allocation.requires_stack[value.id()]) {
             assembler.store_float(float_destination, kRsp,
                                   destination_offset);
+          }
+          break;
+        }
+        case ir::ControlOpcode::kNegate:
+        case ir::ControlOpcode::kBitwiseNot: {
+          const int source = load_control_word(
+              &assembler, allocation, node.lhs, block_index, kScratch0);
+          if (node.opcode == ir::ControlOpcode::kNegate) {
+            assembler.negate(word_destination, source);
+          } else {
+            assembler.bitwise_not(word_destination, source);
+          }
+          if (allocated_word < 0 ||
+              allocation.requires_stack[value.id()]) {
+            assembler.store(word_destination, kRsp, destination_offset);
           }
           break;
         }

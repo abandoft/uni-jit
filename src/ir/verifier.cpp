@@ -21,7 +21,8 @@ bool is_binary(Opcode opcode) {
 }
 
 bool is_unary(Opcode opcode) {
-  return opcode == Opcode::kFloatNegate;
+  return opcode == Opcode::kNegate || opcode == Opcode::kBitwiseNot ||
+         opcode == Opcode::kFloatNegate;
 }
 
 bool has_float_operands(Opcode opcode) {
@@ -123,12 +124,15 @@ Status verify(const Function& function) {
       continue;
     }
     if (is_unary(node.opcode)) {
+      const ValueType operand_type = node.opcode == Opcode::kFloatNegate
+                                         ? ValueType::kFloat64
+                                         : ValueType::kWord;
       if (!node.lhs.valid() || node.lhs.id() >= index || node.rhs.valid() ||
-          node.type != ValueType::kFloat64 ||
-          nodes[node.lhs.id()].type != ValueType::kFloat64 ||
+          node.type != operand_type ||
+          nodes[node.lhs.id()].type != operand_type ||
           node.immediate != 0 || node.argument_begin != 0 ||
           node.argument_count != 0) {
-        return invalid_node(index, "Float64 unary operation is malformed");
+        return invalid_node(index, "unary operation is malformed");
       }
       continue;
     }
