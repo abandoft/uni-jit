@@ -1,6 +1,7 @@
 ## 0.2.0
 
-- 扩展生产级 x86-64 资格验证，使真实 Ubuntu GCC/Clang 与 Windows MSVC 平台矩阵现与 Lua、PocketPy、核心 JIT、性能门禁和已安装包消费者一起构建并执行 stock QuickJS 适配器，同时由 Linux ASan/UBSan 覆盖 QuickJS；由此补齐 QuickJS 运行时此前仅在 macOS 上验证的缺口。
+- 新增公开的编译期 `measure_safepoint_polls` 策略，默认保持精确原生遥测，同时允许从延迟敏感代码中完全移除计数指令；Lua 因已从调用实参推导精确饱和循环热点而选择零开销路径，QuickJS 与 PocketPy 则保留实测回边，并覆盖直线/CFG 原生关闭路径及已安装包资格验证。
+- 扩展生产级 x86-64 资格验证，使真实 Ubuntu GCC 与 Clang 主机现与 Lua、PocketPy、核心 JIT、性能门禁和已安装包消费者一起构建并执行 stock QuickJS 适配器，同时由 Linux ASan/UBSan 覆盖 QuickJS；因上游 stock QuickJS 依赖 GNU C 扩展，Windows MSVC 继续验证核心、Lua 与 PocketPy，由此既补齐 QuickJS 运行时此前仅在 macOS 上验证的缺口，也不虚假声明 MSVC 兼容性。
 - 新增调用级安全点执行遥测，在 AArch64、x86-64 与 RISC-V 64 的解释器及原生代码中精确计数；QuickJS 与 PocketPy 现将实测计数循环回边计入饱和分层热点并通过统计 API 公开，可在单次 10,000 次迭代调用后异步升级，同时为直线代码保留 64 次调用策略，并覆盖中断、重置、循环计数及 stock 运行时资格验证。
 - 新增 CFG 常量分支折叠与递归不可达块移除、折叠后无用值清理、不可达调用/守卫/栈映射/反优化记录的精确裁剪，以及受副作用边界约束的块内常量和有序纯表达式值编号；公开优化统计，并以选中路径语义、重复消除、基线元数据保留、优化层元数据裁剪、原生执行及扩展确定性差分模糊测试完成资格验证。
 - 为 CFG SSA 新增生产级基线与优化编译，覆盖常量折叠、Word 规范化、死代码消除、副作用保留、反优化捕获值根化与重映射、公开 `CompilationOptions` 重载和已安装包验证；为 QuickJS 与 PocketPy 计数循环启用 64 次调用后的真实异步升级，覆盖分层缓存、代次安全发布、完整生命周期遥测，以及 PocketPy 优化层中的有符号零除法重建。

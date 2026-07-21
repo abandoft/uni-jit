@@ -23,10 +23,13 @@ executing with it. Another thread may call `request_interrupt()` or
 site, guarded value, captured stack-map fields, and the exact number of executed
 safepoint polls are written only by the executing thread and must be read after
 that invocation returns. Managed invocation resets the poll count at entry;
-interpreters and all three native backends increment it before testing each
-safepoint request. A context must not be shared by concurrent invocations. The
-fixed 64-value capture area avoids allocation on native exits; compilation
-rejects any one stack map that cannot fit it.
+interpreters increment it before testing each safepoint request. Native
+compilation does the same by default on all three backends, while
+`CompilationOptions::measure_safepoint_polls = false` removes the counter load,
+increment, and store at code-generation time without disabling interruption.
+A context must not be shared by concurrent invocations. The fixed 64-value
+capture area avoids allocation on native exits; compilation rejects any one
+stack map that cannot fit it.
 
 Interruption is sticky until `clear_interrupt()` is called. Invocation clears
 stale exit diagnostics but deliberately does not clear the interrupt request,

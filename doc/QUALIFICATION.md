@@ -77,6 +77,12 @@ optimized compilation removes its unreachable native exit and metadata. The
 deterministic differential generator then compares optimized native execution
 with the original CFG interpreter across the committed and extended seed sets.
 
+Safepoint telemetry qualification checks exact interrupted and completed counts
+in both interpreters and native straight-line/CFG loops. Separate compilations
+disable `measure_safepoint_polls` and must execute the same results while
+leaving the call-scoped counter at zero; the installed-package consumer repeats
+both policies through the public `CompilationOptions` API.
+
 QuickJS and PocketPy frontend tests compile the same single-level counted loop
 with ordered `break` and `continue` guards, execute it both as a native function
 and through the stock language runtime, and bit-match the result with the source
@@ -96,8 +102,10 @@ dynamic PocketPy steps must fail translation. Stock-runtime tests execute the
 reverse-step variants through the public module boundary.
 
 The hosted core platform matrix builds and executes the stock Lua, QuickJS,
-and PocketPy adapters on real Ubuntu GCC/Clang x86-64 and Windows MSVC x86-64
-hosts, in addition to macOS AArch64/x86-64. Linux ASan/UBSan repeats all three
+and PocketPy adapters on real Ubuntu GCC/Clang x86-64 hosts, in addition to
+macOS AArch64/x86-64. Windows MSVC x86-64 executes the core, Lua, and PocketPy;
+upstream stock QuickJS is excluded there because its C sources require GNU
+extensions rather than the MSVC C frontend. Linux ASan/UBSan repeats all three
 frontend suites, while the separate Windows MSVC ASan lane covers Lua's
 `longjmp` bridge under the native sanitizer runtime.
 

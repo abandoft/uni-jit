@@ -99,7 +99,10 @@ start and guarded limit. A callable claims optimization after 64 calls or
 numeric-loop baseline compilation emits a scalar body, while the optimized tier
 emits the production eight-way-unrolled body. Background jobs compile only an
 immutable snapshot of numeric bytecode and constants and never access Lua GC
-objects. Broader language regions still need additional tier-specific lowering.
+objects. Because this argument-derived count is already exact and saturating,
+Lua disables native safepoint measurement at compile time and retains only the
+interrupt poll in its hot loop. Broader language regions still need additional
+tier-specific lowering.
 
 The core OSR contract can now marshal a bounded typed interpreter frame into a
 generation-stable compiled region, atomically select the active tier, preserve
