@@ -23,9 +23,10 @@ extended register state. Linux RISC-V uses `AT_HWCAP` for the optional vector
 extension. Unknown optional features stay disabled.
 
 The current AArch64 backend targets the architectural 128-bit Advanced SIMD
-floor. RISC-V vector code is not emitted yet; the discovered RVV bit is retained
-for the forthcoming fixed-width vector lowering and does not by itself widen
-the portable profile.
+floor, and x86-64 targets mandatory SSE2 with bounded scalar legalization for
+operations absent from that baseline. RISC-V vector code is not emitted yet;
+the discovered RVV bit is retained for the forthcoming fixed-width vector
+lowering and does not by itself widen the portable profile.
 
 ## Compilation and execution rules
 

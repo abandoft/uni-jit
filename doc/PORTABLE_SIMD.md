@@ -3,16 +3,16 @@
 ## Delivery status
 
 UniJIT now has the semantic core for explicit, fixed-width 128-bit SIMD in
-both straight-line SSA and CFG SSA, plus native AArch64 Advanced SIMD/NEON
-lowering for the complete current explicit operation surface. The public
-types, verifier, two reference interpreters, optimizer folding, deterministic
-differential generator, table limits, allocation, and encoders are implemented
-independently of SLJIT or another JIT backend.
+both straight-line SSA and CFG SSA, plus native AArch64 Advanced SIMD/NEON and
+x86-64 SSE2 lowering for the complete current explicit operation surface. The
+public types, verifier, two reference interpreters, optimizer folding,
+deterministic differential generator, table limits, allocation, legalizers,
+and encoders are implemented independently of SLJIT or another JIT backend.
 
-This is an AArch64 native-SIMD delivery claim, not yet a three-backend or
-vector-memory claim. x86-64 SSE2, RISC-V RVV or verified scalar fallback,
+This is an AArch64 and x86-64 native-SIMD delivery claim, not yet a
+three-backend or vector-memory claim. RISC-V RVV or verified scalar fallback,
 bounded vector memory, capability telemetry, and cross-host performance gates
-remain P0 work. On x86-64 and RISC-V 64, compilation returns
+remain P0 work. On RISC-V 64, compilation returns
 `StatusCode::kCodeGenerationFailed` if a vector node survives optimization.
 An optimized program whose vector work folds completely to scalar SSA may use
 the existing scalar native backend on every target.
@@ -110,8 +110,8 @@ The optimizer treats every vector operation as pure, retains all three select
 operands in liveness, remaps side tables, and folds complete constant vector
 expressions bit-for-bit. It can collapse a constant vector program to one
 scalar constant. Dynamic vector expressions remain explicit; they are never
-silently discarded or reinterpreted by allocation. AArch64 compiles them
-natively, while targets without complete lowering reject them before an
+silently discarded or reinterpreted by allocation. AArch64 and x86-64 compile
+them natively, while targets without complete lowering reject them before an
 incomplete encoder can publish code.
 
 ## Qualification and remaining gates
@@ -129,11 +129,14 @@ use independent Word and physical SIMD banks, allow Float64 and vectors to
 share the latter without overlap, reserve aligned two-word spill and
 caller-clobber backup slots, detect mixed Float64/vector CFG register cycles by
 physical bank, and preserve a full 128-bit cycle source when required. The
-AArch64 backend consumes those plans for full-width loads, stores, mixed edge
-copies, and helper-call saves. A stack-only vector mode is available to the
-RISC-V backend until RVV is selected. Non-reference vector lanes are
-deliberately excluded from the scalar `ExecutionContext` capture payload;
-vector deoptimization remains unsupported.
+AArch64 and x86-64 backends consume those plans for full-width loads, stores,
+mixed edge copies, and helper-call saves. x86-64 additionally aligns the
+generated frame itself before addressing even-numbered two-word vector slots
+and adjusts System V or Windows shadow-space calls from that aligned base. A
+stack-only vector mode is available to the RISC-V backend until RVV is
+selected. Non-reference vector lanes are deliberately excluded from the
+scalar `ExecutionContext` capture payload; vector deoptimization remains
+unsupported.
 
 The AArch64 encoder covers integer and floating arithmetic, bitwise logic,
 canonical integer and ordered floating comparisons, mask selection, splats,
@@ -142,21 +145,36 @@ widening. I64x2 multiplication is deliberately scalar-legalized per lane
 because the architectural 128-bit NEON floor has no matching two-lane multiply
 instruction. No operation silently selects relaxed floating-point semantics.
 
+The x86-64 encoder uses the mandatory SSE2 baseline directly for packed
+integer add/subtract and I16x8 multiplication, packed Float32/Float64
+arithmetic and ordered comparisons, bitwise logic and selection, most sign
+masks, 32/64-bit constant shuffles, and signed/unsigned widening. Integer
+comparisons, I8x16/I32x4/I64x2 multiplication, lane insertion, I8x16/I16x8
+shuffles, and the remaining sign-mask shape use bounded aligned stack
+temporaries and scalar GPR sequences because SSE2 has no complete direct
+instruction surface. These are native legalizations with no runtime helper,
+heap allocation, unbounded loop, or relaxed arithmetic.
+
 Native qualification executes the current operation surface in both IR forms
 on a real Apple AArch64 host, including deliberate `v0` clobbering by a runtime
 helper, 24-way register pressure, aligned vector spills, vector CFG block
 parameters, fallback edge temporaries, and mixed Float64/vector cycles. Both
 baseline and optimized native tiers are checked against the appropriate
 reference interpreter by the committed 128-program deterministic corpus and
-two extended 512-program runs; the same corpus passes under ASan/UBSan.
+two extended 512-program runs; the same corpus passes under ASan/UBSan. The
+identical operation, clobber, spill, edge, mixed-cycle, and differential suite
+also passes in Rosetta x86-64, real Ubuntu GCC/Clang x86-64, and Windows MSVC
+x86-64 processes. Linux and Rosetta ASan/UBSan plus the Linux ThreadSanitizer
+suite pass with x86-64 vector compilation enabled; the real Ubuntu
+qualification executes the committed corpus and both extended 512-program
+seeds natively.
 
 The P0 feature remains incomplete until all of the following are delivered:
 
 1. bounded aligned and unaligned vector loads/stores using the existing memory
    provenance and diagnosed-exit model;
-2. independent SSE2 lowering plus RVV lowering or an explicitly reported
-   verified scalar fallback, including their spill, CFG-copy, helper-call, and
-   ABI-specific nonvolatile paths;
+2. RVV lowering or an explicitly reported verified scalar fallback, including
+   spill, CFG-copy, helper-call, and ABI-specific vector-state paths;
 3. target-profile-scoped `native`/`legalized`/`scalarized`/`unsupported`
    preflight and compilation telemetry;
 4. complete-loop SIMD performance evidence on real AArch64, Ubuntu and Windows
