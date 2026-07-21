@@ -12,6 +12,13 @@ Correctness, predictable latency, and diagnosability are release gates along
 with throughput. Every optimized operation must have an interpreter oracle,
 and every performance claim must be backed by a reproducible benchmark result.
 
+The scalar backend is not the endpoint of the low-level contract. Typed
+bounded memory, strict SIMD, generated-code atomics, data-only patch cells,
+internal fast/tail calls, bounded frame locals, and validated AOT artifacts are
+specified in `doc/LOW_LEVEL_CAPABILITIES.md`. That roadmap is independently
+defined: arbitrary physical-register access remains private to MIR, and
+published code remains immutable RX rather than adopting self-modifying code.
+
 ## Compilation pipeline
 
 ```text
@@ -36,7 +43,7 @@ low-level MIR           -- explicit ABI, flags, calls and constraints
 register allocation     -- linear scan first; regional allocator later
       |
       v
-native encoder          -- AArch64, then x86-64
+native encoder          -- AArch64, x86-64, and RISC-V 64
       |
       v
 W^X code cache          -- publication, unwind/stack maps, reclamation

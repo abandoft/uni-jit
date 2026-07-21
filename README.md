@@ -36,6 +36,10 @@ compiler claims, immutable version switching, and explicit baseline retry.
 [doc/COMPILATION_SCHEDULER.md](doc/COMPILATION_SCHEDULER.md) defines bounded
 background admission, global version deduplication, cooperative cancellation,
 weighted priorities, deterministic shutdown, and scheduler telemetry.
+[doc/LOW_LEVEL_CAPABILITIES.md](doc/LOW_LEVEL_CAPABILITIES.md) defines the
+independent commercial roadmap for typed memory, strict SIMD, generated-code
+atomics, immutable patch cells, fast and tail calls, bounded frame locals,
+target profiles, and validated serialization/AOT.
 [doc/QUALIFICATION.md](doc/QUALIFICATION.md) defines deterministic fuzzing,
 concurrency stress, sanitizers, and commercial performance floors.
 [doc/LUA_FRONTEND.md](doc/LUA_FRONTEND.md) describes the stock Lua 5.5
