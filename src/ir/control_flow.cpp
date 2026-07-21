@@ -52,13 +52,16 @@ bool is_binary(ControlOpcode opcode) {
   case ControlOpcode::kConstant:
   case ControlOpcode::kNegate:
   case ControlOpcode::kBitwiseNot:
-  case ControlOpcode::kFloatNegate:
+  case ControlOpcode::kByteSwap:
+    case ControlOpcode::kFloatNegate:
   case ControlOpcode::kCall:
   case ControlOpcode::kGuardWordNonzero:
   case ControlOpcode::kGuardFloatNonzero:
   case ControlOpcode::kSafepoint:
   case ControlOpcode::kLoadWord:
   case ControlOpcode::kStoreWord:
+    case ControlOpcode::kLoadFloat:
+    case ControlOpcode::kStoreFloat:
     return false;
   }
   return false;
@@ -67,12 +70,30 @@ bool is_binary(ControlOpcode opcode) {
 bool is_unary(ControlOpcode opcode) {
   return opcode == ControlOpcode::kNegate ||
          opcode == ControlOpcode::kBitwiseNot ||
+         opcode == ControlOpcode::kByteSwap ||
          opcode == ControlOpcode::kFloatNegate;
 }
 
 bool is_memory(ControlOpcode opcode) {
   return opcode == ControlOpcode::kLoadWord ||
-         opcode == ControlOpcode::kStoreWord;
+         opcode == ControlOpcode::kStoreWord ||
+         opcode == ControlOpcode::kLoadFloat ||
+         opcode == ControlOpcode::kStoreFloat;
+}
+
+bool is_float_memory(ControlOpcode opcode) {
+  return opcode == ControlOpcode::kLoadFloat ||
+         opcode == ControlOpcode::kStoreFloat;
+}
+
+bool is_memory_load(ControlOpcode opcode) {
+  return opcode == ControlOpcode::kLoadWord ||
+         opcode == ControlOpcode::kLoadFloat;
+}
+
+bool is_memory_store(ControlOpcode opcode) {
+  return opcode == ControlOpcode::kStoreWord ||
+         opcode == ControlOpcode::kStoreFloat;
 }
 
 bool valid_memory_width(MemoryWidth width) {
@@ -328,27 +349,32 @@ Status verify_impl(const ControlFlowFunction &function) {
         const MemoryAccessDescriptor& access =
             function.memory_accesses()[node.memory_access];
         const std::size_t width = memory_width_bytes(access.width);
+        const bool float_memory = is_float_memory(node.opcode);
+        const ValueType result_type =
+            float_memory ? ValueType::kFloat64 : ValueType::kWord;
         if (access.region >= function.memory_region_count() ||
             !valid_memory_width(access.width) || access.alignment == 0 ||
             access.alignment > width ||
             (access.alignment & (access.alignment - 1U)) != 0 ||
             !valid_byte_order(access.byte_order) ||
-            (node.opcode == ControlOpcode::kStoreWord &&
+            ((float_memory || is_memory_store(node.opcode)) &&
              access.sign_extend) ||
-            node.immediate < 0 || node.type != ValueType::kWord ||
+            (float_memory && access.width != MemoryWidth::k32 &&
+             access.width != MemoryWidth::k64) ||
+            node.immediate < 0 || node.type != result_type ||
             !available(node.lhs, block_index, instruction_index) ||
             function.value_type(node.lhs) != ValueType::kWord ||
             node.argument_begin != 0 || node.argument_count != 0) {
           return invalid_control_flow(
               value.id(), "bounded CFG memory operation is malformed");
         }
-        if (node.opcode == ControlOpcode::kLoadWord && node.rhs.valid()) {
+        if (is_memory_load(node.opcode) && node.rhs.valid()) {
           return invalid_control_flow(
               value.id(), "bounded CFG memory load has a stored value");
         }
-        if (node.opcode == ControlOpcode::kStoreWord &&
+        if (is_memory_store(node.opcode) &&
             (!available(node.rhs, block_index, instruction_index) ||
-             function.value_type(node.rhs) != ValueType::kWord)) {
+             function.value_type(node.rhs) != result_type)) {
           return invalid_control_flow(
               value.id(), "bounded CFG memory store value is malformed");
         }
@@ -404,10 +430,15 @@ Status verify_impl(const ControlFlowFunction &function) {
             node.opcode == ControlOpcode::kFloatNegate
                 ? ValueType::kFloat64
                 : ValueType::kWord;
+        const bool valid_immediate =
+            node.opcode == ControlOpcode::kByteSwap
+                ? node.immediate == static_cast<Word>(MemoryWidth::k16) ||
+                      node.immediate == static_cast<Word>(MemoryWidth::k32) ||
+                      node.immediate == static_cast<Word>(MemoryWidth::k64)
+                : node.immediate == 0;
         if (!available(node.lhs, block_index, instruction_index) ||
             node.rhs.valid() || node.type != operand_type ||
-            function.value_type(node.lhs) != operand_type ||
-            node.immediate != 0 || node.argument_begin != 0 ||
+            function.value_type(node.lhs) != operand_type || !valid_immediate || node.argument_begin != 0 ||
             node.argument_count != 0) {
           return invalid_control_flow(
               value.id(), "control-flow unary operation is malformed");
@@ -764,6 +795,15 @@ Value ControlFlowBuilder::bitwise_not(Value value) {
   return append_unary(ControlOpcode::kBitwiseNot, value, ValueType::kWord);
 }
 
+Value ControlFlowBuilder::byte_swap(Value value, MemoryWidth width) {
+  const Value result =
+      append_unary(ControlOpcode::kByteSwap, value, ValueType::kWord);
+  if (result.valid()) {
+    function_.nodes_[result.id()].immediate = static_cast<Word>(width);
+  }
+  return result;
+}
+
 Value ControlFlowBuilder::float64_add(Value lhs, Value rhs) {
   return append_binary(ControlOpcode::kFloatAdd, lhs, rhs,
                        ValueType::kFloat64);
@@ -907,7 +947,54 @@ Value ControlFlowBuilder::store_word(Value byte_offset, Value value,
   function_.memory_accesses_.push_back(access);
   const Value result = append_node(
       ControlNode{ControlOpcode::kStoreWord, byte_offset, value,
-                  static_cast<Word>(site), ValueType::kWord, 0, 0,
+                  static_cast<Word>(site), ValueType::kWord, 0, 0, access_index});
+  if (!result.valid()) {
+    function_.memory_accesses_.pop_back();
+  }
+  return result;
+}
+
+Value ControlFlowBuilder::load_float(Value byte_offset,
+                                     MemoryAccessDescriptor access,
+                                     std::size_t site) {
+  if (function_.memory_accesses_.size() >=
+          MemoryAccessDescriptor::kInvalidIndex ||
+      site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {
+    return {};
+  }
+  access.sign_extend = false;
+  const auto access_index =
+      static_cast<std::uint32_t>(function_.memory_accesses_.size());
+  function_.memory_accesses_.push_back(access);
+  const Value result = append_node(ControlNode{ControlOpcode::kLoadFloat,
+                                               byte_offset,
+                                               {},
+                                               static_cast<Word>(site),
+                                               ValueType::kFloat64,
+                                               0,
+                                               0,
+                                               access_index});
+  if (!result.valid()) {
+    function_.memory_accesses_.pop_back();
+  }
+  return result;
+}
+
+Value ControlFlowBuilder::store_float(Value byte_offset, Value value,
+                                      MemoryAccessDescriptor access,
+                                      std::size_t site) {
+  if (function_.memory_accesses_.size() >=
+          MemoryAccessDescriptor::kInvalidIndex ||
+      site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {
+    return {};
+  }
+  access.sign_extend = false;
+  const auto access_index =
+      static_cast<std::uint32_t>(function_.memory_accesses_.size());
+  function_.memory_accesses_.push_back(access);
+  const Value result = append_node(ControlNode{
+      ControlOpcode::kStoreFloat, byte_offset, value, static_cast<Word>(site),
+      ValueType::kFloat64, 0, 0,
                   access_index});
   if (!result.valid()) {
     function_.memory_accesses_.pop_back();
@@ -1116,6 +1203,27 @@ ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
             return {result.status, 0};
           }
           values[value.id()] = result.value;
+        } else if (node.opcode == ControlOpcode::kLoadFloat) {
+          const detail::MemoryAccessResult result = detail::load_bounded_float(
+              function.memory_accesses()[node.memory_access],
+              values[node.lhs.id()], static_cast<std::size_t>(node.immediate),
+              context);
+          if (!result.ok()) {
+            return {result.status, 0};
+          }
+          values[value.id()] = result.value;
+        } else if (node.opcode == ControlOpcode::kStoreFloat) {
+          const detail::MemoryAccessResult result = detail::store_bounded_float(
+              function.memory_accesses()[node.memory_access],
+              values[node.lhs.id()], values[node.rhs.id()],
+              static_cast<std::size_t>(node.immediate), context);
+          if (!result.ok()) {
+            return {result.status, 0};
+          }
+          values[value.id()] = result.value;
+        } else if (node.opcode == ControlOpcode::kByteSwap) {
+          values[value.id()] = byte_swap_word(
+              values[node.lhs.id()], static_cast<MemoryWidth>(node.immediate));
         } else {
           values[value.id()] = evaluate_node(
               node.opcode, values[node.lhs.id()],

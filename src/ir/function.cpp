@@ -64,6 +64,23 @@ Word floor_modulo_word(Word lhs, Word rhs) noexcept {
   return remainder;
 }
 
+Word byte_swap_word(Word value, MemoryWidth width) noexcept {
+  if (width != MemoryWidth::k16 && width != MemoryWidth::k32 &&
+      width != MemoryWidth::k64) {
+    return 0;
+  }
+  std::uint64_t bits = 0;
+  std::memcpy(&bits, &value, sizeof(bits));
+  const std::size_t byte_count = memory_width_bytes(width);
+  std::uint64_t reversed = 0;
+  for (std::size_t index = 0; index < byte_count; ++index) {
+    reversed = (reversed << 8U) | ((bits >> (index * 8U)) & UINT64_C(0xFF));
+  }
+  Word result = 0;
+  std::memcpy(&result, &reversed, sizeof(result));
+  return result;
+}
+
 FunctionBuilder::FunctionBuilder(std::size_t parameter_count,
                                  std::size_t memory_region_count)
     : FunctionBuilder(std::vector<ValueType>(parameter_count,
@@ -205,6 +222,18 @@ Value FunctionBuilder::bitwise_not(Value value) {
   return Value{id};
 }
 
+Value FunctionBuilder::byte_swap(Value value, MemoryWidth width) {
+  if (function_.nodes_.size() >= Value::kInvalidId) {
+    return {};
+  }
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  function_.nodes_.push_back(Node{Opcode::kByteSwap,
+                                  value,
+                                  {},
+                                  static_cast<Word>(width), ValueType::kWord});
+  return Value{id};
+}
+
 Value FunctionBuilder::float64_add(Value lhs, Value rhs) {
   return append_binary(Opcode::kFloatAdd, lhs, rhs);
 }
@@ -341,6 +370,51 @@ Value FunctionBuilder::store_word(Value byte_offset, Value value,
   function_.nodes_.push_back(
       Node{Opcode::kStoreWord, byte_offset, value, static_cast<Word>(site),
            ValueType::kWord, 0, 0, access_index});
+  return Value{id};
+}
+
+Value FunctionBuilder::load_float(Value byte_offset,
+                                  MemoryAccessDescriptor access,
+                                  std::size_t site) {
+  if (function_.nodes_.size() >= Value::kInvalidId ||
+      function_.memory_accesses_.size() >=
+          MemoryAccessDescriptor::kInvalidIndex ||
+      site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {
+    return {};
+  }
+  access.sign_extend = false;
+  const auto access_index =
+      static_cast<std::uint32_t>(function_.memory_accesses_.size());
+  function_.memory_accesses_.push_back(access);
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  function_.nodes_.push_back(Node{Opcode::kLoadFloat,
+                                  byte_offset,
+                                  {},
+                                  static_cast<Word>(site),
+                                  ValueType::kFloat64,
+                                  0,
+                                  0,
+                                  access_index});
+  return Value{id};
+}
+
+Value FunctionBuilder::store_float(Value byte_offset, Value value,
+                                   MemoryAccessDescriptor access,
+                                   std::size_t site) {
+  if (function_.nodes_.size() >= Value::kInvalidId ||
+      function_.memory_accesses_.size() >=
+          MemoryAccessDescriptor::kInvalidIndex ||
+      site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {
+    return {};
+  }
+  access.sign_extend = false;
+  const auto access_index =
+      static_cast<std::uint32_t>(function_.memory_accesses_.size());
+  function_.memory_accesses_.push_back(access);
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  function_.nodes_.push_back(Node{Opcode::kStoreFloat, byte_offset, value,
+                                  static_cast<Word>(site), ValueType::kFloat64,
+                                  0, 0, access_index});
   return Value{id};
 }
 

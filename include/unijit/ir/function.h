@@ -23,6 +23,7 @@ RuntimeHelper unpack_runtime_helper(Word bits) noexcept;
 // language frontends that require an error insert a Word nonzero guard.
 Word floor_divide_word(Word lhs, Word rhs) noexcept;
 Word floor_modulo_word(Word lhs, Word rhs) noexcept;
+Word byte_swap_word(Word value, MemoryWidth width) noexcept;
 
 class Value final {
  public:
@@ -65,6 +66,7 @@ enum class Opcode : std::uint8_t {
   kNotEqual,
   kNegate,
   kBitwiseNot,
+  kByteSwap,
   kFloatAdd,
   kFloatSubtract,
   kFloatNegate,
@@ -80,6 +82,8 @@ enum class Opcode : std::uint8_t {
   kSafepoint,
   kLoadWord,
   kStoreWord,
+  kLoadFloat,
+  kStoreFloat,
 };
 
 enum class ValueType : std::uint8_t {
@@ -173,6 +177,8 @@ class FunctionBuilder final {
   Value not_equal(Value lhs, Value rhs);
   Value negate(Value value);
   Value bitwise_not(Value value);
+  // Reverses the low 16, 32, or 64 bits and zero-extends narrower results.
+  Value byte_swap(Value value, MemoryWidth width);
   Value float64_add(Value lhs, Value rhs);
   Value float64_subtract(Value lhs, Value rhs);
   Value float64_negate(Value value);
@@ -191,6 +197,12 @@ class FunctionBuilder final {
                   std::size_t site);
   Value store_word(Value byte_offset, Value value,
                    MemoryAccessDescriptor access, std::size_t site);
+  // Float32 storage converts to/from the IR Float64 value type. Float64
+  // storage preserves all 64 payload bits. Only k32 and k64 are valid.
+  Value load_float(Value byte_offset, MemoryAccessDescriptor access,
+                   std::size_t site);
+  Value store_float(Value byte_offset, Value value,
+                    MemoryAccessDescriptor access, std::size_t site);
   Status set_return(Value value);
 
   Function build() && noexcept;

@@ -43,13 +43,16 @@ void visit_control_operands(const ir::ControlFlowFunction& function,
       break;
     case ir::ControlOpcode::kNegate:
     case ir::ControlOpcode::kBitwiseNot:
+    case ir::ControlOpcode::kByteSwap:
     case ir::ControlOpcode::kFloatNegate:
     case ir::ControlOpcode::kGuardWordNonzero:
     case ir::ControlOpcode::kGuardFloatNonzero:
     case ir::ControlOpcode::kLoadWord:
+    case ir::ControlOpcode::kLoadFloat:
       visitor(node.lhs);
       break;
     case ir::ControlOpcode::kStoreWord:
+    case ir::ControlOpcode::kStoreFloat:
       visitor(node.lhs);
       visitor(node.rhs);
       break;
@@ -113,12 +116,15 @@ RegisterAllocation allocate_impl(const ir::Function& function,
       note_use(&last_use, node.rhs, index);
     } else if (node.opcode == ir::Opcode::kNegate ||
                node.opcode == ir::Opcode::kBitwiseNot ||
+               node.opcode == ir::Opcode::kByteSwap ||
                node.opcode == ir::Opcode::kFloatNegate ||
                node.opcode == ir::Opcode::kGuardWordNonzero ||
                node.opcode == ir::Opcode::kGuardFloatNonzero ||
-               node.opcode == ir::Opcode::kLoadWord) {
+               node.opcode == ir::Opcode::kLoadWord ||
+               node.opcode == ir::Opcode::kLoadFloat) {
       note_use(&last_use, node.lhs, index);
-    } else if (node.opcode == ir::Opcode::kStoreWord) {
+    } else if (node.opcode == ir::Opcode::kStoreWord ||
+               node.opcode == ir::Opcode::kStoreFloat) {
       note_use(&last_use, node.lhs, index);
       note_use(&last_use, node.rhs, index);
     } else if (node.opcode == ir::Opcode::kCall) {
@@ -282,13 +288,16 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
           break;
         case ir::ControlOpcode::kNegate:
         case ir::ControlOpcode::kBitwiseNot:
+        case ir::ControlOpcode::kByteSwap:
         case ir::ControlOpcode::kFloatNegate:
         case ir::ControlOpcode::kGuardWordNonzero:
         case ir::ControlOpcode::kGuardFloatNonzero:
         case ir::ControlOpcode::kLoadWord:
+        case ir::ControlOpcode::kLoadFloat:
           note_local_use(node.lhs);
           break;
         case ir::ControlOpcode::kStoreWord:
+        case ir::ControlOpcode::kStoreFloat:
           note_local_use(node.lhs);
           note_local_use(node.rhs);
           break;
@@ -372,7 +381,11 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
       }
       if (opcode == ir::ControlOpcode::kSafepoint ||
           opcode == ir::ControlOpcode::kGuardWordNonzero ||
-          opcode == ir::ControlOpcode::kGuardFloatNonzero) {
+          opcode == ir::ControlOpcode::kGuardFloatNonzero ||
+          opcode == ir::ControlOpcode::kLoadWord ||
+          opcode == ir::ControlOpcode::kStoreWord ||
+          opcode == ir::ControlOpcode::kLoadFloat ||
+          opcode == ir::ControlOpcode::kStoreFloat) {
         const auto require_live_stack =
             [&](const std::vector<std::size_t>& active) {
           for (const std::size_t position : active) {
@@ -469,13 +482,16 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
           break;
         case ir::ControlOpcode::kNegate:
         case ir::ControlOpcode::kBitwiseNot:
+        case ir::ControlOpcode::kByteSwap:
         case ir::ControlOpcode::kFloatNegate:
         case ir::ControlOpcode::kGuardWordNonzero:
         case ir::ControlOpcode::kGuardFloatNonzero:
         case ir::ControlOpcode::kLoadWord:
+        case ir::ControlOpcode::kLoadFloat:
           note_nonlocal_use(block_index, node.lhs);
           break;
         case ir::ControlOpcode::kStoreWord:
+        case ir::ControlOpcode::kStoreFloat:
           note_nonlocal_use(block_index, node.lhs);
           note_nonlocal_use(block_index, node.rhs);
           break;
@@ -655,7 +671,9 @@ StackMapLiveness plan_straight_stack_map_liveness_impl(
     const ir::Opcode opcode = function.nodes()[node_index].opcode;
     if (opcode != ir::Opcode::kSafepoint &&
         opcode != ir::Opcode::kGuardWordNonzero &&
-        opcode != ir::Opcode::kGuardFloatNonzero) {
+        opcode != ir::Opcode::kGuardFloatNonzero &&
+        opcode != ir::Opcode::kLoadWord && opcode != ir::Opcode::kStoreWord &&
+        opcode != ir::Opcode::kLoadFloat && opcode != ir::Opcode::kStoreFloat) {
       continue;
     }
     std::vector<ir::Value>& site_values = live_values[node_index];
@@ -825,7 +843,11 @@ StackMapLiveness plan_control_stack_map_liveness_impl(
       }
       if (node.opcode != ir::ControlOpcode::kSafepoint &&
           node.opcode != ir::ControlOpcode::kGuardWordNonzero &&
-          node.opcode != ir::ControlOpcode::kGuardFloatNonzero) {
+          node.opcode != ir::ControlOpcode::kGuardFloatNonzero &&
+          node.opcode != ir::ControlOpcode::kLoadWord &&
+          node.opcode != ir::ControlOpcode::kStoreWord &&
+          node.opcode != ir::ControlOpcode::kLoadFloat &&
+          node.opcode != ir::ControlOpcode::kStoreFloat) {
         continue;
       }
       std::vector<ir::Value>& site_values = live_values[value.id()];

@@ -28,7 +28,7 @@ bool is_binary(Opcode opcode) {
 
 bool is_unary(Opcode opcode) {
   return opcode == Opcode::kNegate || opcode == Opcode::kBitwiseNot ||
-         opcode == Opcode::kFloatNegate;
+         opcode == Opcode::kByteSwap || opcode == Opcode::kFloatNegate;
 }
 
 bool has_float_operands(Opcode opcode) {
@@ -47,7 +47,20 @@ bool is_float_comparison(Opcode opcode) {
 }
 
 bool is_memory(Opcode opcode) {
-  return opcode == Opcode::kLoadWord || opcode == Opcode::kStoreWord;
+  return opcode == Opcode::kLoadWord || opcode == Opcode::kStoreWord ||
+         opcode == Opcode::kLoadFloat || opcode == Opcode::kStoreFloat;
+}
+
+bool is_float_memory(Opcode opcode) {
+  return opcode == Opcode::kLoadFloat || opcode == Opcode::kStoreFloat;
+}
+
+bool is_memory_load(Opcode opcode) {
+  return opcode == Opcode::kLoadWord || opcode == Opcode::kLoadFloat;
+}
+
+bool is_memory_store(Opcode opcode) {
+  return opcode == Opcode::kStoreWord || opcode == Opcode::kStoreFloat;
 }
 
 bool valid_memory_width(MemoryWidth width) {
@@ -139,24 +152,29 @@ Status verify(const Function& function) {
       const MemoryAccessDescriptor& access =
           function.memory_accesses()[expected_memory_access++];
       const std::size_t width = memory_width_bytes(access.width);
+      const bool float_memory = is_float_memory(node.opcode);
+      const ValueType result_type =
+          float_memory ? ValueType::kFloat64 : ValueType::kWord;
       if (access.region >= function.memory_region_count() ||
           !valid_memory_width(access.width) || access.alignment == 0 ||
           access.alignment > width ||
           (access.alignment & (access.alignment - 1U)) != 0 ||
           !valid_byte_order(access.byte_order) ||
-          (node.opcode == Opcode::kStoreWord && access.sign_extend) ||
-          node.immediate < 0 || node.type != ValueType::kWord ||
+          ((float_memory || is_memory_store(node.opcode)) && access.sign_extend) ||
+          (float_memory && access.width != MemoryWidth::k32 &&
+           access.width != MemoryWidth::k64) ||
+          node.immediate < 0 || node.type != result_type ||
           !node.lhs.valid() || node.lhs.id() >= index ||
           nodes[node.lhs.id()].type != ValueType::kWord ||
           node.argument_begin != 0 || node.argument_count != 0) {
         return invalid_node(index, "bounded memory operation is malformed");
       }
-      if (node.opcode == Opcode::kLoadWord && node.rhs.valid()) {
+      if (is_memory_load(node.opcode) && node.rhs.valid()) {
         return invalid_node(index, "bounded memory load has a stored value");
       }
-      if (node.opcode == Opcode::kStoreWord &&
+      if (is_memory_store(node.opcode) &&
           (!node.rhs.valid() || node.rhs.id() >= index ||
-           nodes[node.rhs.id()].type != ValueType::kWord)) {
+           nodes[node.rhs.id()].type != result_type)) {
         return invalid_node(index,
                             "bounded memory store value is malformed");
       }
@@ -204,10 +222,15 @@ Status verify(const Function& function) {
       const ValueType operand_type = node.opcode == Opcode::kFloatNegate
                                          ? ValueType::kFloat64
                                          : ValueType::kWord;
+      const bool valid_immediate =
+          node.opcode == Opcode::kByteSwap
+              ? node.immediate == static_cast<Word>(MemoryWidth::k16) ||
+                    node.immediate == static_cast<Word>(MemoryWidth::k32) ||
+                    node.immediate == static_cast<Word>(MemoryWidth::k64)
+              : node.immediate == 0;
       if (!node.lhs.valid() || node.lhs.id() >= index || node.rhs.valid() ||
           node.type != operand_type ||
-          nodes[node.lhs.id()].type != operand_type ||
-          node.immediate != 0 || node.argument_begin != 0 ||
+          nodes[node.lhs.id()].type != operand_type || !valid_immediate || node.argument_begin != 0 ||
           node.argument_count != 0) {
         return invalid_node(index, "unary operation is malformed");
       }

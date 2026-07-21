@@ -68,6 +68,8 @@ Word evaluate_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
       return from_bits(UINT64_C(0) - lhs_bits);
     case Opcode::kBitwiseNot:
       return from_bits(~lhs_bits);
+    case Opcode::kByteSwap:
+      return 0;
     case Opcode::kFloatAdd:
       return pack_float64(unpack_float64(lhs) + unpack_float64(rhs));
     case Opcode::kFloatSubtract:
@@ -94,6 +96,8 @@ Word evaluate_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
     case Opcode::kSafepoint:
     case Opcode::kLoadWord:
     case Opcode::kStoreWord:
+    case Opcode::kLoadFloat:
+    case Opcode::kStoreFloat:
       return 0;
   }
   return 0;
@@ -200,6 +204,28 @@ EvaluationResult Interpreter::evaluate(const Function& function,
           values[index] = result.value;
           break;
         }
+        case Opcode::kLoadFloat: {
+          const detail::MemoryAccessResult result = detail::load_bounded_float(
+              function.memory_accesses()[node.memory_access],
+              values[node.lhs.id()], static_cast<std::size_t>(node.immediate),
+              context);
+          if (!result.ok()) {
+            return {result.status, 0};
+          }
+          values[index] = result.value;
+          break;
+        }
+        case Opcode::kStoreFloat: {
+          const detail::MemoryAccessResult result = detail::store_bounded_float(
+              function.memory_accesses()[node.memory_access],
+              values[node.lhs.id()], values[node.rhs.id()],
+              static_cast<std::size_t>(node.immediate), context);
+          if (!result.ok()) {
+            return {result.status, 0};
+          }
+          values[index] = result.value;
+          break;
+        }
         case Opcode::kAdd:
         case Opcode::kSubtract:
         case Opcode::kMultiply:
@@ -227,6 +253,10 @@ EvaluationResult Interpreter::evaluate(const Function& function,
           values[index] = evaluate_binary(
               node.opcode, values[node.lhs.id()],
               node.rhs.valid() ? values[node.rhs.id()] : 0);
+          break;
+        case Opcode::kByteSwap:
+          values[index] = byte_swap_word(
+              values[node.lhs.id()], static_cast<MemoryWidth>(node.immediate));
           break;
       }
     }

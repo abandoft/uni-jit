@@ -52,7 +52,8 @@ bool is_nonzero_guard(ir::Opcode opcode) noexcept {
 
 bool is_memory(ir::Opcode opcode) noexcept {
   return opcode == ir::Opcode::kLoadWord ||
-         opcode == ir::Opcode::kStoreWord;
+         opcode == ir::Opcode::kStoreWord ||
+         opcode == ir::Opcode::kLoadFloat || opcode == ir::Opcode::kStoreFloat;
 }
 
 bool is_nonzero_guard(ir::ControlOpcode opcode) noexcept {
@@ -62,7 +63,9 @@ bool is_nonzero_guard(ir::ControlOpcode opcode) noexcept {
 
 bool is_memory(ir::ControlOpcode opcode) noexcept {
   return opcode == ir::ControlOpcode::kLoadWord ||
-         opcode == ir::ControlOpcode::kStoreWord;
+         opcode == ir::ControlOpcode::kStoreWord ||
+         opcode == ir::ControlOpcode::kLoadFloat ||
+         opcode == ir::ControlOpcode::kStoreFloat;
 }
 
 bool has_guard_site(const ir::Function& function, std::size_t site) noexcept {

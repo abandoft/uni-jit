@@ -124,25 +124,32 @@ bool is_binary(Opcode opcode) noexcept {
 
 bool is_unary(Opcode opcode) noexcept {
   return opcode == Opcode::kNegate || opcode == Opcode::kBitwiseNot ||
-         opcode == Opcode::kFloatNegate;
+         opcode == Opcode::kByteSwap || opcode == Opcode::kFloatNegate;
 }
 
-Word fold_unary(Opcode opcode, Word value) noexcept {
+Word fold_unary(Opcode opcode, Word value, Word immediate) noexcept {
   if (opcode == Opcode::kNegate) {
     return from_bits(UINT64_C(0) - to_bits(value));
   }
   if (opcode == Opcode::kBitwiseNot) {
     return from_bits(~to_bits(value));
   }
+  if (opcode == Opcode::kByteSwap) {
+    return byte_swap_word(value, static_cast<MemoryWidth>(immediate));
+  }
   return from_bits(to_bits(value) ^ (UINT64_C(1) << 63U));
 }
 
-Value emit_unary(FunctionBuilder* builder, Opcode opcode, Value value) {
+Value emit_unary(FunctionBuilder* builder, Opcode opcode, Value value,
+                 Word immediate) {
   if (opcode == Opcode::kNegate) {
     return builder->negate(value);
   }
   if (opcode == Opcode::kBitwiseNot) {
     return builder->bitwise_not(value);
+  }
+  if (opcode == Opcode::kByteSwap) {
+    return builder->byte_swap(value, static_cast<MemoryWidth>(immediate));
   }
   return builder->float64_negate(value);
 }
@@ -168,7 +175,8 @@ bool is_nonzero_guard(Opcode opcode) noexcept {
 }
 
 bool is_memory(Opcode opcode) noexcept {
-  return opcode == Opcode::kLoadWord || opcode == Opcode::kStoreWord;
+  return opcode == Opcode::kLoadWord || opcode == Opcode::kStoreWord ||
+         opcode == Opcode::kLoadFloat || opcode == Opcode::kStoreFloat;
 }
 
 bool is_nonzero_guard(ControlOpcode opcode) noexcept {
@@ -178,7 +186,9 @@ bool is_nonzero_guard(ControlOpcode opcode) noexcept {
 
 bool is_memory(ControlOpcode opcode) noexcept {
   return opcode == ControlOpcode::kLoadWord ||
-         opcode == ControlOpcode::kStoreWord;
+         opcode == ControlOpcode::kStoreWord ||
+         opcode == ControlOpcode::kLoadFloat ||
+         opcode == ControlOpcode::kStoreFloat;
 }
 
 bool is_control_binary(ControlOpcode opcode) noexcept {
@@ -213,26 +223,34 @@ bool is_control_binary(ControlOpcode opcode) noexcept {
 bool is_control_unary(ControlOpcode opcode) noexcept {
   return opcode == ControlOpcode::kNegate ||
          opcode == ControlOpcode::kBitwiseNot ||
+         opcode == ControlOpcode::kByteSwap ||
          opcode == ControlOpcode::kFloatNegate;
 }
 
-Word fold_control_unary(ControlOpcode opcode, Word value) noexcept {
+Word fold_control_unary(ControlOpcode opcode, Word value,
+                        Word immediate) noexcept {
   if (opcode == ControlOpcode::kNegate) {
     return from_bits(UINT64_C(0) - to_bits(value));
   }
   if (opcode == ControlOpcode::kBitwiseNot) {
     return from_bits(~to_bits(value));
   }
+  if (opcode == ControlOpcode::kByteSwap) {
+    return byte_swap_word(value, static_cast<MemoryWidth>(immediate));
+  }
   return from_bits(to_bits(value) ^ (UINT64_C(1) << 63U));
 }
 
 Value emit_control_unary(ControlFlowBuilder* builder, ControlOpcode opcode,
-                         Value value) {
+                         Value value, Word immediate) {
   if (opcode == ControlOpcode::kNegate) {
     return builder->negate(value);
   }
   if (opcode == ControlOpcode::kBitwiseNot) {
     return builder->bitwise_not(value);
+  }
+  if (opcode == ControlOpcode::kByteSwap) {
+    return builder->byte_swap(value, static_cast<MemoryWidth>(immediate));
   }
   return builder->float64_negate(value);
 }
@@ -487,7 +505,8 @@ PassResult transform_once(
       live[node.lhs.id()] = true;
     } else if (is_memory(node.opcode)) {
       live[node.lhs.id()] = true;
-      if (node.opcode == Opcode::kStoreWord) {
+      if (node.opcode == Opcode::kStoreWord ||
+          node.opcode == Opcode::kStoreFloat) {
         live[node.rhs.id()] = true;
       }
     }
@@ -551,13 +570,23 @@ PassResult transform_once(
     if (is_memory(node.opcode)) {
       const MemoryAccessDescriptor access =
           input.memory_accesses()[node.memory_access];
-      mapped[index] =
-          node.opcode == Opcode::kLoadWord
-              ? builder.load_word(mapped[node.lhs.id()], access,
-                                  static_cast<std::size_t>(node.immediate))
-              : builder.store_word(mapped[node.lhs.id()],
+      if (node.opcode == Opcode::kLoadWord) {
+        mapped[index] =
+            builder.load_word(mapped[node.lhs.id()], access,
+                                  static_cast<std::size_t>(node.immediate));
+      } else if (node.opcode == Opcode::kStoreWord) {
+        mapped[index] = builder.store_word(mapped[node.lhs.id()],
                                    mapped[node.rhs.id()], access,
                                    static_cast<std::size_t>(node.immediate));
+      } else if (node.opcode == Opcode::kLoadFloat) {
+        mapped[index] =
+            builder.load_float(mapped[node.lhs.id()], access,
+                               static_cast<std::size_t>(node.immediate));
+      } else {
+        mapped[index] = builder.store_float(
+            mapped[node.lhs.id()], mapped[node.rhs.id()], access,
+            static_cast<std::size_t>(node.immediate));
+      }
       continue;
     }
 
@@ -591,7 +620,7 @@ PassResult transform_once(
       const std::size_t operand_id = node.lhs.id();
       if (known_constant[operand_id]) {
         constant_value[index] =
-            fold_unary(node.opcode, constant_value[operand_id]);
+            fold_unary(node.opcode, constant_value[operand_id], node.immediate);
         mapped[index] = node.type == ValueType::kFloat64
                             ? builder.float64_constant_bits(
                                   constant_value[index])
@@ -599,12 +628,14 @@ PassResult transform_once(
         known_constant[index] = true;
         ++folded;
         changed = true;
-      } else if (input.nodes()[operand_id].opcode == node.opcode) {
+      } else if (input.nodes()[operand_id].opcode == node.opcode &&
+                 node.opcode != Opcode::kByteSwap) {
         mapped[index] = mapped[input.nodes()[operand_id].lhs.id()];
         ++simplified;
         changed = true;
       } else {
-        mapped[index] = emit_unary(&builder, node.opcode, mapped[operand_id]);
+        mapped[index] = emit_unary(&builder, node.opcode, mapped[operand_id],
+                                   node.immediate);
       }
       continue;
     }
@@ -1009,7 +1040,8 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
       live[node.lhs.id()] = true;
     } else if (is_memory(node.opcode)) {
       live[node.lhs.id()] = true;
-      if (node.opcode == ControlOpcode::kStoreWord) {
+      if (node.opcode == ControlOpcode::kStoreWord ||
+          node.opcode == ControlOpcode::kStoreFloat) {
         live[node.rhs.id()] = true;
       }
     } else if (is_control_unary(node.opcode)) {
@@ -1045,7 +1077,7 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
       reusable = true;
     } else if (is_control_unary(node.opcode)) {
       key = {node.opcode, node.type, mapped[node.lhs.id()].id(),
-             Value::kInvalidId, 0};
+             Value::kInvalidId, node.immediate};
       reusable = true;
     } else if (is_control_binary(node.opcode)) {
       key = {node.opcode, node.type, mapped[node.lhs.id()].id(),
@@ -1082,13 +1114,23 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
     } else if (is_memory(node.opcode)) {
       const MemoryAccessDescriptor access =
           input.memory_accesses()[node.memory_access];
-      mapped[index] =
-          node.opcode == ControlOpcode::kLoadWord
-              ? builder.load_word(mapped[node.lhs.id()], access,
-                                  static_cast<std::size_t>(node.immediate))
-              : builder.store_word(mapped[node.lhs.id()],
+      if (node.opcode == ControlOpcode::kLoadWord) {
+        mapped[index] =
+            builder.load_word(mapped[node.lhs.id()], access,
+                                  static_cast<std::size_t>(node.immediate));
+      } else if (node.opcode == ControlOpcode::kStoreWord) {
+        mapped[index] = builder.store_word(mapped[node.lhs.id()],
                                    mapped[node.rhs.id()], access,
                                    static_cast<std::size_t>(node.immediate));
+      } else if (node.opcode == ControlOpcode::kLoadFloat) {
+        mapped[index] =
+            builder.load_float(mapped[node.lhs.id()], access,
+                               static_cast<std::size_t>(node.immediate));
+      } else {
+        mapped[index] = builder.store_float(
+            mapped[node.lhs.id()], mapped[node.rhs.id()], access,
+            static_cast<std::size_t>(node.immediate));
+      }
     } else if (is_nonzero_guard(node.opcode)) {
       mapped[index] =
           node.opcode == ControlOpcode::kGuardWordNonzero
@@ -1100,7 +1142,7 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
                     static_cast<std::size_t>(node.immediate));
     } else if (is_control_unary(node.opcode)) {
       mapped[index] =
-          emit_control_unary(&builder, node.opcode, mapped[node.lhs.id()]);
+          emit_control_unary(&builder, node.opcode, mapped[node.lhs.id()], node.immediate);
     } else if (is_control_binary(node.opcode)) {
       mapped[index] = emit_control_binary(
           &builder, node.opcode, mapped[node.lhs.id()], mapped[node.rhs.id()]);
@@ -1338,10 +1380,11 @@ ControlFlowOptimizationResult Optimizer::run(
         const std::size_t operand_id = node.lhs.id();
         if (known_constant[operand_id]) {
           constant_value[index] =
-              fold_control_unary(node.opcode, constant_value[operand_id]);
+              fold_control_unary(node.opcode, constant_value[operand_id], node.immediate);
           known_constant[index] = true;
           folded_node[index] = true;
-        } else if (function.nodes()[operand_id].opcode == node.opcode) {
+        } else if (function.nodes()[operand_id].opcode == node.opcode &&
+                   node.opcode != ControlOpcode::kByteSwap) {
           replacement[index] = function.nodes()[operand_id].lhs.id();
           known_constant[index] = known_constant[replacement[index]];
           constant_value[index] = constant_value[replacement[index]];
@@ -1483,7 +1526,8 @@ ControlFlowOptimizationResult Optimizer::run(
         live[node.lhs.id()] = true;
       } else if (is_memory(node.opcode)) {
         live[node.lhs.id()] = true;
-        if (node.opcode == ControlOpcode::kStoreWord) {
+        if (node.opcode == ControlOpcode::kStoreWord ||
+            node.opcode == ControlOpcode::kStoreFloat) {
           live[node.rhs.id()] = true;
         }
       } else if (is_control_unary(node.opcode)) {
@@ -1537,13 +1581,23 @@ ControlFlowOptimizationResult Optimizer::run(
       } else if (is_memory(node.opcode)) {
         const MemoryAccessDescriptor access =
             function.memory_accesses()[node.memory_access];
-        mapped[index] =
-            node.opcode == ControlOpcode::kLoadWord
-                ? builder.load_word(mapped[node.lhs.id()], access,
-                                    static_cast<std::size_t>(node.immediate))
-                : builder.store_word(mapped[node.lhs.id()],
+        if (node.opcode == ControlOpcode::kLoadWord) {
+          mapped[index] =
+              builder.load_word(mapped[node.lhs.id()], access,
+                                    static_cast<std::size_t>(node.immediate));
+        } else if (node.opcode == ControlOpcode::kStoreWord) {
+          mapped[index] = builder.store_word(mapped[node.lhs.id()],
                                      mapped[node.rhs.id()], access,
                                      static_cast<std::size_t>(node.immediate));
+        } else if (node.opcode == ControlOpcode::kLoadFloat) {
+          mapped[index] =
+              builder.load_float(mapped[node.lhs.id()], access,
+                                 static_cast<std::size_t>(node.immediate));
+        } else {
+          mapped[index] = builder.store_float(
+              mapped[node.lhs.id()], mapped[node.rhs.id()], access,
+              static_cast<std::size_t>(node.immediate));
+        }
       } else if (is_nonzero_guard(node.opcode)) {
         mapped[index] =
             node.opcode == ControlOpcode::kGuardWordNonzero
@@ -1565,7 +1619,7 @@ ControlFlowOptimizationResult Optimizer::run(
           ++simplified;
         } else {
           mapped[index] = emit_control_unary(
-              &builder, node.opcode, mapped[node.lhs.id()]);
+              &builder, node.opcode, mapped[node.lhs.id()], node.immediate);
         }
       } else if (is_control_binary(node.opcode)) {
         const std::size_t lhs_id = node.lhs.id();

@@ -50,6 +50,7 @@ enum class ControlOpcode : std::uint8_t {
   kFloorModulo,
   kNegate,
   kBitwiseNot,
+  kByteSwap,
   kFloatAdd,
   kFloatSubtract,
   kFloatNegate,
@@ -69,6 +70,8 @@ enum class ControlOpcode : std::uint8_t {
   kSafepoint,
   kLoadWord,
   kStoreWord,
+  kLoadFloat,
+  kStoreFloat,
 };
 
 struct ControlNode final {
@@ -187,6 +190,7 @@ public:
   Value floor_modulo(Value lhs, Value rhs);
   Value negate(Value value);
   Value bitwise_not(Value value);
+  Value byte_swap(Value value, MemoryWidth width);
   Value float64_add(Value lhs, Value rhs);
   Value float64_subtract(Value lhs, Value rhs);
   Value float64_negate(Value value);
@@ -208,6 +212,10 @@ public:
   Value load_word(Value byte_offset, MemoryAccessDescriptor access,
                   std::size_t site);
   Value store_word(Value byte_offset, Value value,
+                   MemoryAccessDescriptor access, std::size_t site);
+  Value load_float(Value byte_offset, MemoryAccessDescriptor access,
+                   std::size_t site);
+  Value store_float(Value byte_offset, Value value,
                    MemoryAccessDescriptor access, std::size_t site);
 
   Status set_return(Value value);

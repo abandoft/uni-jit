@@ -23,6 +23,14 @@ MemoryAccessResult store_bounded_word(
     const MemoryAccessDescriptor& access, Word byte_offset, Word value,
     std::size_t site, runtime::ExecutionContext* context) noexcept;
 
+MemoryAccessResult load_bounded_float(
+    const MemoryAccessDescriptor& access, Word byte_offset, std::size_t site,
+    runtime::ExecutionContext* context) noexcept;
+
+MemoryAccessResult store_bounded_float(
+    const MemoryAccessDescriptor& access, Word byte_offset, Word value,
+    std::size_t site, runtime::ExecutionContext* context) noexcept;
+
 }  // namespace unijit::ir::detail
 
 #endif  // UNIJIT_SRC_IR_MEMORY_ACCESS_H

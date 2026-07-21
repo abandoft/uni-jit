@@ -177,6 +177,22 @@ class Assembler final {
     emit_modrm(3, source, destination);
   }
 
+  void move_word_to_float32(int destination, int source) {
+    buffer_.emit_u8(0x66U);
+    emit_rex_width(destination, source, false);
+    buffer_.emit_u8(0x0FU);
+    buffer_.emit_u8(0x6EU);
+    emit_modrm(3, destination, source);
+  }
+
+  void move_float32_to_word(int destination, int source) {
+    buffer_.emit_u8(0x66U);
+    emit_rex_width(source, destination, false);
+    buffer_.emit_u8(0x0FU);
+    buffer_.emit_u8(0x7EU);
+    emit_modrm(3, source, destination);
+  }
+
   void move_float_register(int destination, int source) {
     buffer_.emit_u8(0xF2U);
     emit_float_rex(destination, source);
@@ -201,6 +217,42 @@ class Assembler final {
     buffer_.emit_u8(0x11U);
     emit_memory_modrm(source, base);
     buffer_.emit_u32(static_cast<std::uint32_t>(byte_offset));
+  }
+
+  void load_float_width(int destination, int base, std::size_t byte_offset,
+                        std::size_t width) {
+    buffer_.emit_u8(width == 4 ? 0xF3U : 0xF2U);
+    emit_float_rex(destination, base);
+    buffer_.emit_u8(0x0FU);
+    buffer_.emit_u8(0x10U);
+    emit_memory_modrm(destination, base);
+    buffer_.emit_u32(static_cast<std::uint32_t>(byte_offset));
+  }
+
+  void store_float_width(int source, int base, std::size_t byte_offset,
+                         std::size_t width) {
+    buffer_.emit_u8(width == 4 ? 0xF3U : 0xF2U);
+    emit_float_rex(source, base);
+    buffer_.emit_u8(0x0FU);
+    buffer_.emit_u8(0x11U);
+    emit_memory_modrm(source, base);
+    buffer_.emit_u32(static_cast<std::uint32_t>(byte_offset));
+  }
+
+  void convert_float32_to_float64(int destination, int source) {
+    buffer_.emit_u8(0xF3U);
+    emit_float_rex(destination, source);
+    buffer_.emit_u8(0x0FU);
+    buffer_.emit_u8(0x5AU);
+    emit_modrm(3, destination, source);
+  }
+
+  void convert_float64_to_float32(int destination, int source) {
+    buffer_.emit_u8(0xF2U);
+    emit_float_rex(destination, source);
+    buffer_.emit_u8(0x0FU);
+    buffer_.emit_u8(0x5AU);
+    emit_modrm(3, destination, source);
   }
 
   void add_float(int destination, int lhs, int rhs) {
@@ -867,7 +919,9 @@ LoweringResult lower_impl(const ir::Function& function,
                node.opcode == ir::Opcode::kGuardWordNonzero ||
                node.opcode == ir::Opcode::kGuardFloatNonzero ||
                node.opcode == ir::Opcode::kLoadWord ||
-               node.opcode == ir::Opcode::kStoreWord) {
+               node.opcode == ir::Opcode::kStoreWord ||
+               node.opcode == ir::Opcode::kLoadFloat ||
+               node.opcode == ir::Opcode::kStoreFloat) {
       has_context_operations = true;
     }
   }
@@ -909,7 +963,9 @@ LoweringResult lower_impl(const ir::Function& function,
         node.opcode == ir::Opcode::kGuardWordNonzero ||
         node.opcode == ir::Opcode::kGuardFloatNonzero ||
         node.opcode == ir::Opcode::kLoadWord ||
-        node.opcode == ir::Opcode::kStoreWord) {
+        node.opcode == ir::Opcode::kStoreWord ||
+        node.opcode == ir::Opcode::kLoadFloat ||
+        node.opcode == ir::Opcode::kStoreFloat) {
       spill_straight_stack_map_values(&assembler, function, allocation,
                                       live_values, stack_map_base);
       stack_maps.push_back(make_stack_map_record(
@@ -1030,7 +1086,8 @@ LoweringResult lower_impl(const ir::Function& function,
         break;
       }
       case ir::Opcode::kNegate:
-      case ir::Opcode::kBitwiseNot: {
+      case ir::Opcode::kBitwiseNot:
+      case ir::Opcode::kByteSwap: {
         const int source = load_operand(
             &assembler, allocation.locations[node.lhs.id()], kScratch0);
         const int target = destination.in_register()
@@ -1038,8 +1095,18 @@ LoweringResult lower_impl(const ir::Function& function,
                                : kScratch0;
         if (node.opcode == ir::Opcode::kNegate) {
           assembler.negate(target, source);
-        } else {
+        } else if (node.opcode == ir::Opcode::kBitwiseNot) {
           assembler.bitwise_not(target, source);
+        } else {
+          const std::size_t width = static_cast<std::size_t>(node.immediate);
+          if (target != source) {
+            assembler.move_register(target, source);
+          }
+          assembler.reverse_bytes(target, width);
+          if (width == 2) {
+            assembler.move_immediate(kScratch1, INT64_C(0xFFFF));
+            assembler.bitwise_and(target, target, kScratch1);
+          }
         }
         if (!destination.in_register()) {
           assembler.store(target, kRsp, spill_offset(destination));
@@ -1211,10 +1278,14 @@ LoweringResult lower_impl(const ir::Function& function,
         break;
       }
       case ir::Opcode::kLoadWord:
-      case ir::Opcode::kStoreWord: {
+      case ir::Opcode::kStoreWord:
+      case ir::Opcode::kLoadFloat:
+      case ir::Opcode::kStoreFloat: {
         const ir::MemoryAccessDescriptor& access =
             function.memory_accesses()[node.memory_access];
         const std::size_t width = ir::memory_width_bytes(access.width);
+        const bool is_store = node.opcode == ir::Opcode::kStoreWord ||
+                              node.opcode == ir::Opcode::kStoreFloat;
         const std::size_t region_offset =
             static_cast<std::size_t>(access.region) *
             sizeof(runtime::MemoryRegion);
@@ -1234,7 +1305,7 @@ LoweringResult lower_impl(const ir::Function& function,
                        region_offset + runtime::MemoryRegion::data_offset());
         const std::size_t null_base = assembler.branch_zero(kScratch0);
         std::size_t read_only = 0;
-        if (node.opcode == ir::Opcode::kStoreWord) {
+        if (is_store) {
           assembler.load_unsigned(
               kArgumentBaseRegister, kScratch1,
               region_offset + runtime::MemoryRegion::writable_offset(), 1);
@@ -1278,7 +1349,7 @@ LoweringResult lower_impl(const ir::Function& function,
           if (!destination.in_register()) {
             assembler.store(target, kRsp, spill_offset(destination));
           }
-        } else {
+        } else if (node.opcode == ir::Opcode::kStoreWord) {
           const int stored = load_operand(
               &assembler, allocation.locations[node.rhs.id()], kScratch1);
           if (stored != kScratch1) {
@@ -1297,6 +1368,54 @@ LoweringResult lower_impl(const ir::Function& function,
           assembler.move_register(target, original);
           if (!destination.in_register()) {
             assembler.store(target, kRsp, spill_offset(destination));
+          }
+        } else if (node.opcode == ir::Opcode::kLoadFloat) {
+          const int target = destination.in_register()
+                                 ? physical_float_register(destination)
+                                 : kFloatScratch0;
+          if (access.byte_order == ir::MemoryByteOrder::kBigEndian) {
+            assembler.load_unsigned(kScratch1, kScratch0, 0, width);
+            assembler.reverse_bytes(kScratch1, width);
+            if (width == 4) {
+              assembler.move_word_to_float32(kFloatScratch1, kScratch1);
+              assembler.convert_float32_to_float64(target, kFloatScratch1);
+            } else {
+              assembler.move_word_to_float(target, kScratch1);
+            }
+          } else {
+            assembler.load_float_width(target, kScratch0, 0, width);
+            if (width == 4) {
+              assembler.convert_float32_to_float64(target, target);
+            }
+          }
+          if (!destination.in_register()) {
+            assembler.store_float(target, kRsp, spill_offset(destination));
+          }
+        } else {
+          const int stored = load_float_operand(
+              &assembler, allocation.locations[node.rhs.id()], kFloatScratch0);
+          if (width == 4) {
+            assembler.convert_float64_to_float32(kFloatScratch1, stored);
+            if (access.byte_order == ir::MemoryByteOrder::kBigEndian) {
+              assembler.move_float32_to_word(kScratch1, kFloatScratch1);
+              assembler.reverse_bytes(kScratch1, width);
+              assembler.store_width(kScratch1, kScratch0, 0, width);
+            } else {
+              assembler.store_float_width(kFloatScratch1, kScratch0, 0, width);
+            }
+          } else if (access.byte_order == ir::MemoryByteOrder::kBigEndian) {
+            assembler.move_float_to_word(kScratch1, stored);
+            assembler.reverse_bytes(kScratch1, width);
+            assembler.store_width(kScratch1, kScratch0, 0, width);
+          } else {
+            assembler.store_float_width(stored, kScratch0, 0, width);
+          }
+          const int target = destination.in_register()
+                                 ? physical_float_register(destination)
+                                 : kFloatScratch0;
+          assembler.move_float_register(target, stored);
+          if (!destination.in_register()) {
+            assembler.store_float(target, kRsp, spill_offset(destination));
           }
         }
         const std::size_t completed = assembler.branch();
@@ -1339,7 +1458,7 @@ LoweringResult lower_impl(const ir::Function& function,
         if (status.ok()) {
           status = assembler.patch_branch(too_small, record_failure);
         }
-        if (status.ok() && node.opcode == ir::Opcode::kStoreWord) {
+        if (status.ok() && is_store) {
           status = assembler.patch_branch(read_only, record_failure);
         }
         if (status.ok()) {
@@ -1728,7 +1847,9 @@ LoweringResult lower_control_flow_impl(
                node.opcode == ir::ControlOpcode::kGuardWordNonzero ||
                node.opcode == ir::ControlOpcode::kGuardFloatNonzero ||
                node.opcode == ir::ControlOpcode::kLoadWord ||
-               node.opcode == ir::ControlOpcode::kStoreWord;
+               node.opcode == ir::ControlOpcode::kStoreWord ||
+               node.opcode == ir::ControlOpcode::kLoadFloat ||
+               node.opcode == ir::ControlOpcode::kStoreFloat;
       });
   std::size_t maximum_call_arguments = 0;
   for (const ir::ControlNode& node : function.nodes()) {
@@ -1812,7 +1933,9 @@ LoweringResult lower_control_flow_impl(
           node.opcode == ir::ControlOpcode::kGuardWordNonzero ||
           node.opcode == ir::ControlOpcode::kGuardFloatNonzero ||
           node.opcode == ir::ControlOpcode::kLoadWord ||
-          node.opcode == ir::ControlOpcode::kStoreWord) {
+          node.opcode == ir::ControlOpcode::kStoreWord ||
+          node.opcode == ir::ControlOpcode::kLoadFloat ||
+          node.opcode == ir::ControlOpcode::kStoreFloat) {
         spill_control_stack_map_values(&assembler, function, allocation,
                                        live_values, block_index);
         stack_maps.push_back(make_stack_map_record(
@@ -1969,10 +2092,14 @@ LoweringResult lower_control_flow_impl(
           break;
         }
         case ir::ControlOpcode::kLoadWord:
-        case ir::ControlOpcode::kStoreWord: {
+        case ir::ControlOpcode::kStoreWord:
+        case ir::ControlOpcode::kLoadFloat:
+        case ir::ControlOpcode::kStoreFloat: {
           const ir::MemoryAccessDescriptor& access =
               function.memory_accesses()[node.memory_access];
           const std::size_t width = ir::memory_width_bytes(access.width);
+          const bool is_store = node.opcode == ir::ControlOpcode::kStoreWord ||
+                                node.opcode == ir::ControlOpcode::kStoreFloat;
           const std::size_t region_offset =
               static_cast<std::size_t>(access.region) *
               sizeof(runtime::MemoryRegion);
@@ -1994,7 +2121,7 @@ LoweringResult lower_control_flow_impl(
               region_offset + runtime::MemoryRegion::data_offset());
           const std::size_t null_base = assembler.branch_zero(kScratch0);
           std::size_t read_only = 0;
-          if (node.opcode == ir::ControlOpcode::kStoreWord) {
+          if (is_store) {
             assembler.load_unsigned(
                 kArgumentBaseRegister, kScratch1,
                 region_offset + runtime::MemoryRegion::writable_offset(), 1);
@@ -2035,7 +2162,7 @@ LoweringResult lower_control_flow_impl(
             if (access.sign_extend && width < sizeof(ir::Word)) {
               assembler.sign_extend(word_destination, width);
             }
-          } else {
+          } else if (node.opcode == ir::ControlOpcode::kStoreWord) {
             const int stored = load_control_word(
                 &assembler, allocation, node.rhs, block_index, kScratch1);
             if (stored != kScratch1) {
@@ -2049,8 +2176,53 @@ LoweringResult lower_control_flow_impl(
             const int original = load_control_word(
                 &assembler, allocation, node.rhs, block_index, kScratch1);
             assembler.move_register(word_destination, original);
+          } else if (node.opcode == ir::ControlOpcode::kLoadFloat) {
+            if (access.byte_order == ir::MemoryByteOrder::kBigEndian) {
+              assembler.load_unsigned(kScratch1, kScratch0, 0, width);
+              assembler.reverse_bytes(kScratch1, width);
+              if (width == 4) {
+                assembler.move_word_to_float32(kFloatScratch1, kScratch1);
+                assembler.convert_float32_to_float64(float_destination,
+                                                     kFloatScratch1);
+              } else {
+                assembler.move_word_to_float(float_destination, kScratch1);
+              }
+            } else {
+              assembler.load_float_width(float_destination, kScratch0, 0,
+                                         width);
+              if (width == 4) {
+                assembler.convert_float32_to_float64(float_destination,
+                                                     float_destination);
+              }
+            }
+          } else {
+            const int stored = load_control_float(
+                &assembler, allocation, node.rhs, block_index, kFloatScratch0);
+            if (width == 4) {
+              assembler.convert_float64_to_float32(kFloatScratch1, stored);
+              if (access.byte_order == ir::MemoryByteOrder::kBigEndian) {
+                assembler.move_float32_to_word(kScratch1, kFloatScratch1);
+                assembler.reverse_bytes(kScratch1, width);
+                assembler.store_width(kScratch1, kScratch0, 0, width);
+              } else {
+                assembler.store_float_width(kFloatScratch1, kScratch0, 0,
+                                            width);
+              }
+            } else if (access.byte_order == ir::MemoryByteOrder::kBigEndian) {
+              assembler.move_float_to_word(kScratch1, stored);
+              assembler.reverse_bytes(kScratch1, width);
+              assembler.store_width(kScratch1, kScratch0, 0, width);
+            } else {
+              assembler.store_float_width(stored, kScratch0, 0, width);
+            }
+            assembler.move_float_register(float_destination, stored);
           }
-          if (allocated_word < 0 ||
+          if (destination_is_float) {
+            if (allocated_float < 0 || allocation.requires_stack[value.id()]) {
+              assembler.store_float(float_destination, kRsp,
+                                    destination_offset);
+            }
+          } else if (allocated_word < 0 ||
               allocation.requires_stack[value.id()]) {
             assembler.store(word_destination, kRsp, destination_offset);
           }
@@ -2095,8 +2267,7 @@ LoweringResult lower_control_flow_impl(
           if (status.ok()) {
             status = assembler.patch_branch(too_small, record_failure);
           }
-          if (status.ok() &&
-              node.opcode == ir::ControlOpcode::kStoreWord) {
+          if (status.ok() && is_store) {
             status = assembler.patch_branch(read_only, record_failure);
           }
           if (status.ok()) {
@@ -2203,13 +2374,25 @@ LoweringResult lower_control_flow_impl(
           break;
         }
         case ir::ControlOpcode::kNegate:
-        case ir::ControlOpcode::kBitwiseNot: {
+        case ir::ControlOpcode::kBitwiseNot:
+        case ir::ControlOpcode::kByteSwap: {
           const int source = load_control_word(
               &assembler, allocation, node.lhs, block_index, kScratch0);
           if (node.opcode == ir::ControlOpcode::kNegate) {
             assembler.negate(word_destination, source);
-          } else {
+          } else if (node.opcode == ir::ControlOpcode::kBitwiseNot) {
             assembler.bitwise_not(word_destination, source);
+          } else {
+            const std::size_t width = static_cast<std::size_t>(node.immediate);
+            if (word_destination != source) {
+              assembler.move_register(word_destination, source);
+            }
+            assembler.reverse_bytes(word_destination, width);
+            if (width == 2) {
+              assembler.move_immediate(kScratch1, INT64_C(0xFFFF));
+              assembler.bitwise_and(word_destination, word_destination,
+                                    kScratch1);
+            }
           }
           if (allocated_word < 0 ||
               allocation.requires_stack[value.id()]) {

@@ -153,4 +153,33 @@ MemoryAccessResult store_bounded_word(
   return {Status::ok_status(), value};
 }
 
+MemoryAccessResult load_bounded_float(
+    const MemoryAccessDescriptor& access, Word byte_offset, std::size_t site,
+    runtime::ExecutionContext* context) noexcept {
+  const MemoryAccessResult loaded =
+      load_bounded_word(access, byte_offset, site, context);
+  if (!loaded.ok() || access.width == MemoryWidth::k64) {
+    return loaded;
+  }
+  std::uint32_t bits = static_cast<std::uint32_t>(word_bits(loaded.value));
+  float value = 0.0F;
+  std::memcpy(&value, &bits, sizeof(value));
+  return {Status::ok_status(), pack_float64(static_cast<double>(value))};
+}
+
+MemoryAccessResult store_bounded_float(
+    const MemoryAccessDescriptor& access, Word byte_offset, Word value,
+    std::size_t site, runtime::ExecutionContext* context) noexcept {
+  Word stored_bits = value;
+  if (access.width == MemoryWidth::k32) {
+    const float narrowed = static_cast<float>(unpack_float64(value));
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &narrowed, sizeof(bits));
+    stored_bits = bits_word(bits);
+  }
+  const MemoryAccessResult stored =
+      store_bounded_word(access, byte_offset, stored_bits, site, context);
+  return stored.ok() ? MemoryAccessResult{Status::ok_status(), value} : stored;
+}
+
 }  // namespace unijit::ir::detail
