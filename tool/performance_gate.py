@@ -160,6 +160,110 @@ def evaluate_cfg_float64(
     }
 
 
+def evaluate_cfg_simd(
+    document: dict[str, Any],
+    minimum_scalar_speedup: float,
+    minimum_interpreter_speedup: float,
+    maximum_code_bytes: float,
+) -> dict[str, Any]:
+    expected_schema = "unijit.cfg-simd-benchmark.v1"
+    if document.get("schema") != expected_schema:
+        raise GateError(
+            f"expected {expected_schema}, found {document.get('schema')!r}"
+        )
+    if document.get("benchmark") != "strict_i32x4_recurrence":
+        raise GateError("CFG SIMD gate requires the strict I32x4 recurrence")
+    if document.get("measurement_boundary") != "native_cfg_loop_iteration":
+        raise GateError("CFG SIMD gate requires the native loop-iteration boundary")
+
+    architecture = document.get("architecture")
+    if architecture not in {"aarch64", "x86_64", "riscv64"}:
+        raise GateError("CFG SIMD record has an unsupported architecture")
+    expected_lowering = "scalarized" if architecture == "riscv64" else "native"
+    if document.get("lowering_mode") != expected_lowering:
+        raise GateError(
+            f"CFG SIMD {architecture} record must report {expected_lowering} lowering"
+        )
+
+    samples = number_at(document, "samples")
+    loop_iterations = number_at(document, "loop_iterations")
+    warmup_invocations = number_at(document, "warmup_invocations")
+    measurement_invocations = number_at(document, "measurement_invocations")
+    vector_bits = number_at(document, "vector_bits")
+    lanes = number_at(document, "lanes")
+    scalar_speedup = number_at(document, "vector_speedup_over_scalar")
+    interpreter_speedup = number_at(
+        document, "vector_speedup_over_interpreter"
+    )
+    code_bytes = number_at(document, "vector_native_code_bytes")
+    number_at(document, "vector_native_median_ns_per_loop_iteration")
+    number_at(document, "scalar_native_median_ns_per_loop_iteration")
+    number_at(document, "vector_interpreter_median_ns_per_loop_iteration")
+    if samples < 7:
+        raise GateError("CFG SIMD gate requires at least seven samples")
+    if loop_iterations != 1000 or measurement_invocations != 500:
+        raise GateError(
+            "CFG SIMD gate requires exactly 1,000 loop iterations and "
+            "500 measured invocations"
+        )
+    if warmup_invocations < 100:
+        raise GateError("CFG SIMD gate requires at least 100 warmup invocations")
+    if vector_bits != 128 or lanes != 4:
+        raise GateError("CFG SIMD gate requires the fixed 128-bit I32x4 shape")
+    if document.get("checksum") != "0x15424b4ac53c353c":
+        raise GateError("CFG SIMD record has an unexpected deterministic checksum")
+    for name, threshold in {
+        "minimum scalar speedup": minimum_scalar_speedup,
+        "minimum interpreter speedup": minimum_interpreter_speedup,
+        "maximum code size": maximum_code_bytes,
+    }.items():
+        if not math.isfinite(threshold) or threshold <= 0:
+            raise GateError(f"{name} must be finite and positive")
+
+    failures: list[str] = []
+    if scalar_speedup < minimum_scalar_speedup:
+        failures.append(
+            f"CFG SIMD scalar speedup {scalar_speedup:.6f} is below "
+            f"{minimum_scalar_speedup:.6f}"
+        )
+    if interpreter_speedup < minimum_interpreter_speedup:
+        failures.append(
+            f"CFG SIMD interpreter speedup {interpreter_speedup:.6f} is below "
+            f"{minimum_interpreter_speedup:.6f}"
+        )
+    if code_bytes > maximum_code_bytes:
+        failures.append(
+            f"CFG SIMD native code size {code_bytes:.0f} exceeds "
+            f"{maximum_code_bytes:.0f} bytes"
+        )
+    if failures:
+        raise GateError("; ".join(failures))
+
+    return {
+        "schema": "unijit.performance-gate.v1",
+        "target": "cfg-simd",
+        "passed": True,
+        "source_schema": expected_schema,
+        "measurement_boundary": "native_cfg_loop_iteration",
+        "architecture": architecture,
+        "lowering_mode": expected_lowering,
+        "requirements": {
+            "scalar_speedup": {
+                "minimum": minimum_scalar_speedup,
+                "observed": scalar_speedup,
+            },
+            "interpreter_speedup": {
+                "minimum": minimum_interpreter_speedup,
+                "observed": interpreter_speedup,
+            },
+            "native_code_bytes": {
+                "maximum": maximum_code_bytes,
+                "observed": code_bytes,
+            },
+        },
+    }
+
+
 def load_record(path: Path) -> dict[str, Any]:
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -201,6 +305,16 @@ def main() -> int:
         "--maximum-native-code-bytes", type=float, default=400.0
     )
 
+    cfg_simd = subparsers.add_parser("cfg-simd")
+    cfg_simd.add_argument("record", type=Path)
+    cfg_simd.add_argument("--minimum-scalar-speedup", type=float, default=1.10)
+    cfg_simd.add_argument(
+        "--minimum-interpreter-speedup", type=float, default=10.0
+    )
+    cfg_simd.add_argument(
+        "--maximum-native-code-bytes", type=float, default=1024.0
+    )
+
     arguments = parser.parse_args()
     try:
         document = load_record(arguments.record)
@@ -208,6 +322,13 @@ def main() -> int:
             result = evaluate_cfg_float64(
                 document,
                 arguments.minimum_speedup,
+                arguments.maximum_native_code_bytes,
+            )
+        elif arguments.target == "cfg-simd":
+            result = evaluate_cfg_simd(
+                document,
+                arguments.minimum_scalar_speedup,
+                arguments.minimum_interpreter_speedup,
                 arguments.maximum_native_code_bytes,
             )
         elif arguments.target == "lua":
@@ -226,7 +347,7 @@ def main() -> int:
                 "cpython": arguments.minimum_cpython_speedup,
                 "cpython_jit": arguments.minimum_cpython_jit_speedup,
             }
-        if arguments.target != "cfg-float64":
+        if arguments.target not in {"cfg-float64", "cfg-simd"}:
             result = evaluate(arguments.target, document, thresholds)
     except GateError as error:
         print(

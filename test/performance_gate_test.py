@@ -9,7 +9,12 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tool"))
 
-from performance_gate import GateError, evaluate, evaluate_cfg_float64  # noqa: E402
+from performance_gate import (  # noqa: E402
+    GateError,
+    evaluate,
+    evaluate_cfg_float64,
+    evaluate_cfg_simd,
+)
 
 
 class PerformanceGateTest(unittest.TestCase):
@@ -49,6 +54,71 @@ class PerformanceGateTest(unittest.TestCase):
         record["samples"] = 3
         with self.assertRaisesRegex(GateError, "seven samples"):
             evaluate_cfg_float64(record, 5.0, 400.0)
+
+    def cfg_simd_record(self) -> dict[str, object]:
+        return {
+            "schema": "unijit.cfg-simd-benchmark.v1",
+            "benchmark": "strict_i32x4_recurrence",
+            "measurement_boundary": "native_cfg_loop_iteration",
+            "architecture": "x86_64",
+            "lowering_mode": "native",
+            "vector_bits": 128,
+            "lanes": 4,
+            "loop_iterations": 1000,
+            "warmup_invocations": 100,
+            "measurement_invocations": 500,
+            "samples": 7,
+            "vector_native_code_bytes": 725,
+            "vector_native_median_ns_per_loop_iteration": 0.8,
+            "scalar_native_median_ns_per_loop_iteration": 4.4,
+            "vector_interpreter_median_ns_per_loop_iteration": 70.0,
+            "vector_speedup_over_scalar": 5.5,
+            "vector_speedup_over_interpreter": 87.5,
+            "checksum": "0x15424b4ac53c353c",
+        }
+
+    def test_cfg_simd_target_passes(self) -> None:
+        result = evaluate_cfg_simd(self.cfg_simd_record(), 1.10, 10.0, 1024.0)
+        self.assertEqual(result["target"], "cfg-simd")
+        self.assertEqual(result["lowering_mode"], "native")
+        self.assertTrue(result["passed"])
+
+    def test_cfg_simd_target_accepts_riscv_scalarization(self) -> None:
+        record = self.cfg_simd_record()
+        record["architecture"] = "riscv64"
+        record["lowering_mode"] = "scalarized"
+        result = evaluate_cfg_simd(record, 1.10, 10.0, 1024.0)
+        self.assertEqual(result["lowering_mode"], "scalarized")
+
+    def test_cfg_simd_target_rejects_wrong_lowering_mode(self) -> None:
+        record = self.cfg_simd_record()
+        record["architecture"] = "riscv64"
+        with self.assertRaisesRegex(GateError, "scalarized lowering"):
+            evaluate_cfg_simd(record, 1.10, 10.0, 1024.0)
+
+    def test_cfg_simd_target_rejects_scalar_regression(self) -> None:
+        record = self.cfg_simd_record()
+        record["vector_speedup_over_scalar"] = 1.09
+        with self.assertRaisesRegex(GateError, "scalar speedup"):
+            evaluate_cfg_simd(record, 1.10, 10.0, 1024.0)
+
+    def test_cfg_simd_target_rejects_interpreter_regression(self) -> None:
+        record = self.cfg_simd_record()
+        record["vector_speedup_over_interpreter"] = 9.99
+        with self.assertRaisesRegex(GateError, "interpreter speedup"):
+            evaluate_cfg_simd(record, 1.10, 10.0, 1024.0)
+
+    def test_cfg_simd_target_rejects_code_growth(self) -> None:
+        record = self.cfg_simd_record()
+        record["vector_native_code_bytes"] = 1025
+        with self.assertRaisesRegex(GateError, "code size"):
+            evaluate_cfg_simd(record, 1.10, 10.0, 1024.0)
+
+    def test_cfg_simd_target_rejects_wrong_checksum(self) -> None:
+        record = self.cfg_simd_record()
+        record["checksum"] = "0x0"
+        with self.assertRaisesRegex(GateError, "deterministic checksum"):
+            evaluate_cfg_simd(record, 1.10, 10.0, 1024.0)
 
     def test_lua_target_passes(self) -> None:
         result = evaluate(
