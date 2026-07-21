@@ -42,7 +42,16 @@ Word fold_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
   if (opcode == Opcode::kSubtract) {
     return from_bits(lhs_bits - rhs_bits);
   }
-  return from_bits(lhs_bits * rhs_bits);
+  if (opcode == Opcode::kMultiply) {
+    return from_bits(lhs_bits * rhs_bits);
+  }
+  if (opcode == Opcode::kBitwiseAnd) {
+    return from_bits(lhs_bits & rhs_bits);
+  }
+  if (opcode == Opcode::kBitwiseOr) {
+    return from_bits(lhs_bits | rhs_bits);
+  }
+  return from_bits(lhs_bits ^ rhs_bits);
 }
 
 Word fold_float_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
@@ -74,7 +83,9 @@ Word fold_float_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
 
 bool is_binary(Opcode opcode) noexcept {
   return opcode == Opcode::kAdd || opcode == Opcode::kSubtract ||
-         opcode == Opcode::kMultiply || opcode == Opcode::kFloatAdd ||
+         opcode == Opcode::kMultiply || opcode == Opcode::kBitwiseAnd ||
+         opcode == Opcode::kBitwiseOr || opcode == Opcode::kBitwiseXor ||
+         opcode == Opcode::kFloatAdd ||
          opcode == Opcode::kFloatSubtract ||
          opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide ||
          opcode == Opcode::kFloatLessThan ||
@@ -127,6 +138,9 @@ bool is_control_binary(ControlOpcode opcode) noexcept {
     case ControlOpcode::kAdd:
     case ControlOpcode::kSubtract:
     case ControlOpcode::kMultiply:
+    case ControlOpcode::kBitwiseAnd:
+    case ControlOpcode::kBitwiseOr:
+    case ControlOpcode::kBitwiseXor:
     case ControlOpcode::kFloatAdd:
     case ControlOpcode::kFloatSubtract:
     case ControlOpcode::kFloatMultiply:
@@ -226,6 +240,15 @@ Word fold_control_binary(ControlOpcode opcode, Word lhs, Word rhs) noexcept {
   if (opcode == ControlOpcode::kMultiply) {
     return from_bits(to_bits(lhs) * to_bits(rhs));
   }
+  if (opcode == ControlOpcode::kBitwiseAnd) {
+    return from_bits(to_bits(lhs) & to_bits(rhs));
+  }
+  if (opcode == ControlOpcode::kBitwiseOr) {
+    return from_bits(to_bits(lhs) | to_bits(rhs));
+  }
+  if (opcode == ControlOpcode::kBitwiseXor) {
+    return from_bits(to_bits(lhs) ^ to_bits(rhs));
+  }
   if (opcode == ControlOpcode::kLessThan) {
     return lhs < rhs ? 1 : 0;
   }
@@ -241,6 +264,12 @@ Value emit_control_binary(ControlFlowBuilder* builder,
       return builder->subtract(lhs, rhs);
     case ControlOpcode::kMultiply:
       return builder->multiply(lhs, rhs);
+    case ControlOpcode::kBitwiseAnd:
+      return builder->bitwise_and(lhs, rhs);
+    case ControlOpcode::kBitwiseOr:
+      return builder->bitwise_or(lhs, rhs);
+    case ControlOpcode::kBitwiseXor:
+      return builder->bitwise_xor(lhs, rhs);
     case ControlOpcode::kFloatAdd:
       return builder->float64_add(lhs, rhs);
     case ControlOpcode::kFloatSubtract:
@@ -513,6 +542,15 @@ PassResult transform_once(
       continue;
     }
 
+    if (node.opcode == Opcode::kBitwiseXor && lhs_id == rhs_id) {
+      mapped[index] = builder.constant(0);
+      known_constant[index] = true;
+      constant_value[index] = 0;
+      ++simplified;
+      changed = true;
+      continue;
+    }
+
     std::size_t replacement = node_count;
     if (node.opcode == Opcode::kAdd) {
       if (known_constant[rhs_id] && constant_value[rhs_id] == 0) {
@@ -534,6 +572,33 @@ PassResult transform_once(
       } else if (known_constant[rhs_id] && constant_value[rhs_id] == 1) {
         replacement = lhs_id;
       }
+    } else if (node.opcode == Opcode::kBitwiseAnd) {
+      if ((known_constant[lhs_id] && constant_value[lhs_id] == 0) ||
+          (known_constant[rhs_id] && constant_value[rhs_id] == -1)) {
+        replacement = lhs_id;
+      } else if ((known_constant[rhs_id] && constant_value[rhs_id] == 0) ||
+                 (known_constant[lhs_id] &&
+                  constant_value[lhs_id] == -1)) {
+        replacement = rhs_id;
+      } else if (lhs_id == rhs_id) {
+        replacement = lhs_id;
+      }
+    } else if (node.opcode == Opcode::kBitwiseOr) {
+      if ((known_constant[lhs_id] && constant_value[lhs_id] == -1) ||
+          (known_constant[rhs_id] && constant_value[rhs_id] == 0)) {
+        replacement = lhs_id;
+      } else if ((known_constant[rhs_id] && constant_value[rhs_id] == -1) ||
+                 (known_constant[lhs_id] && constant_value[lhs_id] == 0)) {
+        replacement = rhs_id;
+      } else if (lhs_id == rhs_id) {
+        replacement = lhs_id;
+      }
+    } else if (node.opcode == Opcode::kBitwiseXor) {
+      if (known_constant[rhs_id] && constant_value[rhs_id] == 0) {
+        replacement = lhs_id;
+      } else if (known_constant[lhs_id] && constant_value[lhs_id] == 0) {
+        replacement = rhs_id;
+      }
     }
 
     if (replacement != node_count) {
@@ -549,8 +614,14 @@ PassResult transform_once(
       mapped[index] = builder.add(mapped[lhs_id], mapped[rhs_id]);
     } else if (node.opcode == Opcode::kSubtract) {
       mapped[index] = builder.subtract(mapped[lhs_id], mapped[rhs_id]);
-    } else {
+    } else if (node.opcode == Opcode::kMultiply) {
       mapped[index] = builder.multiply(mapped[lhs_id], mapped[rhs_id]);
+    } else if (node.opcode == Opcode::kBitwiseAnd) {
+      mapped[index] = builder.bitwise_and(mapped[lhs_id], mapped[rhs_id]);
+    } else if (node.opcode == Opcode::kBitwiseOr) {
+      mapped[index] = builder.bitwise_or(mapped[lhs_id], mapped[rhs_id]);
+    } else {
+      mapped[index] = builder.bitwise_xor(mapped[lhs_id], mapped[rhs_id]);
     }
   }
 
@@ -1131,6 +1202,35 @@ ControlFlowOptimizationResult Optimizer::run(
           } else if (known_constant[rhs_id] &&
                      constant_value[rhs_id] == 1) {
             replacement[index] = lhs_id;
+          }
+        } else if (node.opcode == ControlOpcode::kBitwiseAnd) {
+          if ((known_constant[lhs_id] && constant_value[lhs_id] == 0) ||
+              (known_constant[rhs_id] && constant_value[rhs_id] == -1) ||
+              lhs_id == rhs_id) {
+            replacement[index] = lhs_id;
+          } else if ((known_constant[rhs_id] &&
+                      constant_value[rhs_id] == 0) ||
+                     (known_constant[lhs_id] &&
+                      constant_value[lhs_id] == -1)) {
+            replacement[index] = rhs_id;
+          }
+        } else if (node.opcode == ControlOpcode::kBitwiseOr) {
+          if ((known_constant[lhs_id] && constant_value[lhs_id] == -1) ||
+              (known_constant[rhs_id] && constant_value[rhs_id] == 0) ||
+              lhs_id == rhs_id) {
+            replacement[index] = lhs_id;
+          } else if ((known_constant[rhs_id] &&
+                      constant_value[rhs_id] == -1) ||
+                     (known_constant[lhs_id] &&
+                      constant_value[lhs_id] == 0)) {
+            replacement[index] = rhs_id;
+          }
+        } else if (node.opcode == ControlOpcode::kBitwiseXor) {
+          if (known_constant[rhs_id] && constant_value[rhs_id] == 0) {
+            replacement[index] = lhs_id;
+          } else if (known_constant[lhs_id] &&
+                     constant_value[lhs_id] == 0) {
+            replacement[index] = rhs_id;
           }
         }
         if (replacement[index] != node_count) {

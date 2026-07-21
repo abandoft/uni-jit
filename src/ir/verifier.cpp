@@ -12,7 +12,9 @@ Status invalid_node(std::size_t index, const char* message) {
 
 bool is_binary(Opcode opcode) {
   return opcode == Opcode::kAdd || opcode == Opcode::kSubtract ||
-         opcode == Opcode::kMultiply || opcode == Opcode::kFloatAdd ||
+         opcode == Opcode::kMultiply || opcode == Opcode::kBitwiseAnd ||
+         opcode == Opcode::kBitwiseOr || opcode == Opcode::kBitwiseXor ||
+         opcode == Opcode::kFloatAdd ||
          opcode == Opcode::kFloatSubtract ||
          opcode == Opcode::kFloatMultiply || opcode == Opcode::kFloatDivide ||
          opcode == Opcode::kFloatLessThan ||

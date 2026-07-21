@@ -20,6 +20,9 @@ void visit_control_operands(const ir::ControlFlowFunction& function,
     case ir::ControlOpcode::kAdd:
     case ir::ControlOpcode::kSubtract:
     case ir::ControlOpcode::kMultiply:
+    case ir::ControlOpcode::kBitwiseAnd:
+    case ir::ControlOpcode::kBitwiseOr:
+    case ir::ControlOpcode::kBitwiseXor:
     case ir::ControlOpcode::kFloatAdd:
     case ir::ControlOpcode::kFloatSubtract:
     case ir::ControlOpcode::kFloatMultiply:
@@ -77,6 +80,9 @@ RegisterAllocation allocate_impl(const ir::Function& function,
     if (node.opcode == ir::Opcode::kAdd ||
         node.opcode == ir::Opcode::kSubtract ||
         node.opcode == ir::Opcode::kMultiply ||
+        node.opcode == ir::Opcode::kBitwiseAnd ||
+        node.opcode == ir::Opcode::kBitwiseOr ||
+        node.opcode == ir::Opcode::kBitwiseXor ||
         node.opcode == ir::Opcode::kFloatAdd ||
         node.opcode == ir::Opcode::kFloatSubtract ||
         node.opcode == ir::Opcode::kFloatMultiply ||
@@ -226,6 +232,9 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kAdd:
         case ir::ControlOpcode::kSubtract:
         case ir::ControlOpcode::kMultiply:
+        case ir::ControlOpcode::kBitwiseAnd:
+        case ir::ControlOpcode::kBitwiseOr:
+        case ir::ControlOpcode::kBitwiseXor:
         case ir::ControlOpcode::kFloatAdd:
         case ir::ControlOpcode::kFloatSubtract:
         case ir::ControlOpcode::kFloatMultiply:
@@ -364,6 +373,9 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kAdd:
         case ir::ControlOpcode::kSubtract:
         case ir::ControlOpcode::kMultiply:
+        case ir::ControlOpcode::kBitwiseAnd:
+        case ir::ControlOpcode::kBitwiseOr:
+        case ir::ControlOpcode::kBitwiseXor:
         case ir::ControlOpcode::kFloatAdd:
         case ir::ControlOpcode::kFloatSubtract:
         case ir::ControlOpcode::kFloatMultiply:

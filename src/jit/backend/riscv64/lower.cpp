@@ -145,6 +145,18 @@ class Assembler final {
     emit_r(0x01, rhs, lhs, 0, destination, 0x33);
   }
 
+  void bitwise_and(int destination, int lhs, int rhs) {
+    emit_r(0x00, rhs, lhs, 7, destination, 0x33);
+  }
+
+  void bitwise_or(int destination, int lhs, int rhs) {
+    emit_r(0x00, rhs, lhs, 6, destination, 0x33);
+  }
+
+  void bitwise_xor(int destination, int lhs, int rhs) {
+    emit_r(0x00, rhs, lhs, 4, destination, 0x33);
+  }
+
   void compare(int destination, int lhs, int rhs, bool or_equal) {
     if (or_equal) {
       emit_r(0x00, lhs, rhs, 2, destination, 0x33);
@@ -603,7 +615,10 @@ LoweringResult lower_impl(const ir::Function& function,
       }
       case ir::Opcode::kAdd:
       case ir::Opcode::kSubtract:
-      case ir::Opcode::kMultiply: {
+      case ir::Opcode::kMultiply:
+      case ir::Opcode::kBitwiseAnd:
+      case ir::Opcode::kBitwiseOr:
+      case ir::Opcode::kBitwiseXor: {
         const int lhs = load_operand(
             &assembler, allocation.locations[node.lhs.id()], kScratch0);
         const int rhs = load_operand(
@@ -615,8 +630,14 @@ LoweringResult lower_impl(const ir::Function& function,
           assembler.add(target, lhs, rhs);
         } else if (node.opcode == ir::Opcode::kSubtract) {
           assembler.subtract(target, lhs, rhs);
-        } else {
+        } else if (node.opcode == ir::Opcode::kMultiply) {
           assembler.multiply(target, lhs, rhs);
+        } else if (node.opcode == ir::Opcode::kBitwiseAnd) {
+          assembler.bitwise_and(target, lhs, rhs);
+        } else if (node.opcode == ir::Opcode::kBitwiseOr) {
+          assembler.bitwise_or(target, lhs, rhs);
+        } else {
+          assembler.bitwise_xor(target, lhs, rhs);
         }
         if (!destination.in_register()) {
           assembler.store(target, kStackPointer, spill_offset(destination));
@@ -1551,6 +1572,9 @@ LoweringResult lower_control_flow_impl(
         case ir::ControlOpcode::kAdd:
         case ir::ControlOpcode::kSubtract:
         case ir::ControlOpcode::kMultiply:
+        case ir::ControlOpcode::kBitwiseAnd:
+        case ir::ControlOpcode::kBitwiseOr:
+        case ir::ControlOpcode::kBitwiseXor:
         case ir::ControlOpcode::kLessThan:
         case ir::ControlOpcode::kLessEqual:
           const int lhs = load_control_word(
@@ -1563,6 +1587,12 @@ LoweringResult lower_control_flow_impl(
             assembler.subtract(word_destination, lhs, rhs);
           } else if (node.opcode == ir::ControlOpcode::kMultiply) {
             assembler.multiply(word_destination, lhs, rhs);
+          } else if (node.opcode == ir::ControlOpcode::kBitwiseAnd) {
+            assembler.bitwise_and(word_destination, lhs, rhs);
+          } else if (node.opcode == ir::ControlOpcode::kBitwiseOr) {
+            assembler.bitwise_or(word_destination, lhs, rhs);
+          } else if (node.opcode == ir::ControlOpcode::kBitwiseXor) {
+            assembler.bitwise_xor(word_destination, lhs, rhs);
           } else {
             assembler.compare(word_destination, lhs, rhs,
                               node.opcode == ir::ControlOpcode::kLessEqual);

@@ -31,6 +31,12 @@ Word evaluate_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
       return from_bits(lhs_bits - rhs_bits);
     case Opcode::kMultiply:
       return from_bits(lhs_bits * rhs_bits);
+    case Opcode::kBitwiseAnd:
+      return from_bits(lhs_bits & rhs_bits);
+    case Opcode::kBitwiseOr:
+      return from_bits(lhs_bits | rhs_bits);
+    case Opcode::kBitwiseXor:
+      return from_bits(lhs_bits ^ rhs_bits);
     case Opcode::kNegate:
       return from_bits(UINT64_C(0) - lhs_bits);
     case Opcode::kBitwiseNot:
@@ -141,6 +147,9 @@ EvaluationResult Interpreter::evaluate(const Function& function,
         case Opcode::kAdd:
         case Opcode::kSubtract:
         case Opcode::kMultiply:
+        case Opcode::kBitwiseAnd:
+        case Opcode::kBitwiseOr:
+        case Opcode::kBitwiseXor:
         case Opcode::kNegate:
         case Opcode::kBitwiseNot:
         case Opcode::kFloatAdd:

@@ -42,6 +42,9 @@ enum class ControlOpcode : std::uint8_t {
   kAdd,
   kSubtract,
   kMultiply,
+  kBitwiseAnd,
+  kBitwiseOr,
+  kBitwiseXor,
   kNegate,
   kBitwiseNot,
   kFloatAdd,
@@ -155,6 +158,9 @@ public:
   Value add(Value lhs, Value rhs);
   Value subtract(Value lhs, Value rhs);
   Value multiply(Value lhs, Value rhs);
+  Value bitwise_and(Value lhs, Value rhs);
+  Value bitwise_or(Value lhs, Value rhs);
+  Value bitwise_xor(Value lhs, Value rhs);
   Value negate(Value value);
   Value bitwise_not(Value value);
   Value float64_add(Value lhs, Value rhs);

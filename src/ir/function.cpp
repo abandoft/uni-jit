@@ -111,6 +111,18 @@ Value FunctionBuilder::multiply(Value lhs, Value rhs) {
   return append_binary(Opcode::kMultiply, lhs, rhs);
 }
 
+Value FunctionBuilder::bitwise_and(Value lhs, Value rhs) {
+  return append_binary(Opcode::kBitwiseAnd, lhs, rhs);
+}
+
+Value FunctionBuilder::bitwise_or(Value lhs, Value rhs) {
+  return append_binary(Opcode::kBitwiseOr, lhs, rhs);
+}
+
+Value FunctionBuilder::bitwise_xor(Value lhs, Value rhs) {
+  return append_binary(Opcode::kBitwiseXor, lhs, rhs);
+}
+
 Value FunctionBuilder::negate(Value value) {
   if (function_.nodes_.size() >= Value::kInvalidId) {
     return {};

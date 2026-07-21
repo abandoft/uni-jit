@@ -26,6 +26,9 @@ bool is_binary(ControlOpcode opcode) {
   case ControlOpcode::kAdd:
   case ControlOpcode::kSubtract:
   case ControlOpcode::kMultiply:
+  case ControlOpcode::kBitwiseAnd:
+  case ControlOpcode::kBitwiseOr:
+  case ControlOpcode::kBitwiseXor:
   case ControlOpcode::kFloatAdd:
   case ControlOpcode::kFloatSubtract:
   case ControlOpcode::kFloatMultiply:
@@ -436,6 +439,15 @@ Word evaluate_node(ControlOpcode opcode, Word lhs, Word rhs) noexcept {
   if (opcode == ControlOpcode::kMultiply) {
     return from_bits(to_bits(lhs) * to_bits(rhs));
   }
+  if (opcode == ControlOpcode::kBitwiseAnd) {
+    return from_bits(to_bits(lhs) & to_bits(rhs));
+  }
+  if (opcode == ControlOpcode::kBitwiseOr) {
+    return from_bits(to_bits(lhs) | to_bits(rhs));
+  }
+  if (opcode == ControlOpcode::kBitwiseXor) {
+    return from_bits(to_bits(lhs) ^ to_bits(rhs));
+  }
   if (opcode == ControlOpcode::kNegate) {
     return from_bits(UINT64_C(0) - to_bits(lhs));
   }
@@ -599,6 +611,18 @@ Value ControlFlowBuilder::subtract(Value lhs, Value rhs) {
 
 Value ControlFlowBuilder::multiply(Value lhs, Value rhs) {
   return append_binary(ControlOpcode::kMultiply, lhs, rhs);
+}
+
+Value ControlFlowBuilder::bitwise_and(Value lhs, Value rhs) {
+  return append_binary(ControlOpcode::kBitwiseAnd, lhs, rhs);
+}
+
+Value ControlFlowBuilder::bitwise_or(Value lhs, Value rhs) {
+  return append_binary(ControlOpcode::kBitwiseOr, lhs, rhs);
+}
+
+Value ControlFlowBuilder::bitwise_xor(Value lhs, Value rhs) {
+  return append_binary(ControlOpcode::kBitwiseXor, lhs, rhs);
 }
 
 Value ControlFlowBuilder::negate(Value value) {

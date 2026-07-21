@@ -244,6 +244,26 @@ class Assembler final {
     emit_modrm(3, destination, rhs);
   }
 
+  void bitwise_binary(int destination, int lhs, int rhs,
+                      std::uint8_t opcode) {
+    prepare_binary(destination, lhs);
+    emit_rex(rhs, destination);
+    buffer_.emit_u8(opcode);
+    emit_modrm(3, rhs, destination);
+  }
+
+  void bitwise_and(int destination, int lhs, int rhs) {
+    bitwise_binary(destination, lhs, rhs, 0x21U);
+  }
+
+  void bitwise_or(int destination, int lhs, int rhs) {
+    bitwise_binary(destination, lhs, rhs, 0x09U);
+  }
+
+  void bitwise_xor(int destination, int lhs, int rhs) {
+    bitwise_binary(destination, lhs, rhs, 0x31U);
+  }
+
   void compare(int destination, int lhs, int rhs, bool or_equal) {
     emit_rex(rhs, lhs);
     buffer_.emit_u8(0x39U);
@@ -640,7 +660,10 @@ LoweringResult lower_impl(const ir::Function& function,
       }
       case ir::Opcode::kAdd:
       case ir::Opcode::kSubtract:
-      case ir::Opcode::kMultiply: {
+      case ir::Opcode::kMultiply:
+      case ir::Opcode::kBitwiseAnd:
+      case ir::Opcode::kBitwiseOr:
+      case ir::Opcode::kBitwiseXor: {
         const int lhs = load_operand(
             &assembler, allocation.locations[node.lhs.id()], kScratch0);
         const int rhs = load_operand(
@@ -652,8 +675,14 @@ LoweringResult lower_impl(const ir::Function& function,
           assembler.add(target, lhs, rhs);
         } else if (node.opcode == ir::Opcode::kSubtract) {
           assembler.subtract(target, lhs, rhs);
-        } else {
+        } else if (node.opcode == ir::Opcode::kMultiply) {
           assembler.multiply(target, lhs, rhs);
+        } else if (node.opcode == ir::Opcode::kBitwiseAnd) {
+          assembler.bitwise_and(target, lhs, rhs);
+        } else if (node.opcode == ir::Opcode::kBitwiseOr) {
+          assembler.bitwise_or(target, lhs, rhs);
+        } else {
+          assembler.bitwise_xor(target, lhs, rhs);
         }
         if (!destination.in_register()) {
           assembler.store(target, kRsp, spill_offset(destination));
@@ -1536,6 +1565,9 @@ LoweringResult lower_control_flow_impl(
         case ir::ControlOpcode::kAdd:
         case ir::ControlOpcode::kSubtract:
         case ir::ControlOpcode::kMultiply:
+        case ir::ControlOpcode::kBitwiseAnd:
+        case ir::ControlOpcode::kBitwiseOr:
+        case ir::ControlOpcode::kBitwiseXor:
         case ir::ControlOpcode::kLessThan:
         case ir::ControlOpcode::kLessEqual:
           const int lhs = load_control_word(
@@ -1548,6 +1580,12 @@ LoweringResult lower_control_flow_impl(
             assembler.subtract(word_destination, lhs, rhs);
           } else if (node.opcode == ir::ControlOpcode::kMultiply) {
             assembler.multiply(word_destination, lhs, rhs);
+          } else if (node.opcode == ir::ControlOpcode::kBitwiseAnd) {
+            assembler.bitwise_and(word_destination, lhs, rhs);
+          } else if (node.opcode == ir::ControlOpcode::kBitwiseOr) {
+            assembler.bitwise_or(word_destination, lhs, rhs);
+          } else if (node.opcode == ir::ControlOpcode::kBitwiseXor) {
+            assembler.bitwise_xor(word_destination, lhs, rhs);
           } else {
             assembler.compare(word_destination, lhs, rhs,
                               node.opcode == ir::ControlOpcode::kLessEqual);
