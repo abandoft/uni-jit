@@ -834,8 +834,7 @@ private:
       ++expression_position_;
       const ir::Value operand = parse_unary(depth + 1);
       return operand.valid()
-                 ? builder_->float64_subtract(builder_->float64_constant(0.0),
-                                              operand)
+                 ? builder_->float64_negate(operand)
                  : ir::Value{};
     }
     return parse_primary(depth + 1);

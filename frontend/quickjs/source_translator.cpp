@@ -285,8 +285,7 @@ class Parser final {
       if (!operand.valid()) {
         return {};
       }
-      return builder_->float64_subtract(builder_->float64_constant(0.0),
-                                        operand);
+      return builder_->float64_negate(operand);
     }
     return parse_primary(depth + 1);
   }
