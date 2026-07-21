@@ -33,6 +33,7 @@ void visit_control_operands(const ir::ControlFlowFunction& function,
       visitor(node.lhs);
       visitor(node.rhs);
       break;
+    case ir::ControlOpcode::kFloatNegate:
     case ir::ControlOpcode::kGuardFloatNonzero:
       visitor(node.lhs);
       break;
@@ -84,7 +85,8 @@ RegisterAllocation allocate_impl(const ir::Function& function,
         node.opcode == ir::Opcode::kFloatNotEqual) {
       note_use(&last_use, node.lhs, index);
       note_use(&last_use, node.rhs, index);
-    } else if (node.opcode == ir::Opcode::kGuardFloatNonzero) {
+    } else if (node.opcode == ir::Opcode::kFloatNegate ||
+               node.opcode == ir::Opcode::kGuardFloatNonzero) {
       note_use(&last_use, node.lhs, index);
     } else if (node.opcode == ir::Opcode::kCall) {
       for (std::size_t argument_index = 0;
@@ -233,6 +235,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
           note_local_use(node.lhs);
           note_local_use(node.rhs);
           break;
+        case ir::ControlOpcode::kFloatNegate:
         case ir::ControlOpcode::kGuardFloatNonzero:
           note_local_use(node.lhs);
           break;
@@ -368,6 +371,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
           note_nonlocal_use(block_index, node.lhs);
           note_nonlocal_use(block_index, node.rhs);
           break;
+        case ir::ControlOpcode::kFloatNegate:
         case ir::ControlOpcode::kGuardFloatNonzero:
           note_nonlocal_use(block_index, node.lhs);
           break;

@@ -49,6 +49,7 @@ enum class Opcode : std::uint8_t {
   kMultiply,
   kFloatAdd,
   kFloatSubtract,
+  kFloatNegate,
   kFloatMultiply,
   kFloatDivide,
   kFloatLessThan,
@@ -128,6 +129,7 @@ class FunctionBuilder final {
   Value multiply(Value lhs, Value rhs);
   Value float64_add(Value lhs, Value rhs);
   Value float64_subtract(Value lhs, Value rhs);
+  Value float64_negate(Value value);
   Value float64_multiply(Value lhs, Value rhs);
   Value float64_divide(Value lhs, Value rhs);
   Value float64_less_than(Value lhs, Value rhs);

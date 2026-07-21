@@ -113,6 +113,10 @@ class Assembler final {
                      reg(destination));
   }
 
+  void negate_float(int destination, int source) {
+    buffer_.emit_u32(0x1E614000U | (reg(source) << 5U) | reg(destination));
+  }
+
   void multiply_float(int destination, int lhs, int rhs) {
     buffer_.emit_u32(0x1E600800U | (reg(rhs) << 16U) | (reg(lhs) << 5U) |
                      reg(destination));
@@ -587,6 +591,19 @@ LoweringResult lower_impl(const ir::Function& function,
         } else {
           assembler.divide_float(target, lhs, rhs);
         }
+        if (!destination.in_register()) {
+          assembler.store_float(target, kStackPointer,
+                                spill_offset(destination));
+        }
+        break;
+      }
+      case ir::Opcode::kFloatNegate: {
+        const int source = load_float_operand(
+            &assembler, allocation.locations[node.lhs.id()], kFloatScratch0);
+        const int target = destination.in_register()
+                               ? physical_float_register(destination)
+                               : kFloatScratch0;
+        assembler.negate_float(target, source);
         if (!destination.in_register()) {
           assembler.store_float(target, kStackPointer,
                                 spill_offset(destination));
@@ -1398,6 +1415,17 @@ LoweringResult lower_control_flow_impl(
           } else {
             assembler.divide_float(float_destination, lhs, rhs);
           }
+          if (allocated_float < 0 ||
+              allocation.requires_stack[value.id()]) {
+            assembler.store_float(float_destination, kStackPointer,
+                                  destination_offset);
+          }
+          break;
+        }
+        case ir::ControlOpcode::kFloatNegate: {
+          const int source = load_control_float(
+              &assembler, allocation, node.lhs, block_index, kFloatScratch0);
+          assembler.negate_float(float_destination, source);
           if (allocated_float < 0 ||
               allocation.requires_stack[value.id()]) {
             assembler.store_float(float_destination, kStackPointer,

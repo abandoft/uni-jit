@@ -119,6 +119,16 @@ Value FunctionBuilder::float64_subtract(Value lhs, Value rhs) {
   return append_binary(Opcode::kFloatSubtract, lhs, rhs);
 }
 
+Value FunctionBuilder::float64_negate(Value value) {
+  if (function_.nodes_.size() >= Value::kInvalidId) {
+    return {};
+  }
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  function_.nodes_.push_back(
+      Node{Opcode::kFloatNegate, value, {}, 0, ValueType::kFloat64});
+  return Value{id};
+}
+
 Value FunctionBuilder::float64_multiply(Value lhs, Value rhs) {
   return append_binary(Opcode::kFloatMultiply, lhs, rhs);
 }

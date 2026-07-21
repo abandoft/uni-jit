@@ -20,6 +20,10 @@ bool is_binary(Opcode opcode) {
          opcode == Opcode::kFloatNotEqual;
 }
 
+bool is_unary(Opcode opcode) {
+  return opcode == Opcode::kFloatNegate;
+}
+
 bool has_float_operands(Opcode opcode) {
   return opcode == Opcode::kFloatAdd ||
          opcode == Opcode::kFloatSubtract ||
@@ -115,6 +119,16 @@ Status verify(const Function& function) {
             nodes[previous].immediate == node.immediate) {
           return invalid_node(index, "runtime exit site is duplicated");
         }
+      }
+      continue;
+    }
+    if (is_unary(node.opcode)) {
+      if (!node.lhs.valid() || node.lhs.id() >= index || node.rhs.valid() ||
+          node.type != ValueType::kFloat64 ||
+          nodes[node.lhs.id()].type != ValueType::kFloat64 ||
+          node.immediate != 0 || node.argument_begin != 0 ||
+          node.argument_count != 0) {
+        return invalid_node(index, "Float64 unary operation is malformed");
       }
       continue;
     }

@@ -40,12 +40,17 @@ bool is_binary(ControlOpcode opcode) {
   case ControlOpcode::kParameter:
   case ControlOpcode::kBlockParameter:
   case ControlOpcode::kConstant:
+  case ControlOpcode::kFloatNegate:
   case ControlOpcode::kCall:
   case ControlOpcode::kGuardFloatNonzero:
   case ControlOpcode::kSafepoint:
     return false;
   }
   return false;
+}
+
+bool is_unary(ControlOpcode opcode) {
+  return opcode == ControlOpcode::kFloatNegate;
 }
 
 Status invalid_control_flow(std::size_t location, const char *message) {
@@ -300,6 +305,17 @@ Status verify_impl(const ControlFlowFunction &function) {
         }
         continue;
       }
+      if (is_unary(node.opcode)) {
+        if (!available(node.lhs, block_index, instruction_index) ||
+            node.rhs.valid() || node.type != ValueType::kFloat64 ||
+            function.value_type(node.lhs) != ValueType::kFloat64 ||
+            node.immediate != 0 || node.argument_begin != 0 ||
+            node.argument_count != 0) {
+          return invalid_control_flow(
+              value.id(), "control-flow Float64 unary operation is malformed");
+        }
+        continue;
+      }
       if (!is_binary(node.opcode)) {
         return invalid_control_flow(value.id(), "unknown control-flow opcode");
       }
@@ -417,6 +433,9 @@ Word evaluate_node(ControlOpcode opcode, Word lhs, Word rhs) noexcept {
   }
   if (opcode == ControlOpcode::kFloatSubtract) {
     return pack_float64(unpack_float64(lhs) - unpack_float64(rhs));
+  }
+  if (opcode == ControlOpcode::kFloatNegate) {
+    return from_bits(to_bits(lhs) ^ (UINT64_C(1) << 63U));
   }
   if (opcode == ControlOpcode::kFloatMultiply) {
     return pack_float64(unpack_float64(lhs) * unpack_float64(rhs));
@@ -537,6 +556,11 @@ Value ControlFlowBuilder::append_binary(ControlOpcode opcode, Value lhs,
   return append_node(ControlNode{opcode, lhs, rhs, 0, type});
 }
 
+Value ControlFlowBuilder::append_unary(ControlOpcode opcode, Value value,
+                                       ValueType type) {
+  return append_node(ControlNode{opcode, value, {}, 0, type});
+}
+
 Value ControlFlowBuilder::constant(Word value) {
   return append_node(ControlNode{ControlOpcode::kConstant, {}, {}, value,
                                  ValueType::kWord});
@@ -571,6 +595,11 @@ Value ControlFlowBuilder::float64_add(Value lhs, Value rhs) {
 Value ControlFlowBuilder::float64_subtract(Value lhs, Value rhs) {
   return append_binary(ControlOpcode::kFloatSubtract, lhs, rhs,
                        ValueType::kFloat64);
+}
+
+Value ControlFlowBuilder::float64_negate(Value value) {
+  return append_unary(ControlOpcode::kFloatNegate, value,
+                      ValueType::kFloat64);
 }
 
 Value ControlFlowBuilder::float64_multiply(Value lhs, Value rhs) {
@@ -829,8 +858,9 @@ ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
                     0};
           }
         } else {
-          values[value.id()] = evaluate_node(node.opcode, values[node.lhs.id()],
-                                             values[node.rhs.id()]);
+          values[value.id()] = evaluate_node(
+              node.opcode, values[node.lhs.id()],
+              node.rhs.valid() ? values[node.rhs.id()] : 0);
         }
       }
 

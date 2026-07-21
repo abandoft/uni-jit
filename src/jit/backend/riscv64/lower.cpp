@@ -94,6 +94,10 @@ class Assembler final {
     emit_r(0x05, rhs, lhs, 0, destination, 0x53);
   }
 
+  void negate_float(int destination, int source) {
+    emit_r(0x11, source, source, 1, destination, 0x53);
+  }
+
   void multiply_float(int destination, int lhs, int rhs) {
     emit_r(0x09, rhs, lhs, 0, destination, 0x53);
   }
@@ -631,6 +635,19 @@ LoweringResult lower_impl(const ir::Function& function,
         } else {
           assembler.divide_float(target, lhs, rhs);
         }
+        if (!destination.in_register()) {
+          assembler.store_float(target, kStackPointer,
+                                spill_offset(destination));
+        }
+        break;
+      }
+      case ir::Opcode::kFloatNegate: {
+        const int source = load_float_operand(
+            &assembler, allocation.locations[node.lhs.id()], kFloatScratch0);
+        const int target = destination.in_register()
+                               ? physical_float_register(destination)
+                               : kFloatScratch0;
+        assembler.negate_float(target, source);
         if (!destination.in_register()) {
           assembler.store_float(target, kStackPointer,
                                 spill_offset(destination));
@@ -1448,6 +1465,17 @@ LoweringResult lower_control_flow_impl(
           } else {
             assembler.divide_float(float_destination, lhs, rhs);
           }
+          if (allocated_float < 0 ||
+              allocation.requires_stack[value.id()]) {
+            assembler.store_float(float_destination, kStackPointer,
+                                  destination_offset);
+          }
+          break;
+        }
+        case ir::ControlOpcode::kFloatNegate: {
+          const int source = load_control_float(
+              &assembler, allocation, node.lhs, block_index, kFloatScratch0);
+          assembler.negate_float(float_destination, source);
           if (allocated_float < 0 ||
               allocation.requires_stack[value.id()]) {
             assembler.store_float(float_destination, kStackPointer,

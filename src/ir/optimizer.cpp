@@ -82,6 +82,10 @@ bool is_binary(Opcode opcode) noexcept {
          opcode == Opcode::kFloatNotEqual;
 }
 
+bool is_unary(Opcode opcode) noexcept {
+  return opcode == Opcode::kFloatNegate;
+}
+
 bool is_float_binary(Opcode opcode) noexcept {
   return opcode == Opcode::kFloatAdd ||
          opcode == Opcode::kFloatSubtract ||
@@ -116,6 +120,10 @@ bool is_control_binary(ControlOpcode opcode) noexcept {
     default:
       return false;
   }
+}
+
+bool is_control_unary(ControlOpcode opcode) noexcept {
+  return opcode == ControlOpcode::kFloatNegate;
 }
 
 bool is_control_float_binary(ControlOpcode opcode) noexcept {
@@ -304,7 +312,9 @@ PassResult transform_once(
       continue;
     }
     const Node& node = input.nodes()[index];
-    if (is_binary(node.opcode)) {
+    if (is_unary(node.opcode)) {
+      live[node.lhs.id()] = true;
+    } else if (is_binary(node.opcode)) {
       live[node.lhs.id()] = true;
       live[node.rhs.id()] = true;
     } else if (node.opcode == Opcode::kCall) {
@@ -385,6 +395,21 @@ PassResult transform_once(
       } else {
         mapped[index] = builder.guard_float64_nonzero(
             mapped[guarded_id], static_cast<std::size_t>(node.immediate));
+      }
+      continue;
+    }
+
+    if (is_unary(node.opcode)) {
+      const std::size_t operand_id = node.lhs.id();
+      if (known_constant[operand_id]) {
+        constant_value[index] = from_bits(
+            to_bits(constant_value[operand_id]) ^ (UINT64_C(1) << 63U));
+        mapped[index] = builder.float64_constant_bits(constant_value[index]);
+        known_constant[index] = true;
+        ++folded;
+        changed = true;
+      } else {
+        mapped[index] = builder.float64_negate(mapped[operand_id]);
       }
       continue;
     }
@@ -707,6 +732,8 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
       }
     } else if (node.opcode == ControlOpcode::kGuardFloatNonzero) {
       live[node.lhs.id()] = true;
+    } else if (is_control_unary(node.opcode)) {
+      live[node.lhs.id()] = true;
     } else if (is_control_binary(node.opcode)) {
       live[node.lhs.id()] = true;
       live[node.rhs.id()] = true;
@@ -735,6 +762,10 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
     if (node.opcode == ControlOpcode::kConstant) {
       key = {node.opcode, node.type, Value::kInvalidId, Value::kInvalidId,
              node.immediate};
+      reusable = true;
+    } else if (is_control_unary(node.opcode)) {
+      key = {node.opcode, node.type, mapped[node.lhs.id()].id(),
+             Value::kInvalidId, 0};
       reusable = true;
     } else if (is_control_binary(node.opcode)) {
       key = {node.opcode, node.type, mapped[node.lhs.id()].id(),
@@ -771,6 +802,8 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
     } else if (node.opcode == ControlOpcode::kGuardFloatNonzero) {
       mapped[index] = builder.guard_float64_nonzero(
           mapped[node.lhs.id()], static_cast<std::size_t>(node.immediate));
+    } else if (is_control_unary(node.opcode)) {
+      mapped[index] = builder.float64_negate(mapped[node.lhs.id()]);
     } else if (is_control_binary(node.opcode)) {
       mapped[index] = emit_control_binary(
           &builder, node.opcode, mapped[node.lhs.id()], mapped[node.rhs.id()]);
@@ -1003,6 +1036,14 @@ ControlFlowOptimizationResult Optimizer::run(
       if (node.opcode == ControlOpcode::kConstant) {
         known_constant[index] = true;
         constant_value[index] = node.immediate;
+      } else if (is_control_unary(node.opcode)) {
+        const std::size_t operand_id = node.lhs.id();
+        if (known_constant[operand_id]) {
+          constant_value[index] = from_bits(
+              to_bits(constant_value[operand_id]) ^ (UINT64_C(1) << 63U));
+          known_constant[index] = true;
+          folded_node[index] = true;
+        }
       } else if (is_control_binary(node.opcode)) {
         const std::size_t lhs_id = node.lhs.id();
         const std::size_t rhs_id = node.rhs.id();
@@ -1089,6 +1130,10 @@ ControlFlowOptimizationResult Optimizer::run(
         }
       } else if (node.opcode == ControlOpcode::kGuardFloatNonzero) {
         live[node.lhs.id()] = true;
+      } else if (is_control_unary(node.opcode)) {
+        if (!folded_node[index]) {
+          live[node.lhs.id()] = true;
+        }
       } else if (is_control_binary(node.opcode)) {
         if (replacement[index] != node_count) {
           live[replacement[index]] = true;
@@ -1134,6 +1179,14 @@ ControlFlowOptimizationResult Optimizer::run(
       } else if (node.opcode == ControlOpcode::kGuardFloatNonzero) {
         mapped[index] = builder.guard_float64_nonzero(
             mapped[node.lhs.id()], static_cast<std::size_t>(node.immediate));
+      } else if (is_control_unary(node.opcode)) {
+        if (folded_node[index]) {
+          mapped[index] =
+              builder.float64_constant_bits(constant_value[index]);
+          ++folded;
+        } else {
+          mapped[index] = builder.float64_negate(mapped[node.lhs.id()]);
+        }
       } else if (is_control_binary(node.opcode)) {
         const std::size_t lhs_id = node.lhs.id();
         const std::size_t rhs_id = node.rhs.id();

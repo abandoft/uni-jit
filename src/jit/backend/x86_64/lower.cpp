@@ -139,6 +139,15 @@ class Assembler final {
     emit_float_binary(0x5CU, destination, rhs);
   }
 
+  void negate_float(int destination, int source) {
+    move_float_to_word(kScratch0, source);
+    move_immediate(kScratch1, std::numeric_limits<ir::Word>::min());
+    emit_rex(kScratch1, kScratch0);
+    buffer_.emit_u8(0x31U);
+    emit_modrm(3, kScratch1, kScratch0);
+    move_word_to_float(destination, kScratch0);
+  }
+
   void multiply_float(int destination, int lhs, int rhs) {
     prepare_float_binary(destination, lhs);
     emit_float_binary(0x59U, destination, rhs);
@@ -654,6 +663,18 @@ LoweringResult lower_impl(const ir::Function& function,
         } else {
           assembler.divide_float(target, lhs, rhs);
         }
+        if (!destination.in_register()) {
+          assembler.store_float(target, kRsp, spill_offset(destination));
+        }
+        break;
+      }
+      case ir::Opcode::kFloatNegate: {
+        const int source = load_float_operand(
+            &assembler, allocation.locations[node.lhs.id()], kFloatScratch0);
+        const int target = destination.in_register()
+                               ? physical_float_register(destination)
+                               : kFloatScratch0;
+        assembler.negate_float(target, source);
         if (!destination.in_register()) {
           assembler.store_float(target, kRsp, spill_offset(destination));
         }
@@ -1422,6 +1443,17 @@ LoweringResult lower_control_flow_impl(
           } else {
             assembler.divide_float(float_destination, lhs, rhs);
           }
+          if (allocated_float < 0 ||
+              allocation.requires_stack[value.id()]) {
+            assembler.store_float(float_destination, kRsp,
+                                  destination_offset);
+          }
+          break;
+        }
+        case ir::ControlOpcode::kFloatNegate: {
+          const int source = load_control_float(
+              &assembler, allocation, node.lhs, block_index, kFloatScratch0);
+          assembler.negate_float(float_destination, source);
           if (allocated_float < 0 ||
               allocation.requires_stack[value.id()]) {
             assembler.store_float(float_destination, kRsp,

@@ -44,6 +44,7 @@ enum class ControlOpcode : std::uint8_t {
   kMultiply,
   kFloatAdd,
   kFloatSubtract,
+  kFloatNegate,
   kFloatMultiply,
   kFloatDivide,
   kFloatLessThan,
@@ -154,6 +155,7 @@ public:
   Value multiply(Value lhs, Value rhs);
   Value float64_add(Value lhs, Value rhs);
   Value float64_subtract(Value lhs, Value rhs);
+  Value float64_negate(Value value);
   Value float64_multiply(Value lhs, Value rhs);
   Value float64_divide(Value lhs, Value rhs);
   Value float64_less_than(Value lhs, Value rhs);
@@ -177,6 +179,8 @@ public:
 
 private:
   Value append_node(ControlNode node);
+  Value append_unary(ControlOpcode opcode, Value value,
+                     ValueType type = ValueType::kWord);
   Value append_binary(ControlOpcode opcode, Value lhs, Value rhs,
                       ValueType type = ValueType::kWord);
   Status validate_edge(Block target, const std::vector<Value> &arguments) const;
