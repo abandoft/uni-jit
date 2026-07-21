@@ -1,5 +1,6 @@
 ## 0.2.0
 
+- Added CFG constant-branch folding with recursive unreachable-block removal, post-fold dead-value cleanup, exact pruning of unreachable calls, guards, stack maps, and deoptimization records, plus effect-bounded block-local value numbering for constants and ordered pure expressions; exposed optimization statistics and qualified selected-path semantics, duplicate elimination, baseline metadata retention, optimized metadata pruning, native execution, and extended deterministic differential fuzzing.
 - Added production baseline and optimized compilation for CFG SSA with constant folding, Word canonicalization, dead-code elimination, effect preservation, deoptimization capture rooting and remapping, public `CompilationOptions` overloads, and installed-package coverage; enabled true asynchronous QuickJS and PocketPy counted-loop promotion after 64 calls with separate tier caches, generation-safe publication, complete lifecycle telemetry, and optimized PocketPy signed-zero division reconstruction.
 
 ## 0.1.9

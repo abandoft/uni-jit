@@ -188,8 +188,11 @@ automatic baseline retry. The contract is specified in `doc/TIERING.md`.
 Straight-line and CFG compilation have explicit baseline and optimized modes. The
 baseline preserves verification and all exit metadata but skips optimizer
 latency; the optimized CFG mode folds constants, canonicalizes safe Word
-identities, removes dead pure nodes, preserves effects, and roots and remaps
-guard-scoped captures. Optimized mode remains the default for compatibility.
+identities, removes dead pure nodes, folds constant branches and recursively
+prunes unreachable blocks, and performs block-local value numbering without
+crossing calls, guards, or safepoints. Effects remain ordered, unreachable exit
+metadata is pruned, and live guard-scoped captures are rooted and remapped.
+Optimized mode remains the default for compatibility.
 PocketPy uses these modes in production callables,
 retains exact source for recompilation, and publishes an optimized generation
 after a single hotness claimant wins. Runtime exits carry the exact attempted

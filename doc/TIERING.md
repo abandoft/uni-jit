@@ -67,8 +67,10 @@ The compiler exposes explicit `kBaseline` and `kOptimized` levels for verified
 straight-line and control-flow SSA. Baseline compilation skips the optimization pipeline while
 preserving verification, guards, deoptimization metadata, allocation, native
 lowering, and W^X publication; optimized CFG compilation folds constants,
-canonicalizes safe Word identities, removes dead pure nodes, preserves effects,
-and remaps guard-scoped captured values. Optimized compilation remains the default API.
+canonicalizes safe Word identities, removes dead pure nodes and constant-only
+branches, prunes recursively unreachable effects and exit metadata, reuses
+block-local pure values without crossing effect boundaries, and remaps
+guard-scoped captured values. Optimized compilation remains the default API.
 
 PocketPy retains exact accepted source, publishes a baseline immediately, and
 submits optimization after 64 successful invocations to a one-worker scheduler

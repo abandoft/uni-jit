@@ -70,6 +70,13 @@ safepoint exits return safely after a helper has changed the link register.
 The external installed-package consumer builds and executes the same public CFG
 call API without access to private headers.
 
+CFG optimizer qualification folds a constant diamond, removes its recursively
+unreachable effectful arm, reuses duplicate local constants and arithmetic,
+and proves that baseline compilation retains an otherwise reachable guard while
+optimized compilation removes its unreachable native exit and metadata. The
+deterministic differential generator then compares optimized native execution
+with the original CFG interpreter across the committed and extended seed sets.
+
 QuickJS and PocketPy frontend tests compile the same single-level counted loop
 with ordered `break` and `continue` guards, execute it both as a native function
 and through the stock language runtime, and bit-match the result with the source
