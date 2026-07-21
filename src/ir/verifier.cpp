@@ -71,8 +71,48 @@ bool is_object(Opcode opcode) {
   return opcode == Opcode::kLoadObject || opcode == Opcode::kStoreObject;
 }
 
-bool valid_value_type(ValueType type) {
-  return type == ValueType::kWord || type == ValueType::kFloat64;
+bool valid_vector_unary(Word immediate) {
+  return immediate == static_cast<Word>(VectorUnaryOperation::kBitwiseNot);
+}
+
+bool valid_vector_binary(Word immediate, ValueType type) {
+  if (immediate < static_cast<Word>(VectorBinaryOperation::kAdd) ||
+      immediate > static_cast<Word>(VectorBinaryOperation::kDivide)) {
+    return false;
+  }
+  const auto operation = static_cast<VectorBinaryOperation>(immediate);
+  if (operation == VectorBinaryOperation::kBitwiseAnd ||
+      operation == VectorBinaryOperation::kBitwiseOr ||
+      operation == VectorBinaryOperation::kBitwiseXor) {
+    return is_vector_value_type(type);
+  }
+  if (operation == VectorBinaryOperation::kDivide) {
+    return is_float_vector_type(type);
+  }
+  return is_integer_vector_type(type) || is_float_vector_type(type);
+}
+
+bool valid_vector_comparison(Word immediate, ValueType type) {
+  if (immediate < static_cast<Word>(VectorComparison::kEqual) ||
+      immediate > static_cast<Word>(VectorComparison::kOrderedFloatLessEqual)) {
+    return false;
+  }
+  const auto comparison = static_cast<VectorComparison>(immediate);
+  if (is_float_vector_type(type)) {
+    return comparison == VectorComparison::kOrderedFloatEqual ||
+           comparison == VectorComparison::kOrderedFloatLessThan ||
+           comparison == VectorComparison::kOrderedFloatLessEqual;
+  }
+  return is_integer_vector_type(type) &&
+         comparison != VectorComparison::kOrderedFloatEqual &&
+         comparison != VectorComparison::kOrderedFloatLessThan &&
+         comparison != VectorComparison::kOrderedFloatLessEqual;
+}
+
+bool valid_vector_widen(ValueType source, ValueType result) {
+  return is_integer_vector_type(source) && is_integer_vector_type(result) &&
+         vector_lane_bits(result) == vector_lane_bits(source) * 2U &&
+         vector_lane_count(result) * 2U == vector_lane_count(source);
 }
 
 bool valid_memory_width(MemoryWidth width) {
@@ -110,7 +150,7 @@ Status verify(const Function& function) {
             "frame slot count exceeds the IR index range"};
   }
   for (const FrameSlotDescriptor& slot : function.frame_slots()) {
-    if (!valid_value_type(slot.type)) {
+    if (!is_scalar_value_type(slot.type)) {
       return {StatusCode::kInvalidIr, "frame slot has an invalid value type"};
     }
   }
@@ -129,6 +169,9 @@ Status verify(const Function& function) {
 
   std::size_t expected_call_argument = 0;
   std::size_t expected_memory_access = 0;
+  std::size_t expected_vector_constant = 0;
+  std::size_t expected_vector_shuffle = 0;
+  std::size_t expected_vector_select = 0;
   for (std::size_t index = 0; index < nodes.size(); ++index) {
     const Node& node = nodes[index];
     if (!is_memory(node.opcode) &&
@@ -147,6 +190,7 @@ Status verify(const Function& function) {
       if (node.opcode != Opcode::kParameter ||
           node.immediate != static_cast<Word>(index) ||
           node.type != function.parameter_type(index) ||
+          !is_scalar_value_type(node.type) ||
           node.argument_begin != 0 || node.argument_count != 0) {
         return invalid_node(index, "parameter nodes must lead the function");
       }
@@ -157,13 +201,17 @@ Status verify(const Function& function) {
       return invalid_node(index, "parameter node appears after another value");
     }
     if (node.opcode == Opcode::kConstant) {
-      if (node.argument_begin != 0 || node.argument_count != 0) {
+      if (!is_scalar_value_type(node.type) || node.lhs.valid() ||
+          node.rhs.valid() || node.argument_begin != 0 ||
+          node.argument_count != 0) {
         return invalid_node(index, "constant node has call arguments");
       }
       continue;
     }
     if (node.opcode == Opcode::kCall) {
-      if (unpack_runtime_helper(node.immediate) == nullptr) {
+      if (unpack_runtime_helper(node.immediate) == nullptr ||
+          !is_scalar_value_type(node.type) || node.lhs.valid() ||
+          node.rhs.valid()) {
         return invalid_node(index, "runtime call has no helper target");
       }
       if (node.argument_begin != expected_call_argument ||
@@ -179,8 +227,170 @@ Status verify(const Function& function) {
           return invalid_node(
               index, "runtime call arguments must be earlier SSA values");
         }
+        if (!is_scalar_value_type(nodes[argument.id()].type)) {
+          return invalid_node(index,
+                              "runtime call argument must be scalar");
+        }
       }
       expected_call_argument += node.argument_count;
+      continue;
+    }
+    if (node.opcode == Opcode::kVectorConstant) {
+      if (!is_vector_value_type(node.type) || node.immediate < 0 ||
+          static_cast<std::size_t>(node.immediate) !=
+              expected_vector_constant ||
+          expected_vector_constant >= function.vector_constants().size() ||
+          node.lhs.valid() || node.rhs.valid() ||
+          node.argument_begin != 0 || node.argument_count != 0 ||
+          (is_mask_vector_type(node.type) &&
+           !vector_mask_is_canonical(
+               function.vector_constants()[expected_vector_constant],
+               node.type))) {
+        return invalid_node(index, "vector constant is malformed");
+      }
+      ++expected_vector_constant;
+      continue;
+    }
+    if (node.opcode == Opcode::kVectorSplat) {
+      if ((!is_integer_vector_type(node.type) &&
+           !is_float_vector_type(node.type)) ||
+          node.immediate != 0 || !node.lhs.valid() ||
+          node.lhs.id() >= index ||
+          nodes[node.lhs.id()].type != ValueType::kWord || node.rhs.valid() ||
+          node.argument_begin != 0 || node.argument_count != 0) {
+        return invalid_node(index, "vector splat is malformed");
+      }
+      continue;
+    }
+    if (node.opcode == Opcode::kVectorExtractLane) {
+      const std::size_t lane = static_cast<std::size_t>(node.immediate & 0xff);
+      const bool sign_extend = (node.immediate & 0x100) != 0;
+      if (node.immediate < 0 || (node.immediate & ~Word{0x1ff}) != 0 ||
+          !node.lhs.valid() || node.lhs.id() >= index ||
+          !is_vector_value_type(nodes[node.lhs.id()].type) ||
+          lane >= vector_lane_count(nodes[node.lhs.id()].type) ||
+          (sign_extend &&
+           !is_integer_vector_type(nodes[node.lhs.id()].type)) ||
+          node.type != ValueType::kWord || node.rhs.valid() ||
+          node.argument_begin != 0 || node.argument_count != 0) {
+        return invalid_node(index, "vector lane extraction is malformed");
+      }
+      continue;
+    }
+    if (node.opcode == Opcode::kVectorInsertLane) {
+      if (node.immediate < 0 || !node.lhs.valid() ||
+          node.lhs.id() >= index || !node.rhs.valid() ||
+          node.rhs.id() >= index ||
+          (!is_integer_vector_type(node.type) &&
+           !is_float_vector_type(node.type)) ||
+          nodes[node.lhs.id()].type != node.type ||
+          nodes[node.rhs.id()].type != ValueType::kWord ||
+          static_cast<std::size_t>(node.immediate) >=
+              vector_lane_count(node.type) ||
+          node.argument_begin != 0 || node.argument_count != 0) {
+        return invalid_node(index, "vector lane insertion is malformed");
+      }
+      continue;
+    }
+    if (node.opcode == Opcode::kVectorUnary) {
+      if (!valid_vector_unary(node.immediate) ||
+          !is_vector_value_type(node.type) || !node.lhs.valid() ||
+          node.lhs.id() >= index || nodes[node.lhs.id()].type != node.type ||
+          node.rhs.valid() || node.argument_begin != 0 ||
+          node.argument_count != 0) {
+        return invalid_node(index, "vector unary operation is malformed");
+      }
+      continue;
+    }
+    if (node.opcode == Opcode::kVectorBinary) {
+      if (!valid_vector_binary(node.immediate, node.type) ||
+          !node.lhs.valid() || node.lhs.id() >= index ||
+          !node.rhs.valid() || node.rhs.id() >= index ||
+          nodes[node.lhs.id()].type != node.type ||
+          nodes[node.rhs.id()].type != node.type ||
+          node.argument_begin != 0 || node.argument_count != 0) {
+        return invalid_node(index, "vector binary operation is malformed");
+      }
+      continue;
+    }
+    if (node.opcode == Opcode::kVectorCompare) {
+      if (!node.lhs.valid() || node.lhs.id() >= index ||
+          !node.rhs.valid() || node.rhs.id() >= index ||
+          nodes[node.lhs.id()].type != nodes[node.rhs.id()].type ||
+          !valid_vector_comparison(node.immediate,
+                                   nodes[node.lhs.id()].type) ||
+          node.type != vector_mask_type(nodes[node.lhs.id()].type) ||
+          node.argument_begin != 0 || node.argument_count != 0) {
+        return invalid_node(index, "vector comparison is malformed");
+      }
+      continue;
+    }
+    if (node.opcode == Opcode::kVectorSelect) {
+      if (node.immediate < 0 ||
+          static_cast<std::size_t>(node.immediate) !=
+              expected_vector_select ||
+          expected_vector_select >=
+              function.vector_select_arguments().size() ||
+          !node.lhs.valid() ||
+          node.lhs.id() >= index || !node.rhs.valid() ||
+          node.rhs.id() >= index ||
+          !function.vector_select_arguments()[expected_vector_select].valid() ||
+          function.vector_select_arguments()[expected_vector_select].id() >=
+              index ||
+          !is_mask_vector_type(nodes[node.lhs.id()].type) ||
+          !is_vector_value_type(node.type) ||
+          nodes[node.rhs.id()].type != node.type ||
+          nodes[function.vector_select_arguments()[expected_vector_select].id()]
+                  .type != node.type ||
+          !vector_shapes_match(nodes[node.lhs.id()].type, node.type) ||
+          node.argument_begin != 0 || node.argument_count != 0) {
+        return invalid_node(index, "vector selection is malformed");
+      }
+      ++expected_vector_select;
+      continue;
+    }
+    if (node.opcode == Opcode::kVectorLaneSignMask) {
+      if (node.immediate != 0 || !node.lhs.valid() ||
+          node.lhs.id() >= index ||
+          !is_vector_value_type(nodes[node.lhs.id()].type) ||
+          node.type != ValueType::kWord || node.rhs.valid() ||
+          node.argument_begin != 0 || node.argument_count != 0) {
+        return invalid_node(index, "vector lane-sign extraction is malformed");
+      }
+      continue;
+    }
+    if (node.opcode == Opcode::kVectorShuffle) {
+      if (node.immediate < 0 ||
+          static_cast<std::size_t>(node.immediate) !=
+              expected_vector_shuffle ||
+          expected_vector_shuffle >= function.vector_shuffles().size() ||
+          !node.lhs.valid() || node.lhs.id() >= index ||
+          !is_vector_value_type(node.type) ||
+          nodes[node.lhs.id()].type != node.type || node.rhs.valid() ||
+          node.argument_begin != 0 || node.argument_count != 0) {
+        return invalid_node(index, "vector shuffle is malformed");
+      }
+      const VectorShuffle& shuffle =
+          function.vector_shuffles()[expected_vector_shuffle];
+      if (shuffle.lane_count != vector_lane_count(node.type)) {
+        return invalid_node(index, "vector shuffle lane count is invalid");
+      }
+      for (std::size_t lane = 0; lane < shuffle.lane_count; ++lane) {
+        if (shuffle.lanes[lane] >= shuffle.lane_count) {
+          return invalid_node(index, "vector shuffle lane is out of range");
+        }
+      }
+      ++expected_vector_shuffle;
+      continue;
+    }
+    if (node.opcode == Opcode::kVectorWiden) {
+      if (node.immediate < 0 || (node.immediate & ~Word{0x101}) != 0 ||
+          !node.lhs.valid() || node.lhs.id() >= index ||
+          !valid_vector_widen(nodes[node.lhs.id()].type, node.type) ||
+          node.rhs.valid() || node.argument_begin != 0 ||
+          node.argument_count != 0) {
+        return invalid_node(index, "vector widening is malformed");
+      }
       continue;
     }
     if (is_memory(node.opcode)) {
@@ -251,7 +461,7 @@ Status verify(const Function& function) {
           node.immediate < 0 ||
           (static_cast<std::size_t>(node.immediate) % alignof(Word)) != 0 ||
           node.rhs.valid() || node.argument_begin != 0 ||
-          node.argument_count != 0 || !valid_value_type(node.type)) {
+          node.argument_count != 0 || !is_scalar_value_type(node.type)) {
         return invalid_node(index, "trusted object operation is malformed");
       }
       const std::size_t offset = static_cast<std::size_t>(node.immediate);
@@ -356,10 +566,26 @@ Status verify(const Function& function) {
     return {StatusCode::kInvalidIr,
             "function contains unreferenced memory descriptors"};
   }
+  if (expected_vector_constant != function.vector_constants().size()) {
+    return {StatusCode::kInvalidIr,
+            "function contains unreferenced vector constants"};
+  }
+  if (expected_vector_shuffle != function.vector_shuffles().size()) {
+    return {StatusCode::kInvalidIr,
+            "function contains unreferenced vector shuffles"};
+  }
+  if (expected_vector_select != function.vector_select_arguments().size()) {
+    return {StatusCode::kInvalidIr,
+            "function contains unreferenced vector select operands"};
+  }
 
   if (!function.return_value().valid() ||
       function.return_value().id() >= nodes.size()) {
     return {StatusCode::kInvalidIr, "function has no valid return value"};
+  }
+  if (!is_scalar_value_type(function.return_type())) {
+    return {StatusCode::kInvalidIr,
+            "function return type is not supported by the scalar ABI"};
   }
   return Status::ok_status();
 }

@@ -187,6 +187,20 @@ bool is_object(Opcode opcode) noexcept {
   return opcode == Opcode::kLoadObject || opcode == Opcode::kStoreObject;
 }
 
+bool is_vector(Opcode opcode) noexcept {
+  return opcode == Opcode::kVectorConstant ||
+         opcode == Opcode::kVectorSplat ||
+         opcode == Opcode::kVectorExtractLane ||
+         opcode == Opcode::kVectorInsertLane ||
+         opcode == Opcode::kVectorUnary ||
+         opcode == Opcode::kVectorBinary ||
+         opcode == Opcode::kVectorCompare ||
+         opcode == Opcode::kVectorSelect ||
+         opcode == Opcode::kVectorLaneSignMask ||
+         opcode == Opcode::kVectorShuffle ||
+         opcode == Opcode::kVectorWiden;
+}
+
 bool is_nonzero_guard(ControlOpcode opcode) noexcept {
   return opcode == ControlOpcode::kGuardWordNonzero ||
          opcode == ControlOpcode::kGuardFloatNonzero;
@@ -207,6 +221,346 @@ bool is_frame(ControlOpcode opcode) noexcept {
 bool is_object(ControlOpcode opcode) noexcept {
   return opcode == ControlOpcode::kLoadObject ||
          opcode == ControlOpcode::kStoreObject;
+}
+
+bool is_vector(ControlOpcode opcode) noexcept {
+  return opcode == ControlOpcode::kVectorConstant ||
+         opcode == ControlOpcode::kVectorSplat ||
+         opcode == ControlOpcode::kVectorExtractLane ||
+         opcode == ControlOpcode::kVectorInsertLane ||
+         opcode == ControlOpcode::kVectorUnary ||
+         opcode == ControlOpcode::kVectorBinary ||
+         opcode == ControlOpcode::kVectorCompare ||
+         opcode == ControlOpcode::kVectorSelect ||
+         opcode == ControlOpcode::kVectorLaneSignMask ||
+         opcode == ControlOpcode::kVectorShuffle ||
+         opcode == ControlOpcode::kVectorWiden;
+}
+
+template <typename Visitor>
+void visit_vector_operands(const Function& function, const Node& node,
+                           Visitor&& visitor) {
+  if (node.opcode == Opcode::kVectorConstant) {
+    return;
+  }
+  visitor(node.lhs);
+  if (node.opcode == Opcode::kVectorInsertLane ||
+      node.opcode == Opcode::kVectorBinary ||
+      node.opcode == Opcode::kVectorCompare ||
+      node.opcode == Opcode::kVectorSelect) {
+    visitor(node.rhs);
+  }
+  if (node.opcode == Opcode::kVectorSelect) {
+    visitor(function.vector_select_arguments()[
+        static_cast<std::size_t>(node.immediate)]);
+  }
+}
+
+template <typename Visitor>
+void visit_vector_operands(const ControlFlowFunction& function,
+                           const ControlNode& node, Visitor&& visitor) {
+  if (node.opcode == ControlOpcode::kVectorConstant) {
+    return;
+  }
+  visitor(node.lhs);
+  if (node.opcode == ControlOpcode::kVectorInsertLane ||
+      node.opcode == ControlOpcode::kVectorBinary ||
+      node.opcode == ControlOpcode::kVectorCompare ||
+      node.opcode == ControlOpcode::kVectorSelect) {
+    visitor(node.rhs);
+  }
+  if (node.opcode == ControlOpcode::kVectorSelect) {
+    visitor(function.vector_select_arguments()[
+        static_cast<std::size_t>(node.immediate)]);
+  }
+}
+
+std::vector<std::uint8_t> shuffle_lanes(const VectorShuffle& shuffle) {
+  return {shuffle.lanes.begin(),
+          shuffle.lanes.begin() + shuffle.lane_count};
+}
+
+Value emit_vector(FunctionBuilder* builder, const Function& input,
+                  const Node& node, const std::vector<Value>& mapped) {
+  switch (node.opcode) {
+    case Opcode::kVectorConstant:
+      return builder->vector_constant(
+          node.type, input.vector_constants()[
+                         static_cast<std::size_t>(node.immediate)]);
+    case Opcode::kVectorSplat:
+      return builder->vector_splat(node.type, mapped[node.lhs.id()]);
+    case Opcode::kVectorExtractLane:
+      return builder->vector_extract_lane(
+          mapped[node.lhs.id()],
+          static_cast<std::size_t>(node.immediate & 0xff),
+          (node.immediate & 0x100) != 0);
+    case Opcode::kVectorInsertLane:
+      return builder->vector_insert_lane(
+          mapped[node.lhs.id()], static_cast<std::size_t>(node.immediate),
+          mapped[node.rhs.id()]);
+    case Opcode::kVectorUnary:
+      return builder->vector_unary(
+          static_cast<VectorUnaryOperation>(node.immediate),
+          mapped[node.lhs.id()]);
+    case Opcode::kVectorBinary:
+      return builder->vector_binary(
+          static_cast<VectorBinaryOperation>(node.immediate),
+          mapped[node.lhs.id()], mapped[node.rhs.id()]);
+    case Opcode::kVectorCompare:
+      return builder->vector_compare(
+          static_cast<VectorComparison>(node.immediate),
+          mapped[node.lhs.id()], mapped[node.rhs.id()]);
+    case Opcode::kVectorSelect:
+      return builder->vector_select(
+          mapped[node.lhs.id()], mapped[node.rhs.id()],
+          mapped[input.vector_select_arguments()[
+                     static_cast<std::size_t>(node.immediate)]
+                     .id()]);
+    case Opcode::kVectorLaneSignMask:
+      return builder->vector_lane_sign_mask(mapped[node.lhs.id()]);
+    case Opcode::kVectorShuffle:
+      return builder->vector_shuffle(
+          mapped[node.lhs.id()],
+          shuffle_lanes(input.vector_shuffles()[
+              static_cast<std::size_t>(node.immediate)]));
+    case Opcode::kVectorWiden:
+      return builder->vector_widen(
+          mapped[node.lhs.id()], node.type,
+          static_cast<VectorExtension>(node.immediate & 0xff),
+          static_cast<VectorHalf>((node.immediate >> 8U) & 0xff));
+    default:
+      return {};
+  }
+}
+
+Value emit_vector(ControlFlowBuilder* builder,
+                  const ControlFlowFunction& input, const ControlNode& node,
+                  const std::vector<Value>& mapped) {
+  switch (node.opcode) {
+    case ControlOpcode::kVectorConstant:
+      return builder->vector_constant(
+          node.type, input.vector_constants()[
+                         static_cast<std::size_t>(node.immediate)]);
+    case ControlOpcode::kVectorSplat:
+      return builder->vector_splat(node.type, mapped[node.lhs.id()]);
+    case ControlOpcode::kVectorExtractLane:
+      return builder->vector_extract_lane(
+          mapped[node.lhs.id()],
+          static_cast<std::size_t>(node.immediate & 0xff),
+          (node.immediate & 0x100) != 0);
+    case ControlOpcode::kVectorInsertLane:
+      return builder->vector_insert_lane(
+          mapped[node.lhs.id()], static_cast<std::size_t>(node.immediate),
+          mapped[node.rhs.id()]);
+    case ControlOpcode::kVectorUnary:
+      return builder->vector_unary(
+          static_cast<VectorUnaryOperation>(node.immediate),
+          mapped[node.lhs.id()]);
+    case ControlOpcode::kVectorBinary:
+      return builder->vector_binary(
+          static_cast<VectorBinaryOperation>(node.immediate),
+          mapped[node.lhs.id()], mapped[node.rhs.id()]);
+    case ControlOpcode::kVectorCompare:
+      return builder->vector_compare(
+          static_cast<VectorComparison>(node.immediate),
+          mapped[node.lhs.id()], mapped[node.rhs.id()]);
+    case ControlOpcode::kVectorSelect:
+      return builder->vector_select(
+          mapped[node.lhs.id()], mapped[node.rhs.id()],
+          mapped[input.vector_select_arguments()[
+                     static_cast<std::size_t>(node.immediate)]
+                     .id()]);
+    case ControlOpcode::kVectorLaneSignMask:
+      return builder->vector_lane_sign_mask(mapped[node.lhs.id()]);
+    case ControlOpcode::kVectorShuffle:
+      return builder->vector_shuffle(
+          mapped[node.lhs.id()],
+          shuffle_lanes(input.vector_shuffles()[
+              static_cast<std::size_t>(node.immediate)]));
+    case ControlOpcode::kVectorWiden:
+      return builder->vector_widen(
+          mapped[node.lhs.id()], node.type,
+          static_cast<VectorExtension>(node.immediate & 0xff),
+          static_cast<VectorHalf>((node.immediate >> 8U) & 0xff));
+    default:
+      return {};
+  }
+}
+
+enum class VectorNodeKind : std::uint8_t {
+  kNone = 0,
+  kConstant,
+  kSplat,
+  kExtractLane,
+  kInsertLane,
+  kUnary,
+  kBinary,
+  kCompare,
+  kSelect,
+  kLaneSignMask,
+  kShuffle,
+  kWiden,
+};
+
+VectorNodeKind vector_node_kind(Opcode opcode) noexcept {
+  switch (opcode) {
+    case Opcode::kVectorConstant:
+      return VectorNodeKind::kConstant;
+    case Opcode::kVectorSplat:
+      return VectorNodeKind::kSplat;
+    case Opcode::kVectorExtractLane:
+      return VectorNodeKind::kExtractLane;
+    case Opcode::kVectorInsertLane:
+      return VectorNodeKind::kInsertLane;
+    case Opcode::kVectorUnary:
+      return VectorNodeKind::kUnary;
+    case Opcode::kVectorBinary:
+      return VectorNodeKind::kBinary;
+    case Opcode::kVectorCompare:
+      return VectorNodeKind::kCompare;
+    case Opcode::kVectorSelect:
+      return VectorNodeKind::kSelect;
+    case Opcode::kVectorLaneSignMask:
+      return VectorNodeKind::kLaneSignMask;
+    case Opcode::kVectorShuffle:
+      return VectorNodeKind::kShuffle;
+    case Opcode::kVectorWiden:
+      return VectorNodeKind::kWiden;
+    default:
+      return VectorNodeKind::kNone;
+  }
+}
+
+VectorNodeKind vector_node_kind(ControlOpcode opcode) noexcept {
+  switch (opcode) {
+    case ControlOpcode::kVectorConstant:
+      return VectorNodeKind::kConstant;
+    case ControlOpcode::kVectorSplat:
+      return VectorNodeKind::kSplat;
+    case ControlOpcode::kVectorExtractLane:
+      return VectorNodeKind::kExtractLane;
+    case ControlOpcode::kVectorInsertLane:
+      return VectorNodeKind::kInsertLane;
+    case ControlOpcode::kVectorUnary:
+      return VectorNodeKind::kUnary;
+    case ControlOpcode::kVectorBinary:
+      return VectorNodeKind::kBinary;
+    case ControlOpcode::kVectorCompare:
+      return VectorNodeKind::kCompare;
+    case ControlOpcode::kVectorSelect:
+      return VectorNodeKind::kSelect;
+    case ControlOpcode::kVectorLaneSignMask:
+      return VectorNodeKind::kLaneSignMask;
+    case ControlOpcode::kVectorShuffle:
+      return VectorNodeKind::kShuffle;
+    case ControlOpcode::kVectorWiden:
+      return VectorNodeKind::kWiden;
+    default:
+      return VectorNodeKind::kNone;
+  }
+}
+
+enum class VectorFoldKind : std::uint8_t {
+  kNone = 0,
+  kWord,
+  kVector,
+};
+
+struct VectorFoldResult final {
+  VectorFoldKind kind{VectorFoldKind::kNone};
+  Word word{0};
+  Vector128 vector;
+};
+
+template <typename FunctionType, typename NodeType>
+VectorFoldResult try_fold_vector(
+    const FunctionType& function, const NodeType& node,
+    const std::vector<bool>& known_scalar,
+    const std::vector<Word>& scalar_values,
+    const std::vector<bool>& known_vector,
+    const std::vector<Vector128>& vector_values) {
+  const VectorNodeKind kind = vector_node_kind(node.opcode);
+  if (kind == VectorNodeKind::kConstant) {
+    return {VectorFoldKind::kVector, 0,
+            function.vector_constants()[
+                static_cast<std::size_t>(node.immediate)]};
+  }
+  if (kind == VectorNodeKind::kSplat && known_scalar[node.lhs.id()]) {
+    return {VectorFoldKind::kVector, 0,
+            vector_splat_bits(node.type, scalar_values[node.lhs.id()])};
+  }
+  if (kind == VectorNodeKind::kExtractLane &&
+      known_vector[node.lhs.id()]) {
+    return {VectorFoldKind::kWord,
+            vector_extract_lane_bits(
+                vector_values[node.lhs.id()], function.value_type(node.lhs),
+                static_cast<std::size_t>(node.immediate & 0xff),
+                (node.immediate & 0x100) != 0),
+            {}};
+  }
+  if (kind == VectorNodeKind::kInsertLane &&
+      known_vector[node.lhs.id()] && known_scalar[node.rhs.id()]) {
+    return {VectorFoldKind::kVector, 0,
+            vector_insert_lane_bits(
+                vector_values[node.lhs.id()], node.type,
+                static_cast<std::size_t>(node.immediate),
+                scalar_values[node.rhs.id()])};
+  }
+  if (kind == VectorNodeKind::kUnary && known_vector[node.lhs.id()]) {
+    return {VectorFoldKind::kVector, 0,
+            vector_unary(static_cast<VectorUnaryOperation>(node.immediate),
+                         vector_values[node.lhs.id()], node.type)};
+  }
+  if (kind == VectorNodeKind::kBinary && known_vector[node.lhs.id()] &&
+      known_vector[node.rhs.id()]) {
+    return {VectorFoldKind::kVector, 0,
+            vector_binary(static_cast<VectorBinaryOperation>(node.immediate),
+                          vector_values[node.lhs.id()],
+                          vector_values[node.rhs.id()], node.type)};
+  }
+  if (kind == VectorNodeKind::kCompare && known_vector[node.lhs.id()] &&
+      known_vector[node.rhs.id()]) {
+    return {VectorFoldKind::kVector, 0,
+            vector_compare(static_cast<VectorComparison>(node.immediate),
+                           vector_values[node.lhs.id()],
+                           vector_values[node.rhs.id()],
+                           function.value_type(node.lhs))};
+  }
+  if (kind == VectorNodeKind::kSelect) {
+    const Value false_value = function.vector_select_arguments()[
+        static_cast<std::size_t>(node.immediate)];
+    if (known_vector[node.lhs.id()] && known_vector[node.rhs.id()] &&
+        known_vector[false_value.id()]) {
+      return {VectorFoldKind::kVector, 0,
+              vector_select(vector_values[node.lhs.id()],
+                            vector_values[node.rhs.id()],
+                            vector_values[false_value.id()],
+                            function.value_type(node.lhs))};
+    }
+  }
+  if (kind == VectorNodeKind::kLaneSignMask &&
+      known_vector[node.lhs.id()]) {
+    return {VectorFoldKind::kWord,
+            vector_lane_sign_mask(vector_values[node.lhs.id()],
+                                  function.value_type(node.lhs)),
+            {}};
+  }
+  if (kind == VectorNodeKind::kShuffle && known_vector[node.lhs.id()]) {
+    return {VectorFoldKind::kVector, 0,
+            vector_shuffle(
+                vector_values[node.lhs.id()], node.type,
+                function.vector_shuffles()[
+                    static_cast<std::size_t>(node.immediate)])};
+  }
+  if (kind == VectorNodeKind::kWiden && known_vector[node.lhs.id()]) {
+    return {VectorFoldKind::kVector, 0,
+            vector_widen(
+                vector_values[node.lhs.id()], function.value_type(node.lhs),
+                node.type,
+                static_cast<VectorExtension>(node.immediate & 0xff),
+                static_cast<VectorHalf>((node.immediate >> 8U) & 0xff))};
+  }
+  return {};
 }
 
 bool is_control_binary(ControlOpcode opcode) noexcept {
@@ -509,7 +863,10 @@ PassResult transform_once(
       continue;
     }
     const Node& node = input.nodes()[index];
-    if (is_unary(node.opcode)) {
+    if (is_vector(node.opcode)) {
+      visit_vector_operands(input, node,
+                            [&](Value value) { live[value.id()] = true; });
+    } else if (is_unary(node.opcode)) {
       live[node.lhs.id()] = true;
     } else if (is_binary(node.opcode)) {
       live[node.lhs.id()] = true;
@@ -551,6 +908,8 @@ PassResult transform_once(
   std::vector<Value> mapped(node_count);
   std::vector<bool> known_constant(node_count, false);
   std::vector<Word> constant_value(node_count, 0);
+  std::vector<bool> known_vector(node_count, false);
+  std::vector<Vector128> vector_value(node_count);
   for (std::size_t index = 0; index < input.parameter_count(); ++index) {
     mapped[index] = builder.parameter(index);
   }
@@ -573,6 +932,30 @@ PassResult transform_once(
       }
       known_constant[index] = true;
       constant_value[index] = node.immediate;
+      continue;
+    }
+
+    if (is_vector(node.opcode)) {
+      const VectorFoldResult vector_fold = try_fold_vector(
+          input, node, known_constant, constant_value, known_vector,
+          vector_value);
+      if (vector_fold.kind == VectorFoldKind::kVector) {
+        mapped[index] = builder.vector_constant(node.type, vector_fold.vector);
+        known_vector[index] = true;
+        vector_value[index] = vector_fold.vector;
+        if (node.opcode != Opcode::kVectorConstant) {
+          ++folded;
+          changed = true;
+        }
+      } else if (vector_fold.kind == VectorFoldKind::kWord) {
+        mapped[index] = builder.constant(vector_fold.word);
+        known_constant[index] = true;
+        constant_value[index] = vector_fold.word;
+        ++folded;
+        changed = true;
+      } else {
+        mapped[index] = emit_vector(&builder, input, node, mapped);
+      }
       continue;
     }
 
@@ -1084,7 +1467,10 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
       continue;
     }
     const ControlNode& node = input.nodes()[index];
-    if (node.opcode == ControlOpcode::kCall) {
+    if (is_vector(node.opcode)) {
+      visit_vector_operands(input, node,
+                            [&](Value value) { live[value.id()] = true; });
+    } else if (node.opcode == ControlOpcode::kCall) {
       for (std::size_t argument_index = 0;
            argument_index < node.argument_count; ++argument_index) {
         const Value argument = input.call_arguments()[
@@ -1129,7 +1515,9 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
 
     ControlValueKey key;
     bool reusable = false;
-    if (node.opcode == ControlOpcode::kConstant) {
+    if (is_vector(node.opcode)) {
+      mapped[index] = emit_vector(&builder, input, node, mapped);
+    } else if (node.opcode == ControlOpcode::kConstant) {
       key = {node.opcode, node.type, Value::kInvalidId, Value::kInvalidId,
              node.immediate};
       reusable = true;
@@ -1447,12 +1835,29 @@ ControlFlowOptimizationResult Optimizer::run(
     std::vector<bool> known_constant(node_count, false);
     std::vector<Word> constant_value(node_count, 0);
     std::vector<bool> folded_node(node_count, false);
+    std::vector<bool> known_vector(node_count, false);
+    std::vector<Vector128> vector_value(node_count);
+    std::vector<bool> folded_vector_node(node_count, false);
     std::vector<std::size_t> replacement(node_count, node_count);
     for (std::size_t index = 0; index < node_count; ++index) {
       const ControlNode& node = function.nodes()[index];
       if (node.opcode == ControlOpcode::kConstant) {
         known_constant[index] = true;
         constant_value[index] = node.immediate;
+      } else if (is_vector(node.opcode)) {
+        const VectorFoldResult vector_fold = try_fold_vector(
+            function, node, known_constant, constant_value, known_vector,
+            vector_value);
+        if (vector_fold.kind == VectorFoldKind::kVector) {
+          known_vector[index] = true;
+          vector_value[index] = vector_fold.vector;
+          folded_vector_node[index] =
+              node.opcode != ControlOpcode::kVectorConstant;
+        } else if (vector_fold.kind == VectorFoldKind::kWord) {
+          known_constant[index] = true;
+          constant_value[index] = vector_fold.word;
+          folded_node[index] = true;
+        }
       } else if (is_control_unary(node.opcode)) {
         const std::size_t operand_id = node.lhs.id();
         if (known_constant[operand_id]) {
@@ -1594,7 +1999,12 @@ ControlFlowOptimizationResult Optimizer::run(
         continue;
       }
       const ControlNode& node = function.nodes()[index];
-      if (node.opcode == ControlOpcode::kCall) {
+      if (is_vector(node.opcode)) {
+        if (!folded_node[index] && !folded_vector_node[index]) {
+          visit_vector_operands(
+              function, node, [&](Value value) { live[value.id()] = true; });
+        }
+      } else if (node.opcode == ControlOpcode::kCall) {
         for (std::size_t argument_index = 0;
              argument_index < node.argument_count; ++argument_index) {
           const Value argument = function.call_arguments()[
@@ -1642,7 +2052,22 @@ ControlFlowOptimizationResult Optimizer::run(
                  "optimizer lost control-flow node ownership", index},
                 {}, {}, {}};
       }
-      if (node.opcode == ControlOpcode::kConstant) {
+      if (is_vector(node.opcode)) {
+        if (folded_node[index]) {
+          mapped[index] = builder.constant(constant_value[index]);
+          ++folded;
+        } else if (known_vector[index] &&
+                   (folded_vector_node[index] ||
+                    node.opcode == ControlOpcode::kVectorConstant)) {
+          mapped[index] =
+              builder.vector_constant(node.type, vector_value[index]);
+          if (folded_vector_node[index]) {
+            ++folded;
+          }
+        } else {
+          mapped[index] = emit_vector(&builder, function, node, mapped);
+        }
+      } else if (node.opcode == ControlOpcode::kConstant) {
         mapped[index] = node.type == ValueType::kFloat64
                             ? builder.float64_constant_bits(node.immediate)
                             : builder.constant(node.immediate);

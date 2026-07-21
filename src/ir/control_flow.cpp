@@ -67,6 +67,17 @@ bool is_binary(ControlOpcode opcode) {
   case ControlOpcode::kStoreFrame:
   case ControlOpcode::kLoadObject:
   case ControlOpcode::kStoreObject:
+  case ControlOpcode::kVectorConstant:
+  case ControlOpcode::kVectorSplat:
+  case ControlOpcode::kVectorExtractLane:
+  case ControlOpcode::kVectorInsertLane:
+  case ControlOpcode::kVectorUnary:
+  case ControlOpcode::kVectorBinary:
+  case ControlOpcode::kVectorCompare:
+  case ControlOpcode::kVectorSelect:
+  case ControlOpcode::kVectorLaneSignMask:
+  case ControlOpcode::kVectorShuffle:
+  case ControlOpcode::kVectorWiden:
     return false;
   }
   return false;
@@ -112,7 +123,51 @@ bool is_object(ControlOpcode opcode) {
 }
 
 bool valid_value_type(ValueType type) {
-  return type == ValueType::kWord || type == ValueType::kFloat64;
+  return is_valid_value_type(type);
+}
+
+bool valid_vector_unary(Word immediate) {
+  return immediate == static_cast<Word>(VectorUnaryOperation::kBitwiseNot);
+}
+
+bool valid_vector_binary(Word immediate, ValueType type) {
+  if (immediate < static_cast<Word>(VectorBinaryOperation::kAdd) ||
+      immediate > static_cast<Word>(VectorBinaryOperation::kDivide)) {
+    return false;
+  }
+  const auto operation = static_cast<VectorBinaryOperation>(immediate);
+  if (operation == VectorBinaryOperation::kBitwiseAnd ||
+      operation == VectorBinaryOperation::kBitwiseOr ||
+      operation == VectorBinaryOperation::kBitwiseXor) {
+    return is_vector_value_type(type);
+  }
+  if (operation == VectorBinaryOperation::kDivide) {
+    return is_float_vector_type(type);
+  }
+  return is_integer_vector_type(type) || is_float_vector_type(type);
+}
+
+bool valid_vector_comparison(Word immediate, ValueType type) {
+  if (immediate < static_cast<Word>(VectorComparison::kEqual) ||
+      immediate > static_cast<Word>(VectorComparison::kOrderedFloatLessEqual)) {
+    return false;
+  }
+  const auto comparison = static_cast<VectorComparison>(immediate);
+  if (is_float_vector_type(type)) {
+    return comparison == VectorComparison::kOrderedFloatEqual ||
+           comparison == VectorComparison::kOrderedFloatLessThan ||
+           comparison == VectorComparison::kOrderedFloatLessEqual;
+  }
+  return is_integer_vector_type(type) &&
+         comparison != VectorComparison::kOrderedFloatEqual &&
+         comparison != VectorComparison::kOrderedFloatLessThan &&
+         comparison != VectorComparison::kOrderedFloatLessEqual;
+}
+
+bool valid_vector_widen(ValueType source, ValueType result) {
+  return is_integer_vector_type(source) && is_integer_vector_type(result) &&
+         vector_lane_bits(result) == vector_lane_bits(source) * 2U &&
+         vector_lane_count(result) * 2U == vector_lane_count(source);
 }
 
 bool valid_memory_width(MemoryWidth width) {
@@ -156,7 +211,7 @@ Status verify_impl(const ControlFlowFunction &function) {
         0, "frame slot count exceeds the CFG index range");
   }
   for (const FrameSlotDescriptor &slot : function.frame_slots()) {
-    if (!valid_value_type(slot.type)) {
+    if (!is_scalar_value_type(slot.type)) {
       return invalid_control_flow(0, "CFG frame slot has an invalid type");
     }
   }
@@ -221,12 +276,16 @@ Status verify_impl(const ControlFlowFunction &function) {
                                            ? ControlOpcode::kParameter
                                            : ControlOpcode::kBlockParameter;
         if (node.opcode != expected ||
-            node.immediate != static_cast<Word>(instruction_index)) {
+            node.immediate != static_cast<Word>(instruction_index) ||
+            !valid_value_type(node.type) || node.lhs.valid() ||
+            node.rhs.valid() ||
+            node.argument_begin != 0 || node.argument_count != 0) {
           return invalid_control_flow(block_index,
                                       "block parameter node is malformed");
         }
         if (block_index == 0 &&
-            node.type != function.parameter_type(instruction_index)) {
+            (node.type != function.parameter_type(instruction_index) ||
+             !is_scalar_value_type(node.type))) {
           return invalid_control_flow(
               block_index, "entry parameter type is inconsistent");
         }
@@ -349,6 +408,12 @@ Status verify_impl(const ControlFlowFunction &function) {
                                            false);
   std::vector<bool> claimed_memory_accesses(function.memory_accesses().size(),
                                             false);
+  std::vector<bool> claimed_vector_constants(function.vector_constants().size(),
+                                             false);
+  std::vector<bool> claimed_vector_shuffles(function.vector_shuffles().size(),
+                                            false);
+  std::vector<bool> claimed_vector_selects(
+      function.vector_select_arguments().size(), false);
 
   for (std::size_t block_index = 0; block_index < blocks.size();
        ++block_index) {
@@ -358,7 +423,9 @@ Status verify_impl(const ControlFlowFunction &function) {
       const Value value = block.instructions[instruction_index];
       const ControlNode &node = nodes[value.id()];
       if (node.opcode == ControlOpcode::kConstant) {
-        if (node.argument_begin != 0 || node.argument_count != 0) {
+        if (!is_scalar_value_type(node.type) || node.lhs.valid() ||
+            node.rhs.valid() || node.argument_begin != 0 ||
+            node.argument_count != 0) {
           return invalid_control_flow(value.id(),
                                       "constant has runtime-call arguments");
         }
@@ -368,6 +435,7 @@ Status verify_impl(const ControlFlowFunction &function) {
         const std::size_t begin = node.argument_begin;
         const std::size_t count = node.argument_count;
         if (node.lhs.valid() || node.rhs.valid() ||
+            !is_scalar_value_type(node.type) ||
             unpack_runtime_helper(node.immediate) == nullptr ||
             begin > function.call_arguments().size() ||
             count > function.call_arguments().size() - begin) {
@@ -384,7 +452,192 @@ Status verify_impl(const ControlFlowFunction &function) {
                 value.id(),
                 "runtime call argument is duplicated or unavailable");
           }
+          if (!is_scalar_value_type(function.value_type(argument))) {
+            return invalid_control_flow(
+                value.id(), "CFG runtime call argument must be scalar");
+          }
           claimed_call_arguments[flat_index] = true;
+        }
+        continue;
+      }
+      if (node.opcode == ControlOpcode::kVectorConstant) {
+        if (!is_vector_value_type(node.type) || node.immediate < 0 ||
+            static_cast<std::size_t>(node.immediate) >=
+                function.vector_constants().size() ||
+            claimed_vector_constants[
+                static_cast<std::size_t>(node.immediate)] ||
+            node.lhs.valid() || node.rhs.valid() ||
+            node.argument_begin != 0 || node.argument_count != 0) {
+          return invalid_control_flow(value.id(),
+                                      "CFG vector constant is malformed");
+        }
+        const std::size_t constant_index =
+            static_cast<std::size_t>(node.immediate);
+        if (is_mask_vector_type(node.type) &&
+            !vector_mask_is_canonical(
+                function.vector_constants()[constant_index], node.type)) {
+          return invalid_control_flow(
+              value.id(), "CFG vector mask constant is not canonical");
+        }
+        claimed_vector_constants[constant_index] = true;
+        continue;
+      }
+      if (node.opcode == ControlOpcode::kVectorSplat) {
+        if ((!is_integer_vector_type(node.type) &&
+             !is_float_vector_type(node.type)) ||
+            node.immediate != 0 ||
+            !available(node.lhs, block_index, instruction_index) ||
+            function.value_type(node.lhs) != ValueType::kWord ||
+            node.rhs.valid() || node.argument_begin != 0 ||
+            node.argument_count != 0) {
+          return invalid_control_flow(value.id(),
+                                      "CFG vector splat is malformed");
+        }
+        continue;
+      }
+      if (node.opcode == ControlOpcode::kVectorExtractLane) {
+        const std::size_t lane =
+            static_cast<std::size_t>(node.immediate & 0xff);
+        const bool sign_extend = (node.immediate & 0x100) != 0;
+        const ValueType source_type = function.value_type(node.lhs);
+        if (node.immediate < 0 || (node.immediate & ~Word{0x1ff}) != 0 ||
+            !available(node.lhs, block_index, instruction_index) ||
+            !is_vector_value_type(source_type) ||
+            lane >= vector_lane_count(source_type) ||
+            (sign_extend && !is_integer_vector_type(source_type)) ||
+            node.type != ValueType::kWord || node.rhs.valid() ||
+            node.argument_begin != 0 || node.argument_count != 0) {
+          return invalid_control_flow(
+              value.id(), "CFG vector lane extraction is malformed");
+        }
+        continue;
+      }
+      if (node.opcode == ControlOpcode::kVectorInsertLane) {
+        if (node.immediate < 0 ||
+            !available(node.lhs, block_index, instruction_index) ||
+            !available(node.rhs, block_index, instruction_index) ||
+            (!is_integer_vector_type(node.type) &&
+             !is_float_vector_type(node.type)) ||
+            function.value_type(node.lhs) != node.type ||
+            function.value_type(node.rhs) != ValueType::kWord ||
+            static_cast<std::size_t>(node.immediate) >=
+                vector_lane_count(node.type) ||
+            node.argument_begin != 0 || node.argument_count != 0) {
+          return invalid_control_flow(
+              value.id(), "CFG vector lane insertion is malformed");
+        }
+        continue;
+      }
+      if (node.opcode == ControlOpcode::kVectorUnary) {
+        if (!valid_vector_unary(node.immediate) ||
+            !is_vector_value_type(node.type) ||
+            !available(node.lhs, block_index, instruction_index) ||
+            function.value_type(node.lhs) != node.type || node.rhs.valid() ||
+            node.argument_begin != 0 || node.argument_count != 0) {
+          return invalid_control_flow(
+              value.id(), "CFG vector unary operation is malformed");
+        }
+        continue;
+      }
+      if (node.opcode == ControlOpcode::kVectorBinary) {
+        if (!valid_vector_binary(node.immediate, node.type) ||
+            !available(node.lhs, block_index, instruction_index) ||
+            !available(node.rhs, block_index, instruction_index) ||
+            function.value_type(node.lhs) != node.type ||
+            function.value_type(node.rhs) != node.type ||
+            node.argument_begin != 0 || node.argument_count != 0) {
+          return invalid_control_flow(
+              value.id(), "CFG vector binary operation is malformed");
+        }
+        continue;
+      }
+      if (node.opcode == ControlOpcode::kVectorCompare) {
+        const ValueType source_type = function.value_type(node.lhs);
+        if (!available(node.lhs, block_index, instruction_index) ||
+            !available(node.rhs, block_index, instruction_index) ||
+            function.value_type(node.rhs) != source_type ||
+            !valid_vector_comparison(node.immediate, source_type) ||
+            node.type != vector_mask_type(source_type) ||
+            node.argument_begin != 0 || node.argument_count != 0) {
+          return invalid_control_flow(
+              value.id(), "CFG vector comparison is malformed");
+        }
+        continue;
+      }
+      if (node.opcode == ControlOpcode::kVectorSelect) {
+        const ValueType mask_type = function.value_type(node.lhs);
+        if (node.immediate < 0 ||
+            static_cast<std::size_t>(node.immediate) >=
+                function.vector_select_arguments().size() ||
+            claimed_vector_selects[
+                static_cast<std::size_t>(node.immediate)] ||
+            !available(node.lhs, block_index, instruction_index) ||
+            !available(node.rhs, block_index, instruction_index) ||
+            !available(function.vector_select_arguments()[
+                           static_cast<std::size_t>(node.immediate)],
+                       block_index, instruction_index) ||
+            !is_mask_vector_type(mask_type) ||
+            !is_vector_value_type(node.type) ||
+            function.value_type(node.rhs) != node.type ||
+            function.value_type(function.vector_select_arguments()[
+                static_cast<std::size_t>(node.immediate)]) != node.type ||
+            !vector_shapes_match(mask_type, node.type) ||
+            node.argument_begin != 0 || node.argument_count != 0) {
+          return invalid_control_flow(value.id(),
+                                      "CFG vector selection is malformed");
+        }
+        claimed_vector_selects[static_cast<std::size_t>(node.immediate)] = true;
+        continue;
+      }
+      if (node.opcode == ControlOpcode::kVectorLaneSignMask) {
+        if (node.immediate != 0 ||
+            !available(node.lhs, block_index, instruction_index) ||
+            !is_vector_value_type(function.value_type(node.lhs)) ||
+            node.type != ValueType::kWord || node.rhs.valid() ||
+            node.argument_begin != 0 || node.argument_count != 0) {
+          return invalid_control_flow(
+              value.id(), "CFG vector lane-sign extraction is malformed");
+        }
+        continue;
+      }
+      if (node.opcode == ControlOpcode::kVectorShuffle) {
+        if (node.immediate < 0 ||
+            static_cast<std::size_t>(node.immediate) >=
+                function.vector_shuffles().size() ||
+            claimed_vector_shuffles[
+                static_cast<std::size_t>(node.immediate)] ||
+            !available(node.lhs, block_index, instruction_index) ||
+            !is_vector_value_type(node.type) ||
+            function.value_type(node.lhs) != node.type || node.rhs.valid() ||
+            node.argument_begin != 0 || node.argument_count != 0) {
+          return invalid_control_flow(value.id(),
+                                      "CFG vector shuffle is malformed");
+        }
+        const std::size_t shuffle_index =
+            static_cast<std::size_t>(node.immediate);
+        const VectorShuffle& shuffle =
+            function.vector_shuffles()[shuffle_index];
+        if (shuffle.lane_count != vector_lane_count(node.type)) {
+          return invalid_control_flow(
+              value.id(), "CFG vector shuffle lane count is invalid");
+        }
+        for (std::size_t lane = 0; lane < shuffle.lane_count; ++lane) {
+          if (shuffle.lanes[lane] >= shuffle.lane_count) {
+            return invalid_control_flow(
+                value.id(), "CFG vector shuffle lane is out of range");
+          }
+        }
+        claimed_vector_shuffles[shuffle_index] = true;
+        continue;
+      }
+      if (node.opcode == ControlOpcode::kVectorWiden) {
+        if (node.immediate < 0 || (node.immediate & ~Word{0x101}) != 0 ||
+            !available(node.lhs, block_index, instruction_index) ||
+            !valid_vector_widen(function.value_type(node.lhs), node.type) ||
+            node.rhs.valid() || node.argument_begin != 0 ||
+            node.argument_count != 0) {
+          return invalid_control_flow(value.id(),
+                                      "CFG vector widening is malformed");
         }
         continue;
       }
@@ -466,7 +719,7 @@ Status verify_impl(const ControlFlowFunction &function) {
             node.immediate < 0 ||
             (static_cast<std::size_t>(node.immediate) % alignof(Word)) != 0 ||
             node.rhs.valid() || node.argument_begin != 0 ||
-            node.argument_count != 0 || !valid_value_type(node.type)) {
+            node.argument_count != 0 || !is_scalar_value_type(node.type)) {
           return invalid_control_flow(
               value.id(), "CFG trusted object operation is malformed");
         }
@@ -599,6 +852,10 @@ Status verify_impl(const ControlFlowFunction &function) {
     if (terminator.opcode == TerminatorOpcode::kReturn) {
       const ValueType current_return_type =
           function.value_type(terminator.value);
+      if (!is_scalar_value_type(current_return_type)) {
+        return invalid_control_flow(
+            block_index, "CFG return type is not supported by the scalar ABI");
+      }
       if (has_return && current_return_type != return_type) {
         return invalid_control_flow(
             block_index, "CFG return values have inconsistent types");
@@ -640,6 +897,24 @@ Status verify_impl(const ControlFlowFunction &function) {
       claimed_memory_accesses.end()) {
     return invalid_control_flow(
         0, "control-flow graph contains unreferenced memory descriptors");
+  }
+  if (std::find(claimed_vector_constants.begin(),
+                claimed_vector_constants.end(), false) !=
+      claimed_vector_constants.end()) {
+    return invalid_control_flow(
+        0, "control-flow graph contains unreferenced vector constants");
+  }
+  if (std::find(claimed_vector_shuffles.begin(),
+                claimed_vector_shuffles.end(), false) !=
+      claimed_vector_shuffles.end()) {
+    return invalid_control_flow(
+        0, "control-flow graph contains unreferenced vector shuffles");
+  }
+  if (std::find(claimed_vector_selects.begin(),
+                claimed_vector_selects.end(), false) !=
+      claimed_vector_selects.end()) {
+    return invalid_control_flow(
+        0, "control-flow graph contains unreferenced vector select operands");
   }
   return Status::ok_status();
 }
@@ -1184,6 +1459,146 @@ Value ControlFlowBuilder::store_object(TrustedObjectSlot object,
   return append_node(node);
 }
 
+Value ControlFlowBuilder::vector_constant(ValueType type, Vector128 bits) {
+  if (function_.vector_constants_.size() >= VectorShuffle::kInvalidIndex) {
+    return {};
+  }
+  const auto constant_index =
+      static_cast<std::uint32_t>(function_.vector_constants_.size());
+  function_.vector_constants_.push_back(bits);
+  const Value result = append_node(
+      ControlNode{ControlOpcode::kVectorConstant, {}, {},
+                  static_cast<Word>(constant_index), type});
+  if (!result.valid()) {
+    function_.vector_constants_.pop_back();
+  }
+  return result;
+}
+
+Value ControlFlowBuilder::vector_zero(ValueType type) {
+  return vector_constant(type, Vector128{});
+}
+
+Value ControlFlowBuilder::vector_splat(ValueType type, Value lane_bits) {
+  return append_node(
+      ControlNode{ControlOpcode::kVectorSplat, lane_bits, {}, 0, type});
+}
+
+Value ControlFlowBuilder::vector_extract_lane(Value vector, std::size_t lane,
+                                              bool sign_extend) {
+  if (lane > UINT8_MAX) {
+    return {};
+  }
+  const Word immediate = static_cast<Word>(lane) |
+                         (sign_extend ? static_cast<Word>(UINT64_C(1) << 8U)
+                                      : 0);
+  return append_node(ControlNode{ControlOpcode::kVectorExtractLane, vector, {},
+                                 immediate, ValueType::kWord});
+}
+
+Value ControlFlowBuilder::vector_insert_lane(Value vector, std::size_t lane,
+                                             Value lane_bits) {
+  if (lane > UINT8_MAX) {
+    return {};
+  }
+  const ValueType type =
+      vector.valid() && vector.id() < function_.nodes_.size()
+          ? function_.nodes_[vector.id()].type
+          : ValueType::kWord;
+  return append_node(ControlNode{ControlOpcode::kVectorInsertLane, vector,
+                                 lane_bits, static_cast<Word>(lane), type});
+}
+
+Value ControlFlowBuilder::vector_unary(VectorUnaryOperation operation,
+                                       Value vector) {
+  const ValueType type =
+      vector.valid() && vector.id() < function_.nodes_.size()
+          ? function_.nodes_[vector.id()].type
+          : ValueType::kWord;
+  return append_node(ControlNode{ControlOpcode::kVectorUnary, vector, {},
+                                 static_cast<Word>(operation), type});
+}
+
+Value ControlFlowBuilder::vector_binary(VectorBinaryOperation operation,
+                                        Value lhs, Value rhs) {
+  const ValueType type = lhs.valid() && lhs.id() < function_.nodes_.size()
+                             ? function_.nodes_[lhs.id()].type
+                             : ValueType::kWord;
+  return append_node(ControlNode{ControlOpcode::kVectorBinary, lhs, rhs,
+                                 static_cast<Word>(operation), type});
+}
+
+Value ControlFlowBuilder::vector_compare(VectorComparison comparison,
+                                         Value lhs, Value rhs) {
+  const ValueType input_type =
+      lhs.valid() && lhs.id() < function_.nodes_.size()
+          ? function_.nodes_[lhs.id()].type
+          : ValueType::kWord;
+  return append_node(ControlNode{ControlOpcode::kVectorCompare, lhs, rhs,
+                                 static_cast<Word>(comparison),
+                                 vector_mask_type(input_type)});
+}
+
+Value ControlFlowBuilder::vector_select(Value mask, Value true_value,
+                                        Value false_value) {
+  if (function_.vector_select_arguments_.size() >= Value::kInvalidId) {
+    return {};
+  }
+  const ValueType type =
+      true_value.valid() && true_value.id() < function_.nodes_.size()
+          ? function_.nodes_[true_value.id()].type
+          : ValueType::kWord;
+  const auto select_index = static_cast<std::uint32_t>(
+      function_.vector_select_arguments_.size());
+  function_.vector_select_arguments_.push_back(false_value);
+  const Value result = append_node(
+      ControlNode{ControlOpcode::kVectorSelect, mask, true_value,
+                  static_cast<Word>(select_index), type});
+  if (!result.valid()) {
+    function_.vector_select_arguments_.pop_back();
+  }
+  return result;
+}
+
+Value ControlFlowBuilder::vector_lane_sign_mask(Value vector) {
+  return append_node(ControlNode{ControlOpcode::kVectorLaneSignMask, vector,
+                                 {}, 0, ValueType::kWord});
+}
+
+Value ControlFlowBuilder::vector_shuffle(
+    Value vector, std::vector<std::uint8_t> lanes) {
+  if (lanes.size() > 16 ||
+      function_.vector_shuffles_.size() >= VectorShuffle::kInvalidIndex) {
+    return {};
+  }
+  VectorShuffle shuffle;
+  shuffle.lane_count = static_cast<std::uint8_t>(lanes.size());
+  std::copy(lanes.begin(), lanes.end(), shuffle.lanes.begin());
+  const auto shuffle_index =
+      static_cast<std::uint32_t>(function_.vector_shuffles_.size());
+  function_.vector_shuffles_.push_back(shuffle);
+  const ValueType type =
+      vector.valid() && vector.id() < function_.nodes_.size()
+          ? function_.nodes_[vector.id()].type
+          : ValueType::kWord;
+  const Value result = append_node(
+      ControlNode{ControlOpcode::kVectorShuffle, vector, {},
+                  static_cast<Word>(shuffle_index), type});
+  if (!result.valid()) {
+    function_.vector_shuffles_.pop_back();
+  }
+  return result;
+}
+
+Value ControlFlowBuilder::vector_widen(Value vector, ValueType result_type,
+                                       VectorExtension extension,
+                                       VectorHalf half) {
+  const Word immediate = static_cast<Word>(extension) |
+                         (static_cast<Word>(half) << 8U);
+  return append_node(ControlNode{ControlOpcode::kVectorWiden, vector, {},
+                                 immediate, result_type});
+}
+
 Status
 ControlFlowBuilder::validate_edge(Block target,
                                   const std::vector<Value> &arguments) const {
@@ -1224,6 +1639,10 @@ Status ControlFlowBuilder::set_terminator(ControlTerminator terminator) {
 Status ControlFlowBuilder::set_return(Value value) {
   if (!value.valid() || value.id() >= function_.nodes_.size()) {
     return {StatusCode::kInvalidArgument, "return value does not exist"};
+  }
+  if (!is_scalar_value_type(function_.nodes_[value.id()].type)) {
+    return {StatusCode::kInvalidArgument,
+            "the scalar control-flow ABI cannot return a vector value"};
   }
   ControlTerminator terminator;
   terminator.opcode = TerminatorOpcode::kReturn;
@@ -1321,6 +1740,7 @@ ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
       return {object_status, 0};
     }
     std::vector<Word> values(function.nodes().size(), 0);
+    std::vector<Vector128> vector_values(function.nodes().size());
     std::vector<Word> frame_values(function.frame_slots().size(), 0);
     std::vector<Word> helper_arguments;
     const BasicBlock &entry = function.blocks()[function.entry_block().id()];
@@ -1441,6 +1861,59 @@ ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
             return {result.status, 0};
           }
           values[value.id()] = result.value;
+        } else if (node.opcode == ControlOpcode::kVectorConstant) {
+          vector_values[value.id()] = function.vector_constants()[
+              static_cast<std::size_t>(node.immediate)];
+        } else if (node.opcode == ControlOpcode::kVectorSplat) {
+          vector_values[value.id()] =
+              vector_splat_bits(node.type, values[node.lhs.id()]);
+        } else if (node.opcode == ControlOpcode::kVectorExtractLane) {
+          const ValueType source_type = function.value_type(node.lhs);
+          values[value.id()] = vector_extract_lane_bits(
+              vector_values[node.lhs.id()], source_type,
+              static_cast<std::size_t>(node.immediate & 0xff),
+              (node.immediate & 0x100) != 0);
+        } else if (node.opcode == ControlOpcode::kVectorInsertLane) {
+          vector_values[value.id()] = vector_insert_lane_bits(
+              vector_values[node.lhs.id()], node.type,
+              static_cast<std::size_t>(node.immediate),
+              values[node.rhs.id()]);
+        } else if (node.opcode == ControlOpcode::kVectorUnary) {
+          vector_values[value.id()] = vector_unary(
+              static_cast<VectorUnaryOperation>(node.immediate),
+              vector_values[node.lhs.id()], node.type);
+        } else if (node.opcode == ControlOpcode::kVectorBinary) {
+          vector_values[value.id()] = vector_binary(
+              static_cast<VectorBinaryOperation>(node.immediate),
+              vector_values[node.lhs.id()], vector_values[node.rhs.id()],
+              node.type);
+        } else if (node.opcode == ControlOpcode::kVectorCompare) {
+          const ValueType source_type = function.value_type(node.lhs);
+          vector_values[value.id()] = vector_compare(
+              static_cast<VectorComparison>(node.immediate),
+              vector_values[node.lhs.id()], vector_values[node.rhs.id()],
+              source_type);
+        } else if (node.opcode == ControlOpcode::kVectorSelect) {
+          vector_values[value.id()] = vector_select(
+              vector_values[node.lhs.id()], vector_values[node.rhs.id()],
+              vector_values[function.vector_select_arguments()[
+                                static_cast<std::size_t>(node.immediate)]
+                                .id()],
+              function.value_type(node.lhs));
+        } else if (node.opcode == ControlOpcode::kVectorLaneSignMask) {
+          values[value.id()] = vector_lane_sign_mask(
+              vector_values[node.lhs.id()], function.value_type(node.lhs));
+        } else if (node.opcode == ControlOpcode::kVectorShuffle) {
+          vector_values[value.id()] = vector_shuffle(
+              vector_values[node.lhs.id()], node.type,
+              function.vector_shuffles()[
+                  static_cast<std::size_t>(node.immediate)]);
+        } else if (node.opcode == ControlOpcode::kVectorWiden) {
+          vector_values[value.id()] = vector_widen(
+              vector_values[node.lhs.id()], function.value_type(node.lhs),
+              node.type,
+              static_cast<VectorExtension>(node.immediate & 0xff),
+              static_cast<VectorHalf>((node.immediate >> 8U) & 0xff));
         } else if (node.opcode == ControlOpcode::kByteSwap) {
           values[value.id()] = byte_swap_word(
               values[node.lhs.id()], static_cast<MemoryWidth>(node.immediate));
@@ -1462,12 +1935,24 @@ ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
                                                     : terminator.false_edge);
       std::vector<Word> incoming;
       incoming.reserve(edge.arguments.size());
+      std::vector<Vector128> incoming_vectors(edge.arguments.size());
       for (const Value argument : edge.arguments) {
-        incoming.push_back(values[argument.id()]);
+        incoming.push_back(is_vector_value_type(function.value_type(argument))
+                               ? 0
+                               : values[argument.id()]);
+        if (is_vector_value_type(function.value_type(argument))) {
+          incoming_vectors[incoming.size() - 1U] =
+              vector_values[argument.id()];
+        }
       }
       const BasicBlock &target = function.blocks()[edge.target.id()];
       for (std::size_t index = 0; index < incoming.size(); ++index) {
-        values[target.parameters[index].id()] = incoming[index];
+        const Value parameter = target.parameters[index];
+        if (is_vector_value_type(function.value_type(parameter))) {
+          vector_values[parameter.id()] = incoming_vectors[index];
+        } else {
+          values[parameter.id()] = incoming[index];
+        }
       }
       current = edge.target;
     }

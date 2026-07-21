@@ -1284,6 +1284,21 @@ LoweringResult lower_impl(const ir::Function& function,
         }
         break;
       }
+      case ir::Opcode::kVectorConstant:
+      case ir::Opcode::kVectorSplat:
+      case ir::Opcode::kVectorExtractLane:
+      case ir::Opcode::kVectorInsertLane:
+      case ir::Opcode::kVectorUnary:
+      case ir::Opcode::kVectorBinary:
+      case ir::Opcode::kVectorCompare:
+      case ir::Opcode::kVectorSelect:
+      case ir::Opcode::kVectorLaneSignMask:
+      case ir::Opcode::kVectorShuffle:
+      case ir::Opcode::kVectorWiden:
+        return {{StatusCode::kCodeGenerationFailed,
+                 "RISC-V 64 SIMD lowering requires the vector allocator"},
+                {},
+                0};
       case ir::Opcode::kLoadWord:
       case ir::Opcode::kStoreWord:
       case ir::Opcode::kLoadFloat:
@@ -2240,6 +2255,22 @@ LoweringResult lower_control_flow_impl(
           }
           break;
         }
+        case ir::ControlOpcode::kVectorConstant:
+        case ir::ControlOpcode::kVectorSplat:
+        case ir::ControlOpcode::kVectorExtractLane:
+        case ir::ControlOpcode::kVectorInsertLane:
+        case ir::ControlOpcode::kVectorUnary:
+        case ir::ControlOpcode::kVectorBinary:
+        case ir::ControlOpcode::kVectorCompare:
+        case ir::ControlOpcode::kVectorSelect:
+        case ir::ControlOpcode::kVectorLaneSignMask:
+        case ir::ControlOpcode::kVectorShuffle:
+        case ir::ControlOpcode::kVectorWiden:
+          return {{StatusCode::kCodeGenerationFailed,
+                   "RISC-V 64 CFG SIMD lowering requires the vector "
+                   "allocator"},
+                  {},
+                  0};
         case ir::ControlOpcode::kLoadWord:
         case ir::ControlOpcode::kStoreWord:
         case ir::ControlOpcode::kLoadFloat:

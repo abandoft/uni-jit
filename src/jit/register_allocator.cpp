@@ -13,6 +13,34 @@ namespace {
 
 constexpr std::size_t kMaximumStackMapValues = 256U * 1024U;
 
+bool is_vector_opcode(ir::Opcode opcode) noexcept {
+  return opcode == ir::Opcode::kVectorConstant ||
+         opcode == ir::Opcode::kVectorSplat ||
+         opcode == ir::Opcode::kVectorExtractLane ||
+         opcode == ir::Opcode::kVectorInsertLane ||
+         opcode == ir::Opcode::kVectorUnary ||
+         opcode == ir::Opcode::kVectorBinary ||
+         opcode == ir::Opcode::kVectorCompare ||
+         opcode == ir::Opcode::kVectorSelect ||
+         opcode == ir::Opcode::kVectorLaneSignMask ||
+         opcode == ir::Opcode::kVectorShuffle ||
+         opcode == ir::Opcode::kVectorWiden;
+}
+
+bool is_vector_opcode(ir::ControlOpcode opcode) noexcept {
+  return opcode == ir::ControlOpcode::kVectorConstant ||
+         opcode == ir::ControlOpcode::kVectorSplat ||
+         opcode == ir::ControlOpcode::kVectorExtractLane ||
+         opcode == ir::ControlOpcode::kVectorInsertLane ||
+         opcode == ir::ControlOpcode::kVectorUnary ||
+         opcode == ir::ControlOpcode::kVectorBinary ||
+         opcode == ir::ControlOpcode::kVectorCompare ||
+         opcode == ir::ControlOpcode::kVectorSelect ||
+         opcode == ir::ControlOpcode::kVectorLaneSignMask ||
+         opcode == ir::ControlOpcode::kVectorShuffle ||
+         opcode == ir::ControlOpcode::kVectorWiden;
+}
+
 template <typename Visitor>
 void visit_control_operands(const ir::ControlFlowFunction& function,
                             const ir::ControlNode& node, Visitor&& visitor) {
@@ -38,6 +66,9 @@ void visit_control_operands(const ir::ControlFlowFunction& function,
     case ir::ControlOpcode::kLessEqual:
     case ir::ControlOpcode::kEqual:
     case ir::ControlOpcode::kNotEqual:
+    case ir::ControlOpcode::kVectorInsertLane:
+    case ir::ControlOpcode::kVectorBinary:
+    case ir::ControlOpcode::kVectorCompare:
       visitor(node.lhs);
       visitor(node.rhs);
       break;
@@ -49,7 +80,19 @@ void visit_control_operands(const ir::ControlFlowFunction& function,
     case ir::ControlOpcode::kGuardFloatNonzero:
     case ir::ControlOpcode::kLoadWord:
     case ir::ControlOpcode::kLoadFloat:
+    case ir::ControlOpcode::kVectorSplat:
+    case ir::ControlOpcode::kVectorExtractLane:
+    case ir::ControlOpcode::kVectorUnary:
+    case ir::ControlOpcode::kVectorLaneSignMask:
+    case ir::ControlOpcode::kVectorShuffle:
+    case ir::ControlOpcode::kVectorWiden:
       visitor(node.lhs);
+      break;
+    case ir::ControlOpcode::kVectorSelect:
+      visitor(node.lhs);
+      visitor(node.rhs);
+      visitor(function.vector_select_arguments()[
+          static_cast<std::size_t>(node.immediate)]);
       break;
     case ir::ControlOpcode::kStoreWord:
     case ir::ControlOpcode::kStoreFloat:
@@ -72,6 +115,7 @@ void visit_control_operands(const ir::ControlFlowFunction& function,
     case ir::ControlOpcode::kSafepoint:
     case ir::ControlOpcode::kLoadFrame:
     case ir::ControlOpcode::kLoadObject:
+    case ir::ControlOpcode::kVectorConstant:
       break;
   }
 }
@@ -89,6 +133,14 @@ RegisterAllocation allocate_impl(const ir::Function& function,
   if (register_count == 0) {
     return {{StatusCode::kInvalidArgument,
              "linear scan requires at least one allocatable register"},
+            {}, 0, {}};
+  }
+  if (std::any_of(function.nodes().begin(), function.nodes().end(),
+                  [](const ir::Node& node) {
+                    return is_vector_opcode(node.opcode);
+                  })) {
+    return {{StatusCode::kCodeGenerationFailed,
+             "linear scan has no vector register class"},
             {}, 0, {}};
   }
 
@@ -117,7 +169,10 @@ RegisterAllocation allocate_impl(const ir::Function& function,
         node.opcode == ir::Opcode::kLessThan ||
         node.opcode == ir::Opcode::kLessEqual ||
         node.opcode == ir::Opcode::kEqual ||
-        node.opcode == ir::Opcode::kNotEqual) {
+        node.opcode == ir::Opcode::kNotEqual ||
+        node.opcode == ir::Opcode::kVectorInsertLane ||
+        node.opcode == ir::Opcode::kVectorBinary ||
+        node.opcode == ir::Opcode::kVectorCompare) {
       note_use(&last_use, node.lhs, index);
       note_use(&last_use, node.rhs, index);
     } else if (node.opcode == ir::Opcode::kNegate ||
@@ -127,8 +182,21 @@ RegisterAllocation allocate_impl(const ir::Function& function,
                node.opcode == ir::Opcode::kGuardWordNonzero ||
                node.opcode == ir::Opcode::kGuardFloatNonzero ||
                node.opcode == ir::Opcode::kLoadWord ||
-               node.opcode == ir::Opcode::kLoadFloat) {
+               node.opcode == ir::Opcode::kLoadFloat ||
+               node.opcode == ir::Opcode::kVectorSplat ||
+               node.opcode == ir::Opcode::kVectorExtractLane ||
+               node.opcode == ir::Opcode::kVectorUnary ||
+               node.opcode == ir::Opcode::kVectorLaneSignMask ||
+               node.opcode == ir::Opcode::kVectorShuffle ||
+               node.opcode == ir::Opcode::kVectorWiden) {
       note_use(&last_use, node.lhs, index);
+    } else if (node.opcode == ir::Opcode::kVectorSelect) {
+      note_use(&last_use, node.lhs, index);
+      note_use(&last_use, node.rhs, index);
+      note_use(&last_use,
+               function.vector_select_arguments()[
+                   static_cast<std::size_t>(node.immediate)],
+               index);
     } else if (node.opcode == ir::Opcode::kStoreWord ||
                node.opcode == ir::Opcode::kStoreFloat) {
       note_use(&last_use, node.lhs, index);
@@ -236,6 +304,14 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
              "control-flow allocation requires Word and Float64 registers"},
             {}, {}, {}, {}, 0, {}};
   }
+  if (std::any_of(function.nodes().begin(), function.nodes().end(),
+                  [](const ir::ControlNode& node) {
+                    return is_vector_opcode(node.opcode);
+                  })) {
+    return {{StatusCode::kCodeGenerationFailed,
+             "control-flow allocation has no vector register class"},
+            {}, {}, {}, {}, 0, {}};
+  }
 
   const std::size_t value_count = function.nodes().size();
   const std::size_t no_owner = function.blocks().size();
@@ -292,6 +368,9 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kLessEqual:
         case ir::ControlOpcode::kEqual:
         case ir::ControlOpcode::kNotEqual:
+        case ir::ControlOpcode::kVectorInsertLane:
+        case ir::ControlOpcode::kVectorBinary:
+        case ir::ControlOpcode::kVectorCompare:
           note_local_use(node.lhs);
           note_local_use(node.rhs);
           break;
@@ -303,7 +382,19 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kGuardFloatNonzero:
         case ir::ControlOpcode::kLoadWord:
         case ir::ControlOpcode::kLoadFloat:
+        case ir::ControlOpcode::kVectorSplat:
+        case ir::ControlOpcode::kVectorExtractLane:
+        case ir::ControlOpcode::kVectorUnary:
+        case ir::ControlOpcode::kVectorLaneSignMask:
+        case ir::ControlOpcode::kVectorShuffle:
+        case ir::ControlOpcode::kVectorWiden:
           note_local_use(node.lhs);
+          break;
+        case ir::ControlOpcode::kVectorSelect:
+          note_local_use(node.lhs);
+          note_local_use(node.rhs);
+          note_local_use(function.vector_select_arguments()[
+              static_cast<std::size_t>(node.immediate)]);
           break;
         case ir::ControlOpcode::kStoreWord:
         case ir::ControlOpcode::kStoreFloat:
@@ -328,6 +419,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kSafepoint:
         case ir::ControlOpcode::kLoadFrame:
         case ir::ControlOpcode::kLoadObject:
+        case ir::ControlOpcode::kVectorConstant:
           break;
       }
       if (node.opcode == ir::ControlOpcode::kSafepoint ||
@@ -492,6 +584,9 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kLessEqual:
         case ir::ControlOpcode::kEqual:
         case ir::ControlOpcode::kNotEqual:
+        case ir::ControlOpcode::kVectorInsertLane:
+        case ir::ControlOpcode::kVectorBinary:
+        case ir::ControlOpcode::kVectorCompare:
           note_nonlocal_use(block_index, node.lhs);
           note_nonlocal_use(block_index, node.rhs);
           break;
@@ -503,7 +598,21 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kGuardFloatNonzero:
         case ir::ControlOpcode::kLoadWord:
         case ir::ControlOpcode::kLoadFloat:
+        case ir::ControlOpcode::kVectorSplat:
+        case ir::ControlOpcode::kVectorExtractLane:
+        case ir::ControlOpcode::kVectorUnary:
+        case ir::ControlOpcode::kVectorLaneSignMask:
+        case ir::ControlOpcode::kVectorShuffle:
+        case ir::ControlOpcode::kVectorWiden:
           note_nonlocal_use(block_index, node.lhs);
+          break;
+        case ir::ControlOpcode::kVectorSelect:
+          note_nonlocal_use(block_index, node.lhs);
+          note_nonlocal_use(block_index, node.rhs);
+          note_nonlocal_use(
+              block_index,
+              function.vector_select_arguments()[
+                  static_cast<std::size_t>(node.immediate)]);
           break;
         case ir::ControlOpcode::kStoreWord:
         case ir::ControlOpcode::kStoreFloat:
@@ -529,6 +638,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kConstant:
         case ir::ControlOpcode::kLoadFrame:
         case ir::ControlOpcode::kLoadObject:
+        case ir::ControlOpcode::kVectorConstant:
         case ir::ControlOpcode::kSafepoint:
           break;
       }

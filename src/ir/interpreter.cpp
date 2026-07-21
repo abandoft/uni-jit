@@ -103,6 +103,17 @@ Word evaluate_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
     case Opcode::kStoreFrame:
     case Opcode::kLoadObject:
     case Opcode::kStoreObject:
+    case Opcode::kVectorConstant:
+    case Opcode::kVectorSplat:
+    case Opcode::kVectorExtractLane:
+    case Opcode::kVectorInsertLane:
+    case Opcode::kVectorUnary:
+    case Opcode::kVectorBinary:
+    case Opcode::kVectorCompare:
+    case Opcode::kVectorSelect:
+    case Opcode::kVectorLaneSignMask:
+    case Opcode::kVectorShuffle:
+    case Opcode::kVectorWiden:
       return 0;
   }
   return 0;
@@ -147,6 +158,7 @@ EvaluationResult Interpreter::evaluate(const Function& function,
       return {object_status, 0};
     }
     std::vector<Word> values(function.nodes().size());
+    std::vector<Vector128> vector_values(function.nodes().size());
     std::vector<Word> frame_values(function.frame_slots().size(), 0);
     std::vector<Word> helper_arguments;
     for (std::size_t index = 0; index < function.nodes().size(); ++index) {
@@ -275,6 +287,72 @@ EvaluationResult Interpreter::evaluate(const Function& function,
           values[index] = result.value;
           break;
         }
+        case Opcode::kVectorConstant:
+          vector_values[index] = function.vector_constants()[
+              static_cast<std::size_t>(node.immediate)];
+          break;
+        case Opcode::kVectorSplat:
+          vector_values[index] =
+              vector_splat_bits(node.type, values[node.lhs.id()]);
+          break;
+        case Opcode::kVectorExtractLane: {
+          const ValueType source_type = function.value_type(node.lhs);
+          values[index] = vector_extract_lane_bits(
+              vector_values[node.lhs.id()], source_type,
+              static_cast<std::size_t>(node.immediate & 0xff),
+              (node.immediate & 0x100) != 0);
+          break;
+        }
+        case Opcode::kVectorInsertLane:
+          vector_values[index] = vector_insert_lane_bits(
+              vector_values[node.lhs.id()], node.type,
+              static_cast<std::size_t>(node.immediate),
+              values[node.rhs.id()]);
+          break;
+        case Opcode::kVectorUnary:
+          vector_values[index] = vector_unary(
+              static_cast<VectorUnaryOperation>(node.immediate),
+              vector_values[node.lhs.id()], node.type);
+          break;
+        case Opcode::kVectorBinary:
+          vector_values[index] = vector_binary(
+              static_cast<VectorBinaryOperation>(node.immediate),
+              vector_values[node.lhs.id()], vector_values[node.rhs.id()],
+              node.type);
+          break;
+        case Opcode::kVectorCompare: {
+          const ValueType source_type = function.value_type(node.lhs);
+          vector_values[index] = vector_compare(
+              static_cast<VectorComparison>(node.immediate),
+              vector_values[node.lhs.id()], vector_values[node.rhs.id()],
+              source_type);
+          break;
+        }
+        case Opcode::kVectorSelect:
+          vector_values[index] = vector_select(
+              vector_values[node.lhs.id()], vector_values[node.rhs.id()],
+              vector_values[function.vector_select_arguments()[
+                                static_cast<std::size_t>(node.immediate)]
+                                .id()],
+              function.value_type(node.lhs));
+          break;
+        case Opcode::kVectorLaneSignMask:
+          values[index] = vector_lane_sign_mask(
+              vector_values[node.lhs.id()], function.value_type(node.lhs));
+          break;
+        case Opcode::kVectorShuffle:
+          vector_values[index] = vector_shuffle(
+              vector_values[node.lhs.id()], node.type,
+              function.vector_shuffles()[
+                  static_cast<std::size_t>(node.immediate)]);
+          break;
+        case Opcode::kVectorWiden:
+          vector_values[index] = vector_widen(
+              vector_values[node.lhs.id()], function.value_type(node.lhs),
+              node.type,
+              static_cast<VectorExtension>(node.immediate & 0xff),
+              static_cast<VectorHalf>((node.immediate >> 8U) & 0xff));
+          break;
         case Opcode::kAdd:
         case Opcode::kSubtract:
         case Opcode::kMultiply:

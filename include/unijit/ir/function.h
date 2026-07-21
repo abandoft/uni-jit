@@ -89,6 +89,17 @@ enum class Opcode : std::uint8_t {
   kStoreFrame,
   kLoadObject,
   kStoreObject,
+  kVectorConstant,
+  kVectorSplat,
+  kVectorExtractLane,
+  kVectorInsertLane,
+  kVectorUnary,
+  kVectorBinary,
+  kVectorCompare,
+  kVectorSelect,
+  kVectorLaneSignMask,
+  kVectorShuffle,
+  kVectorWiden,
 };
 
 class FrameSlot final {
@@ -157,6 +168,15 @@ class Function final {
   const std::vector<TrustedObjectDescriptor>& trusted_objects() const noexcept {
     return trusted_objects_;
   }
+  const std::vector<Vector128>& vector_constants() const noexcept {
+    return vector_constants_;
+  }
+  const std::vector<VectorShuffle>& vector_shuffles() const noexcept {
+    return vector_shuffles_;
+  }
+  const std::vector<Value>& vector_select_arguments() const noexcept {
+    return vector_select_arguments_;
+  }
   Value return_value() const noexcept { return return_value_; }
   ValueType return_type() const noexcept {
     return return_value_.valid() && return_value_.id() < nodes_.size()
@@ -180,6 +200,9 @@ class Function final {
   std::vector<MemoryAccessDescriptor> memory_accesses_;
   std::vector<FrameSlotDescriptor> frame_slots_;
   std::vector<TrustedObjectDescriptor> trusted_objects_;
+  std::vector<Vector128> vector_constants_;
+  std::vector<VectorShuffle> vector_shuffles_;
+  std::vector<Value> vector_select_arguments_;
   Value return_value_;
 };
 
@@ -255,6 +278,22 @@ class FunctionBuilder final {
                     ValueType type);
   Value store_object(TrustedObjectSlot object, std::size_t byte_offset,
                      Value value);
+  // Vector lane zero is the lowest-addressed logical lane. Floating lane
+  // insertion/extraction uses raw IEEE bits in Word so payloads survive.
+  Value vector_constant(ValueType type, Vector128 bits);
+  Value vector_zero(ValueType type);
+  Value vector_splat(ValueType type, Value lane_bits);
+  Value vector_extract_lane(Value vector, std::size_t lane,
+                            bool sign_extend = false);
+  Value vector_insert_lane(Value vector, std::size_t lane, Value lane_bits);
+  Value vector_unary(VectorUnaryOperation operation, Value vector);
+  Value vector_binary(VectorBinaryOperation operation, Value lhs, Value rhs);
+  Value vector_compare(VectorComparison comparison, Value lhs, Value rhs);
+  Value vector_select(Value mask, Value true_value, Value false_value);
+  Value vector_lane_sign_mask(Value vector);
+  Value vector_shuffle(Value vector, std::vector<std::uint8_t> lanes);
+  Value vector_widen(Value vector, ValueType result_type,
+                     VectorExtension extension, VectorHalf half);
   Status set_return(Value value);
 
   Function build() && noexcept;

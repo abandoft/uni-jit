@@ -1,5 +1,6 @@
 #include "unijit/ir/function.h"
 
+#include <algorithm>
 #include <cstring>
 #include <limits>
 #include <utility>
@@ -512,9 +513,180 @@ Value FunctionBuilder::store_object(TrustedObjectSlot object,
   return Value{id};
 }
 
+Value FunctionBuilder::vector_constant(ValueType type, Vector128 bits) {
+  if (function_.nodes_.size() >= Value::kInvalidId ||
+      function_.vector_constants_.size() >= VectorShuffle::kInvalidIndex) {
+    return {};
+  }
+  const auto constant_index =
+      static_cast<std::uint32_t>(function_.vector_constants_.size());
+  function_.vector_constants_.push_back(bits);
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  function_.nodes_.push_back(Node{Opcode::kVectorConstant, {}, {},
+                                  static_cast<Word>(constant_index), type});
+  return Value{id};
+}
+
+Value FunctionBuilder::vector_zero(ValueType type) {
+  return vector_constant(type, Vector128{});
+}
+
+Value FunctionBuilder::vector_splat(ValueType type, Value lane_bits) {
+  if (function_.nodes_.size() >= Value::kInvalidId) {
+    return {};
+  }
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  function_.nodes_.push_back(
+      Node{Opcode::kVectorSplat, lane_bits, {}, 0, type});
+  return Value{id};
+}
+
+Value FunctionBuilder::vector_extract_lane(Value vector, std::size_t lane,
+                                           bool sign_extend) {
+  if (function_.nodes_.size() >= Value::kInvalidId || lane > UINT8_MAX) {
+    return {};
+  }
+  const Word immediate = static_cast<Word>(lane) |
+                         (sign_extend ? static_cast<Word>(UINT64_C(1) << 8U)
+                                      : 0);
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  function_.nodes_.push_back(Node{Opcode::kVectorExtractLane, vector, {},
+                                  immediate, ValueType::kWord});
+  return Value{id};
+}
+
+Value FunctionBuilder::vector_insert_lane(Value vector, std::size_t lane,
+                                          Value lane_bits) {
+  if (function_.nodes_.size() >= Value::kInvalidId || lane > UINT8_MAX) {
+    return {};
+  }
+  const ValueType type =
+      vector.valid() && vector.id() < function_.nodes_.size()
+          ? function_.nodes_[vector.id()].type
+          : ValueType::kWord;
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  function_.nodes_.push_back(Node{Opcode::kVectorInsertLane, vector, lane_bits,
+                                  static_cast<Word>(lane), type});
+  return Value{id};
+}
+
+Value FunctionBuilder::vector_unary(VectorUnaryOperation operation,
+                                    Value vector) {
+  if (function_.nodes_.size() >= Value::kInvalidId) {
+    return {};
+  }
+  const ValueType type =
+      vector.valid() && vector.id() < function_.nodes_.size()
+          ? function_.nodes_[vector.id()].type
+          : ValueType::kWord;
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  function_.nodes_.push_back(Node{Opcode::kVectorUnary, vector, {},
+                                  static_cast<Word>(operation), type});
+  return Value{id};
+}
+
+Value FunctionBuilder::vector_binary(VectorBinaryOperation operation,
+                                     Value lhs, Value rhs) {
+  if (function_.nodes_.size() >= Value::kInvalidId) {
+    return {};
+  }
+  const ValueType type = lhs.valid() && lhs.id() < function_.nodes_.size()
+                             ? function_.nodes_[lhs.id()].type
+                             : ValueType::kWord;
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  function_.nodes_.push_back(Node{Opcode::kVectorBinary, lhs, rhs,
+                                  static_cast<Word>(operation), type});
+  return Value{id};
+}
+
+Value FunctionBuilder::vector_compare(VectorComparison comparison, Value lhs,
+                                      Value rhs) {
+  if (function_.nodes_.size() >= Value::kInvalidId) {
+    return {};
+  }
+  const ValueType input_type =
+      lhs.valid() && lhs.id() < function_.nodes_.size()
+          ? function_.nodes_[lhs.id()].type
+          : ValueType::kWord;
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  function_.nodes_.push_back(Node{Opcode::kVectorCompare, lhs, rhs,
+                                  static_cast<Word>(comparison),
+                                  vector_mask_type(input_type)});
+  return Value{id};
+}
+
+Value FunctionBuilder::vector_select(Value mask, Value true_value,
+                                     Value false_value) {
+  if (function_.nodes_.size() >= Value::kInvalidId ||
+      function_.vector_select_arguments_.size() >= Value::kInvalidId) {
+    return {};
+  }
+  const ValueType type =
+      true_value.valid() && true_value.id() < function_.nodes_.size()
+          ? function_.nodes_[true_value.id()].type
+          : ValueType::kWord;
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  const auto select_index = static_cast<std::uint32_t>(
+      function_.vector_select_arguments_.size());
+  function_.vector_select_arguments_.push_back(false_value);
+  function_.nodes_.push_back(Node{Opcode::kVectorSelect, mask, true_value,
+                                  static_cast<Word>(select_index), type});
+  return Value{id};
+}
+
+Value FunctionBuilder::vector_lane_sign_mask(Value vector) {
+  if (function_.nodes_.size() >= Value::kInvalidId) {
+    return {};
+  }
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  function_.nodes_.push_back(Node{Opcode::kVectorLaneSignMask, vector, {}, 0,
+                                  ValueType::kWord});
+  return Value{id};
+}
+
+Value FunctionBuilder::vector_shuffle(Value vector,
+                                      std::vector<std::uint8_t> lanes) {
+  if (function_.nodes_.size() >= Value::kInvalidId || lanes.size() > 16 ||
+      function_.vector_shuffles_.size() >= VectorShuffle::kInvalidIndex) {
+    return {};
+  }
+  VectorShuffle shuffle;
+  shuffle.lane_count = static_cast<std::uint8_t>(lanes.size());
+  std::copy(lanes.begin(), lanes.end(), shuffle.lanes.begin());
+  const auto shuffle_index =
+      static_cast<std::uint32_t>(function_.vector_shuffles_.size());
+  function_.vector_shuffles_.push_back(shuffle);
+  const ValueType type =
+      vector.valid() && vector.id() < function_.nodes_.size()
+          ? function_.nodes_[vector.id()].type
+          : ValueType::kWord;
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  function_.nodes_.push_back(Node{Opcode::kVectorShuffle, vector, {},
+                                  static_cast<Word>(shuffle_index), type});
+  return Value{id};
+}
+
+Value FunctionBuilder::vector_widen(Value vector, ValueType result_type,
+                                    VectorExtension extension,
+                                    VectorHalf half) {
+  if (function_.nodes_.size() >= Value::kInvalidId) {
+    return {};
+  }
+  const Word immediate = static_cast<Word>(extension) |
+                         (static_cast<Word>(half) << 8U);
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  function_.nodes_.push_back(
+      Node{Opcode::kVectorWiden, vector, {}, immediate, result_type});
+  return Value{id};
+}
+
 Status FunctionBuilder::set_return(Value value) {
   if (!value.valid() || value.id() >= function_.nodes_.size()) {
     return {StatusCode::kInvalidArgument, "return value is not in the function"};
+  }
+  if (!is_scalar_value_type(function_.nodes_[value.id()].type)) {
+    return {StatusCode::kInvalidArgument,
+            "the scalar invocation ABI cannot return a vector value"};
   }
   function_.return_value_ = value;
   return Status::ok_status();
