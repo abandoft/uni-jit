@@ -151,6 +151,119 @@ end)
 assert(not float_ok and tostring(float_message):find("not Float64"))
 checkpoint("float rejections")
 
+local float_loop_recurrence = function(start, limit, step, seed)
+  local value = seed
+  for index = start, limit, step do
+    value = (value + index) * 0.5 + 1.0
+  end
+  return value
+end
+local native_float_loop_recurrence =
+    unijit.compile_float(float_loop_recurrence)
+local float_loop_cases = {
+  {1.0, 20.0, 1.0, 0.25},
+  {20.0, 1.0, -1.0, -7.5},
+  {-4.5, 7.5, 0.25, 3.0},
+  {7.5, -4.5, -0.5, -3.0},
+  {7.0, -7.0, 0.5, 11.0},
+  {-7.0, 7.0, -0.5, 11.0},
+  {0.0, 10.0, math.huge, 2.0},
+  {10.0, 0.0, -math.huge, 2.0},
+}
+for _, values in ipairs(float_loop_cases) do
+  local expected = float_loop_recurrence(table.unpack(values))
+  local actual = native_float_loop_recurrence(table.unpack(values))
+  assert(math.type(actual) == "float" and actual == expected,
+         table.concat(values, ",") .. ": " .. tostring(actual) ..
+         " != " .. tostring(expected))
+end
+assert(native_float_loop_recurrence(1.0, 12000.0, 1.0, 0.25) ==
+       float_loop_recurrence(1.0, 12000.0, 1.0, 0.25))
+assert(unijit.wait(native_float_loop_recurrence, 5000))
+local float_loop_stats = unijit.stats(native_float_loop_recurrence)
+assert(float_loop_stats.loop)
+assert(float_loop_stats.active_tier == "optimized")
+assert(float_loop_stats.backedges >= 12000)
+assert(float_loop_stats.successful_compilations == 1)
+for _, values in ipairs(float_loop_cases) do
+  assert(native_float_loop_recurrence(table.unpack(values)) ==
+         float_loop_recurrence(table.unpack(values)))
+end
+
+local float_loop_visits = function(start, limit, step)
+  local visits = 0.0
+  for _ = start, limit, step do
+    visits = visits + 1.0
+  end
+  return visits
+end
+local native_float_loop_visits = unijit.compile_float(float_loop_visits)
+local nan = 0.0 / 0.0
+local float_loop_boundary_cases = {
+  {nan, 10.0, 1.0},
+  {1.0, nan, 1.0},
+  {1.0, 10.0, nan},
+  {10.0, 1.0, nan},
+  {math.huge, math.huge, -math.huge},
+  {-math.huge, -math.huge, math.huge},
+}
+for _, values in ipairs(float_loop_boundary_cases) do
+  assert(native_float_loop_visits(table.unpack(values)) ==
+         float_loop_visits(table.unpack(values)))
+end
+local float_zero_invocations =
+    unijit.stats(native_float_loop_visits).invocations
+for _, zero_step in ipairs({0.0, -0.0}) do
+  local original_ok, original_message =
+      pcall(float_loop_visits, 1.0, 10.0, zero_step)
+  local native_ok, native_message =
+      pcall(native_float_loop_visits, 1.0, 10.0, zero_step)
+  assert(not original_ok and
+         tostring(original_message):find("'for' step is zero"))
+  assert(not native_ok and
+         tostring(native_message):find("'for' step is zero"))
+end
+assert(unijit.stats(native_float_loop_visits).invocations ==
+       float_zero_invocations)
+
+local constant_zero_float_loop = function()
+  local visits = 0.0
+  for _ = 1.0, 3.0, 0.0 do
+    visits = visits + 1.0
+  end
+  return visits
+end
+local native_constant_zero_float_loop =
+    unijit.compile_float(constant_zero_float_loop)
+local constant_original_ok, constant_original_message =
+    pcall(constant_zero_float_loop)
+local constant_native_ok, constant_native_message =
+    pcall(native_constant_zero_float_loop)
+assert(not constant_original_ok and
+       tostring(constant_original_message):find("'for' step is zero"))
+assert(not constant_native_ok and
+       tostring(constant_native_message):find("'for' step is zero"))
+
+local computed_zero_float_loop = function(value)
+  local step = value - value
+  local visits = 0.0
+  for _ = 1.0, 3.0, step do
+    visits = visits + 1.0
+  end
+  return visits
+end
+local native_computed_zero_float_loop =
+    unijit.compile_float(computed_zero_float_loop)
+local computed_original_ok, computed_original_message =
+    pcall(computed_zero_float_loop, 7.5)
+local computed_native_ok, computed_native_message =
+    pcall(native_computed_zero_float_loop, 7.5)
+assert(not computed_original_ok and
+       tostring(computed_original_message):find("'for' step is zero"))
+assert(not computed_native_ok and
+       tostring(computed_native_message):find("'for' step is zero"))
+checkpoint("Float64 numeric loops")
+
 local immediate = compare(function(value)
   return value + 7
 end, {{0}, {-100}, {math.maxinteger}})

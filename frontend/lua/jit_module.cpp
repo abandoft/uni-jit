@@ -312,6 +312,13 @@ struct LoopHotnessPlan final {
            value == 0;
   }
 
+  bool has_zero_float_step(const Word *arguments,
+                           std::size_t argument_count) const noexcept {
+    Word bits = 0;
+    return is_loop && step.resolve(arguments, argument_count, &bits) &&
+           unijit::ir::unpack_float64(bits) == 0.0;
+  }
+
   bool is_loop{false};
   Operand start;
   Operand limit;
@@ -3299,9 +3306,15 @@ int invoke_compiled_function(lua_State *state) {
                                            compiled->parameter_count)) {
     return luaL_error(state, "'for' step is zero");
   }
+  if (compiled->mode == NumericMode::kFloat64 &&
+      compiled->loop_hotness.has_zero_float_step(
+          arguments.data(), compiled->parameter_count)) {
+    return luaL_error(state, "'for' step is zero");
+  }
 
   Word value = 0;
   bool invoked = false;
+  std::uint64_t measured_backedges = 0;
   char invocation_error[256] = {};
   {
     unijit::runtime::ExecutionContext execution_context;
@@ -3327,18 +3340,25 @@ int invoke_compiled_function(lua_State *state) {
       } else if (exit_opcode == OP_MOD || exit_opcode == OP_MODK) {
         std::snprintf(invocation_error, sizeof(invocation_error),
                       "attempt to perform 'n%%0'");
+      } else if (exit_opcode == OP_FORPREP) {
+        std::snprintf(invocation_error, sizeof(invocation_error),
+                      "'for' step is zero");
       } else {
         std::snprintf(invocation_error, sizeof(invocation_error),
                       "UniJIT invocation failed at site %zu: %s", site,
                       result.result.status.message().c_str());
       }
     }
+    measured_backedges = execution_context.safepoint_polls();
   }
   if (!invoked) {
     return luaL_error(state, "%s", invocation_error);
   }
-  compiled->code.record_backedges(compiled->loop_hotness.estimate(
-      arguments.data(), compiled->parameter_count));
+  compiled->code.record_backedges(
+      compiled->mode == NumericMode::kFloat64
+          ? measured_backedges
+          : compiled->loop_hotness.estimate(arguments.data(),
+                                            compiled->parameter_count));
   schedule_if_hot(*owned->state);
   if (compiled->mode == NumericMode::kInteger) {
     setivalue(s2v(state->top.p), static_cast<lua_Integer>(value));
