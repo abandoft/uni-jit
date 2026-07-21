@@ -70,8 +70,15 @@ Word word(std::uint64_t value) noexcept {
 
 void advance(std::array<Word, 2>* arguments, AccessKind kind) noexcept {
   if (kind == AccessKind::kFloat) {
-    const double current = unijit::ir::unpack_float64((*arguments)[1]);
-    (*arguments)[1] = unijit::ir::pack_float64(current * 1.0000001 + 0.000001);
+    constexpr std::uint64_t kBinary64ExponentOne =
+        UINT64_C(0x3FF0000000000000);
+    constexpr std::uint64_t kBinary64MantissaMask =
+        UINT64_C(0x000FFFFFFFFFFFFF);
+    const std::uint64_t next =
+        bits((*arguments)[1]) * UINT64_C(6364136223846793005) +
+        UINT64_C(1442695040888963407);
+    (*arguments)[1] = word(kBinary64ExponentOne |
+                           (next & kBinary64MantissaMask));
     return;
   }
   const std::uint64_t next =

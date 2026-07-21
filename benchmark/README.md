@@ -48,10 +48,12 @@ build/benchmark/benchmark/unijit_bounded_memory_benchmark \
 ```
 
 The v2 JSON records compilation latency, native code bytes, median latency,
-interpreter latency, speedup, and checksum for each path. Initial
-records establish architecture-specific baselines; a release-blocking floor is
-added only after the same boundary is stable on real AArch64, Ubuntu/Windows
-x86-64, and RISC-V 64 hosts.
+interpreter latency, speedup, and checksum for each path. Floating inputs are
+derived from deterministic finite binary64 bit patterns, preventing host FMA
+contraction from changing cross-architecture checksums. Initial records
+establish architecture-specific baselines; a release-blocking floor is added
+only after the same boundary is stable on real AArch64, Ubuntu/Windows x86-64,
+and RISC-V 64 hosts.
 
 ## Lua reference baseline
 
