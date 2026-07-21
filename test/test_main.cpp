@@ -4917,6 +4917,30 @@ void test_control_flow_split_register_classes() {
          "parallel copies must break one cycle in each register class");
 }
 
+void test_control_flow_float64_lhs_register_reuse() {
+  using unijit::ir::ControlFlowBuilder;
+  using unijit::ir::ValueType;
+
+  ControlFlowBuilder builder({ValueType::kFloat64, ValueType::kFloat64});
+  const Value lhs = builder.parameter(0);
+  const Value rhs = builder.parameter(1);
+  const Value sum = builder.float64_add(lhs, rhs);
+  const Value product = builder.float64_multiply(sum, rhs);
+  expect(builder.set_return(product).ok(),
+         "Float64 reuse fixture must return its recurrence");
+  const auto function = std::move(builder).build();
+  const auto allocation =
+      unijit::jit::detail::allocate_control_flow_registers(
+          function, 1, 2,
+          unijit::jit::detail::StackMapRequirements{});
+  expect(allocation.status.ok() &&
+             allocation.register_indices[lhs.id()] ==
+                 allocation.register_indices[sum.id()] &&
+             allocation.register_indices[sum.id()] ==
+                 allocation.register_indices[product.id()],
+         "dead Float64 left operands must donate their register to the result");
+}
+
 void test_control_flow_builder_rejects_edge_arity() {
   unijit::ir::ControlFlowBuilder builder(0);
   const unijit::ir::Block target = builder.create_block(1);
@@ -4989,6 +5013,7 @@ int main() {
   test_hotness_and_tiered_switching();
   test_compilation_scheduler();
   test_control_flow_split_register_classes();
+  test_control_flow_float64_lhs_register_reuse();
   test_control_flow_compact_spill_frame();
   test_control_flow_execution_budget();
   test_control_flow_builder_rejects_edge_arity();

@@ -387,6 +387,26 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
           ++active_iterator;
         }
       }
+      const ir::ControlNode& node = function.nodes()[value.id()];
+      const bool can_reuse_float_lhs =
+          node.opcode == ir::ControlOpcode::kFloatAdd ||
+          node.opcode == ir::ControlOpcode::kFloatSubtract ||
+          node.opcode == ir::ControlOpcode::kFloatMultiply ||
+          node.opcode == ir::ControlOpcode::kFloatDivide ||
+          node.opcode == ir::ControlOpcode::kFloatNegate;
+      if (can_reuse_float_lhs && node.lhs.valid() &&
+          owners[node.lhs.id()] == block_index) {
+        const std::size_t lhs_position = positions[node.lhs.id()];
+        const auto lhs_iterator =
+            std::find(active.begin(), active.end(), lhs_position);
+        if (lhs_iterator != active.end() && last_use[lhs_position] == index &&
+            register_indices[node.lhs.id()] != ValueLocation::kNone) {
+          register_indices[value.id()] = register_indices[node.lhs.id()];
+          active.erase(lhs_iterator);
+          active.push_back(index);
+          continue;
+        }
+      }
       if (free_registers.empty()) {
         continue;
       }
