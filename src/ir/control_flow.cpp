@@ -53,15 +53,17 @@ bool is_binary(ControlOpcode opcode) {
   case ControlOpcode::kNegate:
   case ControlOpcode::kBitwiseNot:
   case ControlOpcode::kByteSwap:
-    case ControlOpcode::kFloatNegate:
+  case ControlOpcode::kFloatNegate:
   case ControlOpcode::kCall:
   case ControlOpcode::kGuardWordNonzero:
   case ControlOpcode::kGuardFloatNonzero:
   case ControlOpcode::kSafepoint:
   case ControlOpcode::kLoadWord:
   case ControlOpcode::kStoreWord:
-    case ControlOpcode::kLoadFloat:
-    case ControlOpcode::kStoreFloat:
+  case ControlOpcode::kLoadFloat:
+  case ControlOpcode::kStoreFloat:
+  case ControlOpcode::kLoadFrame:
+  case ControlOpcode::kStoreFrame:
     return false;
   }
   return false;
@@ -94,6 +96,15 @@ bool is_memory_load(ControlOpcode opcode) {
 bool is_memory_store(ControlOpcode opcode) {
   return opcode == ControlOpcode::kStoreWord ||
          opcode == ControlOpcode::kStoreFloat;
+}
+
+bool is_frame(ControlOpcode opcode) {
+  return opcode == ControlOpcode::kLoadFrame ||
+         opcode == ControlOpcode::kStoreFrame;
+}
+
+bool valid_value_type(ValueType type) {
+  return type == ValueType::kWord || type == ValueType::kFloat64;
 }
 
 bool valid_memory_width(MemoryWidth width) {
@@ -132,6 +143,15 @@ Status verify_impl(const ControlFlowFunction &function) {
     return invalid_control_flow(
         0, "memory region count exceeds the CFG index range");
   }
+  if (function.frame_slots().size() > FrameSlot::kInvalidId) {
+    return invalid_control_flow(
+        0, "frame slot count exceeds the CFG index range");
+  }
+  for (const FrameSlotDescriptor &slot : function.frame_slots()) {
+    if (!valid_value_type(slot.type)) {
+      return invalid_control_flow(0, "CFG frame slot has an invalid type");
+    }
+  }
 
   const std::size_t no_owner = blocks.size();
   std::vector<std::size_t> owner(nodes.size(), no_owner);
@@ -162,6 +182,10 @@ Status verify_impl(const ControlFlowFunction &function) {
           node.memory_access != MemoryAccessDescriptor::kInvalidIndex) {
         return invalid_control_flow(
             value.id(), "non-memory CFG node has a memory descriptor");
+      }
+      if (!is_frame(node.opcode) && node.frame_slot != FrameSlot::kInvalidId) {
+        return invalid_control_flow(
+            value.id(), "non-frame CFG node has a frame slot");
       }
       if (instruction_index < block.parameters.size()) {
         if (block.parameters[instruction_index] != value) {
@@ -384,6 +408,31 @@ Status verify_impl(const ControlFlowFunction &function) {
             return invalid_control_flow(
                 value.id(), "control-flow runtime exit site is duplicated");
           }
+        }
+        continue;
+      }
+      if (is_frame(node.opcode)) {
+        if (node.frame_slot >= function.frame_slots().size() ||
+            node.immediate != 0 || node.rhs.valid() ||
+            node.argument_begin != 0 || node.argument_count != 0) {
+          return invalid_control_flow(value.id(),
+                                      "CFG frame operation is malformed");
+        }
+        const ValueType slot_type =
+            function.frame_slots()[node.frame_slot].type;
+        if (node.type != slot_type) {
+          return invalid_control_flow(value.id(),
+                                      "CFG frame operation has an invalid type");
+        }
+        if (node.opcode == ControlOpcode::kLoadFrame) {
+          if (node.lhs.valid()) {
+            return invalid_control_flow(value.id(),
+                                        "CFG frame load has a stored value");
+          }
+        } else if (!available(node.lhs, block_index, instruction_index) ||
+                   function.value_type(node.lhs) != slot_type) {
+          return invalid_control_flow(value.id(),
+                                      "CFG frame store value is malformed");
         }
         continue;
       }
@@ -1002,6 +1051,39 @@ Value ControlFlowBuilder::store_float(Value byte_offset, Value value,
   return result;
 }
 
+FrameSlot ControlFlowBuilder::create_frame_slot(ValueType type,
+                                                bool sensitive) {
+  if (function_.frame_slots_.size() >= FrameSlot::kInvalidId) {
+    return {};
+  }
+  const auto id = static_cast<std::uint32_t>(function_.frame_slots_.size());
+  function_.frame_slots_.push_back(FrameSlotDescriptor{type, sensitive});
+  return FrameSlot{id};
+}
+
+Value ControlFlowBuilder::load_frame(FrameSlot slot) {
+  const ValueType type = slot.valid() && slot.id() < function_.frame_slots_.size()
+                             ? function_.frame_slots_[slot.id()].type
+                             : ValueType::kWord;
+  ControlNode node;
+  node.opcode = ControlOpcode::kLoadFrame;
+  node.type = type;
+  node.frame_slot = slot.id();
+  return append_node(node);
+}
+
+Value ControlFlowBuilder::store_frame(FrameSlot slot, Value value) {
+  const ValueType type = slot.valid() && slot.id() < function_.frame_slots_.size()
+                             ? function_.frame_slots_[slot.id()].type
+                             : ValueType::kWord;
+  ControlNode node;
+  node.opcode = ControlOpcode::kStoreFrame;
+  node.lhs = value;
+  node.type = type;
+  node.frame_slot = slot.id();
+  return append_node(node);
+}
+
 Status
 ControlFlowBuilder::validate_edge(Block target,
                                   const std::vector<Value> &arguments) const {
@@ -1126,6 +1208,7 @@ ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
 
   try {
     std::vector<Word> values(function.nodes().size(), 0);
+    std::vector<Word> frame_values(function.frame_slots().size(), 0);
     std::vector<Word> helper_arguments;
     const BasicBlock &entry = function.blocks()[function.entry_block().id()];
     for (std::size_t index = 0; index < entry.parameters.size(); ++index) {
@@ -1221,6 +1304,11 @@ ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
             return {result.status, 0};
           }
           values[value.id()] = result.value;
+        } else if (node.opcode == ControlOpcode::kLoadFrame) {
+          values[value.id()] = frame_values[node.frame_slot];
+        } else if (node.opcode == ControlOpcode::kStoreFrame) {
+          values[value.id()] = values[node.lhs.id()];
+          frame_values[node.frame_slot] = values[value.id()];
         } else if (node.opcode == ControlOpcode::kByteSwap) {
           values[value.id()] = byte_swap_word(
               values[node.lhs.id()], static_cast<MemoryWidth>(node.immediate));

@@ -418,6 +418,48 @@ Value FunctionBuilder::store_float(Value byte_offset, Value value,
   return Value{id};
 }
 
+FrameSlot FunctionBuilder::create_frame_slot(ValueType type, bool sensitive) {
+  if (function_.frame_slots_.size() >= FrameSlot::kInvalidId) {
+    return {};
+  }
+  const auto id = static_cast<std::uint32_t>(function_.frame_slots_.size());
+  function_.frame_slots_.push_back(FrameSlotDescriptor{type, sensitive});
+  return FrameSlot{id};
+}
+
+Value FunctionBuilder::load_frame(FrameSlot slot) {
+  if (function_.nodes_.size() >= Value::kInvalidId) {
+    return {};
+  }
+  const ValueType type = slot.valid() && slot.id() < function_.frame_slots_.size()
+                             ? function_.frame_slots_[slot.id()].type
+                             : ValueType::kWord;
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  Node node;
+  node.opcode = Opcode::kLoadFrame;
+  node.type = type;
+  node.frame_slot = slot.id();
+  function_.nodes_.push_back(node);
+  return Value{id};
+}
+
+Value FunctionBuilder::store_frame(FrameSlot slot, Value value) {
+  if (function_.nodes_.size() >= Value::kInvalidId) {
+    return {};
+  }
+  const ValueType type = slot.valid() && slot.id() < function_.frame_slots_.size()
+                             ? function_.frame_slots_[slot.id()].type
+                             : ValueType::kWord;
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  Node node;
+  node.opcode = Opcode::kStoreFrame;
+  node.lhs = value;
+  node.type = type;
+  node.frame_slot = slot.id();
+  function_.nodes_.push_back(node);
+  return Value{id};
+}
+
 Status FunctionBuilder::set_return(Value value) {
   if (!value.valid() || value.id() >= function_.nodes_.size()) {
     return {StatusCode::kInvalidArgument, "return value is not in the function"};

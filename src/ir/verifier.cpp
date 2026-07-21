@@ -63,6 +63,14 @@ bool is_memory_store(Opcode opcode) {
   return opcode == Opcode::kStoreWord || opcode == Opcode::kStoreFloat;
 }
 
+bool is_frame(Opcode opcode) {
+  return opcode == Opcode::kLoadFrame || opcode == Opcode::kStoreFrame;
+}
+
+bool valid_value_type(ValueType type) {
+  return type == ValueType::kWord || type == ValueType::kFloat64;
+}
+
 bool valid_memory_width(MemoryWidth width) {
   return width == MemoryWidth::k8 || width == MemoryWidth::k16 ||
          width == MemoryWidth::k32 || width == MemoryWidth::k64;
@@ -93,6 +101,15 @@ Status verify(const Function& function) {
     return {StatusCode::kInvalidIr,
             "memory region count exceeds the IR index range"};
   }
+  if (function.frame_slots().size() > FrameSlot::kInvalidId) {
+    return {StatusCode::kInvalidIr,
+            "frame slot count exceeds the IR index range"};
+  }
+  for (const FrameSlotDescriptor& slot : function.frame_slots()) {
+    if (!valid_value_type(slot.type)) {
+      return {StatusCode::kInvalidIr, "frame slot has an invalid value type"};
+    }
+  }
 
   std::size_t expected_call_argument = 0;
   std::size_t expected_memory_access = 0;
@@ -102,6 +119,9 @@ Status verify(const Function& function) {
         node.memory_access != MemoryAccessDescriptor::kInvalidIndex) {
       return invalid_node(index,
                           "non-memory node has a memory descriptor");
+    }
+    if (!is_frame(node.opcode) && node.frame_slot != FrameSlot::kInvalidId) {
+      return invalid_node(index, "non-frame node has a frame slot");
     }
     if (index < function.parameter_count()) {
       if (node.opcode != Opcode::kParameter ||
@@ -183,6 +203,26 @@ Status verify(const Function& function) {
             nodes[previous].immediate == node.immediate) {
           return invalid_node(index, "runtime exit site is duplicated");
         }
+      }
+      continue;
+    }
+    if (is_frame(node.opcode)) {
+      if (node.frame_slot >= function.frame_slots().size() ||
+          node.immediate != 0 || node.rhs.valid() ||
+          node.argument_begin != 0 || node.argument_count != 0) {
+        return invalid_node(index, "frame operation is malformed");
+      }
+      const ValueType slot_type = function.frame_slots()[node.frame_slot].type;
+      if (node.type != slot_type) {
+        return invalid_node(index, "frame operation has an invalid type");
+      }
+      if (node.opcode == Opcode::kLoadFrame) {
+        if (node.lhs.valid()) {
+          return invalid_node(index, "frame load has a stored value");
+        }
+      } else if (!node.lhs.valid() || node.lhs.id() >= index ||
+                 nodes[node.lhs.id()].type != slot_type) {
+        return invalid_node(index, "frame store value is malformed");
       }
       continue;
     }

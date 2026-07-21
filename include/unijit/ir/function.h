@@ -84,11 +84,41 @@ enum class Opcode : std::uint8_t {
   kStoreWord,
   kLoadFloat,
   kStoreFloat,
+  kLoadFrame,
+  kStoreFrame,
 };
 
 enum class ValueType : std::uint8_t {
   kWord,
   kFloat64,
+};
+
+class FrameSlot final {
+ public:
+  static constexpr std::uint32_t kInvalidId =
+      std::numeric_limits<std::uint32_t>::max();
+
+  constexpr FrameSlot() noexcept = default;
+  explicit constexpr FrameSlot(std::uint32_t id) noexcept : id_(id) {}
+
+  constexpr bool valid() const noexcept { return id_ != kInvalidId; }
+  constexpr std::uint32_t id() const noexcept { return id_; }
+
+  friend constexpr bool operator==(FrameSlot lhs, FrameSlot rhs) noexcept {
+    return lhs.id_ == rhs.id_;
+  }
+
+  friend constexpr bool operator!=(FrameSlot lhs, FrameSlot rhs) noexcept {
+    return !(lhs == rhs);
+  }
+
+ private:
+  std::uint32_t id_{kInvalidId};
+};
+
+struct FrameSlotDescriptor final {
+  ValueType type{ValueType::kWord};
+  bool sensitive{false};
 };
 
 struct Node final {
@@ -100,6 +130,7 @@ struct Node final {
   std::uint32_t argument_begin{0};
   std::uint32_t argument_count{0};
   std::uint32_t memory_access{MemoryAccessDescriptor::kInvalidIndex};
+  std::uint32_t frame_slot{FrameSlot::kInvalidId};
 };
 
 class Function final {
@@ -120,6 +151,9 @@ class Function final {
   }
   const std::vector<MemoryAccessDescriptor>& memory_accesses() const noexcept {
     return memory_accesses_;
+  }
+  const std::vector<FrameSlotDescriptor>& frame_slots() const noexcept {
+    return frame_slots_;
   }
   Value return_value() const noexcept { return return_value_; }
   ValueType return_type() const noexcept {
@@ -142,6 +176,7 @@ class Function final {
   std::vector<Value> call_arguments_;
   std::size_t memory_region_count_{0};
   std::vector<MemoryAccessDescriptor> memory_accesses_;
+  std::vector<FrameSlotDescriptor> frame_slots_;
   Value return_value_;
 };
 
@@ -203,6 +238,12 @@ class FunctionBuilder final {
                    std::size_t site);
   Value store_float(Value byte_offset, Value value,
                     MemoryAccessDescriptor access, std::size_t site);
+  // Frame slots are fixed-size, zero-initialized for each invocation, and
+  // remain live for the complete generated frame. Sensitive slots are cleared
+  // on every native return path.
+  FrameSlot create_frame_slot(ValueType type, bool sensitive = false);
+  Value load_frame(FrameSlot slot);
+  Value store_frame(FrameSlot slot, Value value);
   Status set_return(Value value);
 
   Function build() && noexcept;

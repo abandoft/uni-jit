@@ -72,6 +72,8 @@ enum class ControlOpcode : std::uint8_t {
   kStoreWord,
   kLoadFloat,
   kStoreFloat,
+  kLoadFrame,
+  kStoreFrame,
 };
 
 struct ControlNode final {
@@ -83,6 +85,7 @@ struct ControlNode final {
   std::uint32_t argument_begin{0};
   std::uint32_t argument_count{0};
   std::uint32_t memory_access{MemoryAccessDescriptor::kInvalidIndex};
+  std::uint32_t frame_slot{FrameSlot::kInvalidId};
 };
 
 struct ControlEdge final {
@@ -143,6 +146,9 @@ public:
   const std::vector<MemoryAccessDescriptor> &memory_accesses() const noexcept {
     return memory_accesses_;
   }
+  const std::vector<FrameSlotDescriptor> &frame_slots() const noexcept {
+    return frame_slots_;
+  }
   const std::vector<BasicBlock> &blocks() const noexcept { return blocks_; }
 
 private:
@@ -155,6 +161,7 @@ private:
   std::vector<Value> call_arguments_;
   std::size_t memory_region_count_{0};
   std::vector<MemoryAccessDescriptor> memory_accesses_;
+  std::vector<FrameSlotDescriptor> frame_slots_;
   std::vector<BasicBlock> blocks_;
 };
 
@@ -217,6 +224,9 @@ public:
                    std::size_t site);
   Value store_float(Value byte_offset, Value value,
                    MemoryAccessDescriptor access, std::size_t site);
+  FrameSlot create_frame_slot(ValueType type, bool sensitive = false);
+  Value load_frame(FrameSlot slot);
+  Value store_frame(FrameSlot slot, Value value);
 
   Status set_return(Value value);
   Status jump(Block target, std::vector<Value> arguments);

@@ -98,6 +98,8 @@ Word evaluate_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
     case Opcode::kStoreWord:
     case Opcode::kLoadFloat:
     case Opcode::kStoreFloat:
+    case Opcode::kLoadFrame:
+    case Opcode::kStoreFrame:
       return 0;
   }
   return 0;
@@ -129,6 +131,7 @@ EvaluationResult Interpreter::evaluate(const Function& function,
 
   try {
     std::vector<Word> values(function.nodes().size());
+    std::vector<Word> frame_values(function.frame_slots().size(), 0);
     std::vector<Word> helper_arguments;
     for (std::size_t index = 0; index < function.nodes().size(); ++index) {
       const Node& node = function.nodes()[index];
@@ -226,6 +229,13 @@ EvaluationResult Interpreter::evaluate(const Function& function,
           values[index] = result.value;
           break;
         }
+        case Opcode::kLoadFrame:
+          values[index] = frame_values[node.frame_slot];
+          break;
+        case Opcode::kStoreFrame:
+          values[index] = values[node.lhs.id()];
+          frame_values[node.frame_slot] = values[index];
+          break;
         case Opcode::kAdd:
         case Opcode::kSubtract:
         case Opcode::kMultiply:
