@@ -1,4 +1,5 @@
 #include <array>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <utility>
@@ -173,6 +174,28 @@ int main() {
       comparison_result.value != 10) {
     return 43;
   }
+  unijit::ir::FunctionBuilder negate_builder(
+      std::vector<unijit::ir::ValueType>{unijit::ir::ValueType::kFloat64});
+  if (!negate_builder
+           .set_return(negate_builder.float64_negate(
+               negate_builder.parameter(0)))
+           .ok()) {
+    return 46;
+  }
+  auto negate_compilation = unijit::jit::Compiler::compile(
+      std::move(negate_builder).build());
+  const std::uint64_t positive_nan = UINT64_C(0x7ff8000000001234);
+  const unijit::ir::Word negate_argument =
+      static_cast<unijit::ir::Word>(positive_nan);
+  const auto negate_result =
+      negate_compilation.ok()
+          ? negate_compilation.function->invoke(&negate_argument, 1)
+          : unijit::ir::EvaluationResult{};
+  if (!negate_compilation.ok() || !negate_result.ok() ||
+      static_cast<std::uint64_t>(negate_result.value) !=
+          (positive_nan ^ (UINT64_C(1) << 63U))) {
+    return 47;
+  }
   unijit::jit::CompilationLimits package_limits;
   package_limits.maximum_ir_nodes = 2;
   const auto limited_compilation = unijit::jit::Compiler::compile(
@@ -253,6 +276,25 @@ int main() {
   if (!cfg_comparison.ok() || !cfg_comparison_result.ok() ||
       cfg_comparison_result.value != 1) {
     return 45;
+  }
+  unijit::ir::ControlFlowBuilder cfg_negate_builder(
+      {unijit::ir::ValueType::kFloat64});
+  if (!cfg_negate_builder
+           .set_return(cfg_negate_builder.float64_negate(
+               cfg_negate_builder.parameter(0)))
+           .ok()) {
+    return 48;
+  }
+  auto cfg_negate = unijit::jit::Compiler::compile(
+      std::move(cfg_negate_builder).build());
+  const unijit::ir::Word positive_zero = unijit::ir::pack_float64(0.0);
+  const auto cfg_negate_result =
+      cfg_negate.ok()
+          ? cfg_negate.function->invoke(&positive_zero, 1)
+          : unijit::ir::EvaluationResult{};
+  if (!cfg_negate.ok() || !cfg_negate_result.ok() ||
+      cfg_negate_result.value != unijit::ir::pack_float64(-0.0)) {
+    return 49;
   }
   unijit::ir::FunctionBuilder safepoint_builder(0);
   if (!safepoint_builder.safepoint(23).valid() ||

@@ -153,7 +153,7 @@ bool fuzz_float64_function(std::mt19937_64* random, const Options& options,
   for (std::size_t index = 0; index < options.nodes; ++index) {
     const Value lhs = values[(*random)() % values.size()];
     const Value rhs = builder.float64_constant(random_constant_double(random));
-    switch ((*random)() % 4ULL) {
+    switch ((*random)() % 5ULL) {
       case 0:
         values.push_back(builder.float64_add(lhs, rhs));
         break;
@@ -163,8 +163,11 @@ bool fuzz_float64_function(std::mt19937_64* random, const Options& options,
       case 2:
         values.push_back(builder.float64_multiply(lhs, rhs));
         break;
-      default:
+      case 3:
         values.push_back(builder.float64_divide(lhs, rhs));
+        break;
+      default:
+        values.push_back(builder.float64_negate(lhs));
         break;
     }
   }
@@ -215,10 +218,16 @@ std::vector<Value> make_cfg_arm(ControlFlowBuilder* builder,
     if (float64) {
       const Value constant =
           builder->float64_constant(random_constant_double(random));
-      if (((*random)() & 1ULL) == 0) {
+      switch ((*random)() % 3ULL) {
+      case 0:
         result.push_back(builder->float64_add(source, constant));
-      } else {
+        break;
+      case 1:
         result.push_back(builder->float64_multiply(source, constant));
+        break;
+      default:
+        result.push_back(builder->float64_negate(source));
+        break;
       }
     } else {
       const Word constant_value =
