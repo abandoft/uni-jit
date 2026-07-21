@@ -70,6 +70,9 @@ and the adapter returns an actual JavaScript Boolean in both baseline and
 optimized tiers. Because every accepted operand is already a Number, loose and
 strict equality have the same numeric result: signed zeroes compare equal,
 equality is false for NaN, and inequality is true for NaN.
+Unary `-` lowers to the core sign-bit negation operation in both straight-line
+and counted-loop translation, so `-(+0)` is exactly `-0`, `-(-0)` is exactly
+`+0`, and NaN payload bits are not canonicalized by subtraction arithmetic.
 
 Arrow functions, closures, default or rest parameters, property access, calls,
 statements, chained comparisons, and coercive operands are rejected with a

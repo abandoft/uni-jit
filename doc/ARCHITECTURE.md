@@ -60,6 +60,11 @@ language Boolean values without routing through a runtime helper.
 Float64 equality and inequality additionally preserve numeric signed-zero
 equality and make every NaN unequal, matching the specialized Number/float
 contracts of QuickJS and PocketPy without comparing raw value bits.
+Float64 negation is a typed unary operation that toggles only the IEEE-754 sign
+bit. It therefore reverses both signed zeroes and infinities while retaining
+every NaN payload bit; the optimizer folds the same bit operation, and each
+native backend uses an architecture-specific sign operation rather than
+lowering negation as subtraction from positive zero.
 
 Effectful runtime helpers use one portable signature: a pointer to a flat
 value-bits argument area plus its element count, returning one value-bits word.
@@ -121,8 +126,8 @@ fuzzed infinite loops fail deterministically.
 
 CFG signatures, constants, instructions, and block parameters carry the same
 Word/Float64 types as straight-line SSA. Edges must preserve each destination
-parameter's type, and Float64 addition, subtraction, multiplication, and
-division retain exact value bits through loop backedges. Ordered Float64
+parameter's type, and Float64 addition, subtraction, negation, multiplication,
+and division retain exact value bits through loop backedges. Ordered Float64
 comparisons return false for NaN inputs and produce Word conditions suitable
 for CFG branches. Equality is false and inequality is true for unordered
 operands, while both signed zeroes compare equal. Effectful CFG Float64

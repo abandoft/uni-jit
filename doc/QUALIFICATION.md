@@ -13,8 +13,8 @@ result bit-for-bit with the matching reference interpreter. Each corpus covers:
 
 - straight-line Word SSA with random constants, addition, subtraction,
   multiplication, spills, and optimizer input shapes;
-- straight-line Float64 SSA with bounded finite inputs and all four arithmetic
-  operations;
+- straight-line Float64 SSA with bounded finite inputs, all four binary
+  arithmetic operations, and exact unary negation;
 - typed Word and Float64 CFGs with diamonds, 1 to 12 loop-carried state values,
   permuted and duplicated edge sources, ordered comparisons, backedges, and
   mandatory safepoints.
@@ -102,6 +102,15 @@ exercises `==` and `!=`, and both adapters execute equality-controlled loops
 through direct optimized translation and their stock-runtime baseline path.
 The deterministic CFG generator varies all four core predicates, while the
 installed-package consumer compiles equality through both public IR builders.
+
+Float64 negation qualification passes positive and negative zero, both
+infinities, and custom NaN payloads through the straight-line and CFG
+interpreters and native compilers, and requires constant folding to toggle only
+the sign bit. QuickJS and PocketPy repeat exact signed-zero and NaN checks in
+baseline and optimized straight-line and counted-loop translation; stock
+runtime callables cross asynchronous tier promotion and retain signed zero at
+the language boundary. The deterministic generator emits unary negation in
+both IR forms, and the installed-package consumer builds both public APIs.
 
 Strided-loop coverage executes QuickJS prefix/postfix decrement and `+=`/`-=`
 updates plus PocketPy one-, two-, and three-argument `range` forms. Positive

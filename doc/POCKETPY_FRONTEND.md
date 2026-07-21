@@ -83,6 +83,10 @@ comparison or numeric `==`/`!=` comparison. Arithmetic lowers to Float64 SSA;
 comparisons return an actual PocketPy `bool` from both baseline and optimized
 native tiers, with NaN remaining unequal and both signed zeroes comparing
 equal.
+Unary `-` lowers to the core sign-bit negation operation in both straight-line
+and counted-loop translation. The native result therefore reverses signed zero
+and infinity while retaining the exact NaN payload instead of evaluating
+positive-zero subtraction.
 
 Closures, annotations, default or variadic parameters, assignments, multiple
 statements, calls, attribute access, chained comparisons, and non-ASCII
