@@ -12,6 +12,7 @@
 #include "unijit/jit/compiler.h"
 #include "unijit/jit/tiering.h"
 #include "unijit/runtime/deoptimization.h"
+#include "unijit/runtime/execution_context.h"
 #include "unijit/runtime/materialization.h"
 
 namespace {
@@ -821,6 +822,57 @@ int main() {
   if (!vector_compilation.ok() || !vector_result.ok() ||
       vector_result.value != 4) {
     return 71;
+  }
+
+  unijit::ir::Vector128 vector_memory_bits;
+  for (std::size_t index = 0; index < vector_memory_bits.bytes.size();
+       ++index) {
+    vector_memory_bits.bytes[index] = static_cast<std::uint8_t>(index + 1U);
+  }
+  unijit::ir::MemoryAccessDescriptor vector_memory_access;
+  vector_memory_access.width = unijit::ir::MemoryWidth::k128;
+  vector_memory_access.alignment = 1;
+  vector_memory_access.byte_order = unijit::ir::MemoryByteOrder::kBigEndian;
+  unijit::ir::FunctionBuilder vector_memory_builder(0, 1);
+  const auto vector_memory_constant = vector_memory_builder.vector_constant(
+      unijit::ir::ValueType::kI32x4, vector_memory_bits);
+  vector_memory_builder.store_vector(vector_memory_builder.constant(3),
+                                     vector_memory_constant,
+                                     vector_memory_access, 72);
+  const auto vector_memory_loaded = vector_memory_builder.load_vector(
+      vector_memory_builder.constant(3), unijit::ir::ValueType::kI32x4,
+      vector_memory_access, 73);
+  if (!vector_memory_builder
+           .set_return(vector_memory_builder.vector_extract_lane(
+               vector_memory_loaded, 2))
+           .ok()) {
+    return 72;
+  }
+  auto vector_memory_compilation =
+      unijit::jit::Compiler::compile(std::move(vector_memory_builder).build());
+  alignas(16) std::array<std::uint8_t, 32> vector_memory_bytes{};
+  vector_memory_bytes.fill(0xCC);
+  unijit::runtime::MemoryRegion vector_memory_region{
+      vector_memory_bytes.data(), vector_memory_bytes.size(), true};
+  unijit::runtime::ExecutionContext vector_memory_context;
+  if (!vector_memory_context.bind_memory_regions(&vector_memory_region, 1)
+           .ok()) {
+    return 73;
+  }
+  const auto vector_memory_result =
+      vector_memory_compilation.ok()
+          ? vector_memory_compilation.function->invoke(nullptr, 0,
+                                                       &vector_memory_context)
+          : unijit::ir::EvaluationResult{};
+  const auto vector_memory_expected = unijit::ir::vector_extract_lane_bits(
+      vector_memory_bits, unijit::ir::ValueType::kI32x4, 2, false);
+  if (!vector_memory_compilation.ok() || !vector_memory_result.ok() ||
+      vector_memory_result.value != vector_memory_expected ||
+      vector_memory_bytes[3] != 4 || vector_memory_bytes[4] != 3 ||
+      vector_memory_bytes[5] != 2 || vector_memory_bytes[6] != 1 ||
+      vector_memory_bytes[15] != 16 || vector_memory_bytes[16] != 15 ||
+      vector_memory_bytes[17] != 14 || vector_memory_bytes[18] != 13) {
+    return 74;
   }
   return 0;
 }

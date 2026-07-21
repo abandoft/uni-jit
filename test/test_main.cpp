@@ -835,6 +835,289 @@ void test_native_bounded_memory_matrix() {
   }
 }
 
+void test_bounded_vector_memory_matrix() {
+  using unijit::ir::ControlFlowBuilder;
+  using unijit::ir::MemoryAccessDescriptor;
+  using unijit::ir::MemoryByteOrder;
+  using unijit::ir::MemoryWidth;
+  using unijit::ir::ValueType;
+  using unijit::ir::Vector128;
+  using unijit::runtime::ExecutionContext;
+  using unijit::runtime::MemoryRegion;
+
+  const std::array<ValueType, 6> types = {ValueType::kI8x16, ValueType::kI16x8,
+                                          ValueType::kI32x4, ValueType::kI64x2,
+                                          ValueType::kF32x4, ValueType::kF64x2};
+  struct AccessCase final {
+    MemoryByteOrder byte_order;
+    std::uint8_t alignment;
+    Word offset;
+    const char *name;
+  };
+  const std::array<AccessCase, 3> access_cases = {{
+      {MemoryByteOrder::kNative, 16, 0, "aligned-native"},
+      {MemoryByteOrder::kLittleEndian, 1, 3, "unaligned-little"},
+      {MemoryByteOrder::kBigEndian, 1, 5, "unaligned-big"},
+  }};
+  const std::uint16_t endian_probe = 1;
+  std::uint8_t first_host_byte = 0;
+  std::memcpy(&first_host_byte, &endian_probe, sizeof(first_host_byte));
+  const bool host_is_little_endian = first_host_byte == 1;
+
+  std::size_t program_index = 0;
+  for (const ValueType type : types) {
+    Vector128 bits;
+    for (std::size_t byte = 0; byte < bits.bytes.size(); ++byte) {
+      bits.bytes[byte] = static_cast<std::uint8_t>(
+          1U + byte + program_index * bits.bytes.size());
+    }
+    for (const AccessCase &access_case : access_cases) {
+      const std::string label = std::string(access_case.name) + "-type-" +
+                                std::to_string(static_cast<int>(type));
+      MemoryAccessDescriptor access;
+      access.width = MemoryWidth::k128;
+      access.byte_order = access_case.byte_order;
+      access.alignment = access_case.alignment;
+      const std::size_t first_site = 3000 + program_index * 3;
+
+      FunctionBuilder builder(0, 1);
+      const Value constant = builder.vector_constant(type, bits);
+      const Value stored = builder.store_vector(
+          builder.constant(access_case.offset), constant, access, first_site);
+      const Value loaded = builder.load_vector(
+          builder.constant(access_case.offset), type, access, first_site + 1);
+      builder.store_vector(builder.constant(32), loaded, access,
+                           first_site + 2);
+      const std::size_t last_lane = unijit::ir::vector_lane_count(type) - 1U;
+      expect(
+          builder
+              .set_return(builder.vector_extract_lane(stored, last_lane, false))
+              .ok(),
+          label + " fixture must return the vector store result");
+      const Function function = std::move(builder).build();
+      expect(unijit::ir::verify(function).ok(),
+             label + " vector memory fixture must verify");
+
+      alignas(16) std::array<std::uint8_t, 64> expected_bytes{};
+      expected_bytes.fill(0xCC);
+      const bool little =
+          access_case.byte_order == MemoryByteOrder::kLittleEndian ||
+          (access_case.byte_order == MemoryByteOrder::kNative &&
+           host_is_little_endian);
+      const std::size_t lane_bytes = unijit::ir::vector_lane_bits(type) / 8U;
+      for (const std::size_t destination :
+           {static_cast<std::size_t>(access_case.offset), std::size_t{32}}) {
+        for (std::size_t lane = 0; lane < unijit::ir::vector_lane_count(type);
+             ++lane) {
+          for (std::size_t byte = 0; byte < lane_bytes; ++byte) {
+            const std::size_t logical_byte =
+                lane * lane_bytes + (little ? byte : lane_bytes - byte - 1U);
+            expected_bytes[destination + lane * lane_bytes + byte] =
+                bits.bytes[logical_byte];
+          }
+        }
+      }
+      const Word expected_result =
+          unijit::ir::vector_extract_lane_bits(bits, type, last_lane, false);
+
+      alignas(16) std::array<std::uint8_t, 64> reference_bytes{};
+      alignas(16) std::array<std::uint8_t, 64> optimized_bytes{};
+      alignas(16) std::array<std::uint8_t, 64> native_bytes{};
+      reference_bytes.fill(0xCC);
+      optimized_bytes.fill(0xCC);
+      native_bytes.fill(0xCC);
+      MemoryRegion reference_region{reference_bytes.data(),
+                                    reference_bytes.size(), true};
+      MemoryRegion optimized_region{optimized_bytes.data(),
+                                    optimized_bytes.size(), true};
+      MemoryRegion native_region{native_bytes.data(), native_bytes.size(),
+                                 true};
+      ExecutionContext reference_context;
+      ExecutionContext optimized_context;
+      ExecutionContext native_context;
+      expect(reference_context.bind_memory_regions(&reference_region, 1).ok() &&
+                 optimized_context.bind_memory_regions(&optimized_region, 1)
+                     .ok() &&
+                 native_context.bind_memory_regions(&native_region, 1).ok(),
+             label + " contexts must bind their vector regions");
+
+      const auto reference =
+          Interpreter::evaluate(function, nullptr, 0, &reference_context);
+      const auto optimized = unijit::ir::Optimizer::run(function);
+      const auto optimized_result =
+          optimized.ok() ? Interpreter::evaluate(optimized.function, nullptr, 0,
+                                                 &optimized_context)
+                         : unijit::ir::EvaluationResult{optimized.status, 0};
+      unijit::jit::CompilationOptions baseline;
+      baseline.optimization_level = unijit::jit::OptimizationLevel::kBaseline;
+      const auto compilation = Compiler::compile(function, baseline);
+      const auto native =
+          compilation.ok()
+              ? compilation.function->invoke(nullptr, 0, &native_context)
+              : unijit::ir::EvaluationResult{compilation.status, 0};
+      expect(reference.ok() && reference.value == expected_result &&
+                 optimized.ok() && optimized_result.ok() &&
+                 optimized_result.value == expected_result &&
+                 optimized.function.memory_accesses().size() == 3 &&
+                 compilation.ok() && native.ok() &&
+                 native.value == expected_result &&
+                 reference_bytes == expected_bytes &&
+                 optimized_bytes == expected_bytes &&
+                 native_bytes == expected_bytes &&
+                 compilation.function->stack_map(first_site) != nullptr &&
+                 compilation.function->stack_map(first_site + 1) != nullptr &&
+                 compilation.function->stack_map(first_site + 2) != nullptr,
+             label + " bounded vector transfers must preserve lane bits, byte "
+                     "order, effects, and store results");
+      ++program_index;
+    }
+  }
+
+  MemoryAccessDescriptor access;
+  access.width = MemoryWidth::k128;
+  access.byte_order = MemoryByteOrder::kBigEndian;
+  access.alignment = 1;
+  Vector128 bits;
+  for (std::size_t byte = 0; byte < bits.bytes.size(); ++byte) {
+    bits.bytes[byte] = static_cast<std::uint8_t>(0x80U + byte);
+  }
+  ControlFlowBuilder control_builder(0, 1);
+  const Value vector = control_builder.vector_constant(ValueType::kI32x4, bits);
+  control_builder.store_vector(control_builder.constant(3), vector, access,
+                               3100);
+  const Value loaded = control_builder.load_vector(
+      control_builder.constant(3), ValueType::kI32x4, access, 3101);
+  const auto merge = control_builder.create_block({ValueType::kI32x4});
+  expect(control_builder.jump(merge, {loaded}).ok() &&
+             control_builder.set_insertion_block(merge).ok(),
+         "CFG vector memory fixture must carry a whole vector across an edge");
+  const Value incoming = control_builder.block_parameter(merge, 0);
+  control_builder.store_vector(control_builder.constant(32), incoming, access,
+                               3102);
+  expect(control_builder
+             .set_return(control_builder.vector_extract_lane(incoming, 3))
+             .ok(),
+         "CFG vector memory fixture must return a loaded lane");
+  const auto control_function = std::move(control_builder).build();
+  alignas(16) std::array<std::uint8_t, 64> control_bytes{};
+  control_bytes.fill(0xCC);
+  MemoryRegion control_region{control_bytes.data(), control_bytes.size(), true};
+  ExecutionContext control_context;
+  expect(control_context.bind_memory_regions(&control_region, 1).ok(),
+         "CFG vector memory context must bind");
+  const auto control_reference = unijit::ir::ControlFlowInterpreter::evaluate(
+      control_function, nullptr, 0, 8, &control_context);
+  const auto control_compilation = Compiler::compile(control_function);
+  const auto control_native =
+      control_compilation.ok()
+          ? control_compilation.function->invoke(nullptr, 0, &control_context)
+          : unijit::ir::EvaluationResult{control_compilation.status, 0};
+  expect(unijit::ir::verify(control_function).ok() && control_reference.ok() &&
+             control_compilation.ok() && control_native.ok() &&
+             control_native.value == control_reference.value,
+         "CFG vector memory must preserve complete edge values natively");
+}
+
+void test_bounded_vector_memory_failures() {
+  using unijit::ir::MemoryAccessDescriptor;
+  using unijit::ir::MemoryWidth;
+  using unijit::ir::ValueType;
+  using unijit::ir::Vector128;
+  using unijit::runtime::ExecutionContext;
+  using unijit::runtime::MemoryRegion;
+
+  MemoryAccessDescriptor vector_access;
+  vector_access.width = MemoryWidth::k128;
+  vector_access.alignment = 16;
+  {
+    FunctionBuilder builder(0, 1);
+    const Value malformed = builder.load_vector(
+        builder.constant(0), ValueType::kMask32x4, vector_access, 3200);
+    expect(builder.set_return(builder.vector_lane_sign_mask(malformed)).ok() &&
+               !unijit::ir::verify(std::move(builder).build()).ok(),
+           "verifier must reject vector mask loads from untrusted bytes");
+  }
+  {
+    FunctionBuilder builder(0, 1);
+    MemoryAccessDescriptor scalar_access = vector_access;
+    const Value malformed =
+        builder.load_word(builder.constant(0), scalar_access, 3201);
+    expect(builder.set_return(malformed).ok() &&
+               !unijit::ir::verify(std::move(builder).build()).ok(),
+           "verifier must reject 128-bit scalar memory operations");
+  }
+  {
+    FunctionBuilder builder(0, 1);
+    MemoryAccessDescriptor narrow_access = vector_access;
+    narrow_access.width = MemoryWidth::k64;
+    const Value malformed = builder.load_vector(
+        builder.constant(0), ValueType::kI64x2, narrow_access, 3202);
+    expect(builder.set_return(builder.vector_extract_lane(malformed, 0)).ok() &&
+               !unijit::ir::verify(std::move(builder).build()).ok(),
+           "verifier must require complete 128-bit vector transfers");
+  }
+  {
+    FunctionBuilder builder(0, 1);
+    MemoryAccessDescriptor bad_alignment = vector_access;
+    bad_alignment.alignment = 32;
+    const Value malformed = builder.load_vector(
+        builder.constant(0), ValueType::kI64x2, bad_alignment, 3203);
+    expect(builder.set_return(builder.vector_extract_lane(malformed, 0)).ok() &&
+               !unijit::ir::verify(std::move(builder).build()).ok(),
+           "verifier must bound vector alignment declarations to 16 bytes");
+  }
+
+  Vector128 bits;
+  bits.bytes.fill(0xA5);
+  FunctionBuilder builder(1, 1);
+  const Value stored = builder.store_vector(
+      builder.parameter(0), builder.vector_constant(ValueType::kI8x16, bits),
+      vector_access, 3210);
+  expect(builder.set_return(builder.vector_extract_lane(stored, 0)).ok(),
+         "vector failure fixture must return the stored value");
+  const Function function = std::move(builder).build();
+  unijit::jit::CompilationOptions baseline;
+  baseline.optimization_level = unijit::jit::OptimizationLevel::kBaseline;
+  const auto compilation = Compiler::compile(function, baseline);
+
+  const auto verify_failure = [&](std::size_t size, bool writable, Word offset,
+                                  const std::string &label) {
+    alignas(16) std::array<std::uint8_t, 32> reference_bytes{};
+    alignas(16) std::array<std::uint8_t, 32> native_bytes{};
+    reference_bytes.fill(0x5A);
+    native_bytes.fill(0x5A);
+    const auto unchanged = reference_bytes;
+    MemoryRegion reference_region{reference_bytes.data(), size, writable};
+    MemoryRegion native_region{native_bytes.data(), size, writable};
+    ExecutionContext reference_context;
+    ExecutionContext native_context;
+    expect(reference_context.bind_memory_regions(&reference_region, 1).ok() &&
+               native_context.bind_memory_regions(&native_region, 1).ok(),
+           label + " contexts must bind");
+    const std::array<Word, 1> arguments = {offset};
+    const auto reference = Interpreter::evaluate(
+        function, arguments.data(), arguments.size(), &reference_context);
+    const auto native =
+        compilation.ok()
+            ? compilation.function->invoke(arguments.data(), arguments.size(),
+                                           &native_context)
+            : unijit::ir::EvaluationResult{compilation.status, 0};
+    expect(!reference.ok() && !native.ok() &&
+               reference_context.exit_site() == 3210 &&
+               native_context.exit_site() == 3210 &&
+               reference_context.exit_value() == offset &&
+               native_context.exit_value() == offset &&
+               reference_bytes == unchanged && native_bytes == unchanged,
+           label +
+               " must diagnose before changing any byte of the vector store");
+  };
+  expect(compilation.ok(),
+         "bounded vector failure fixture must compile for native execution");
+  verify_failure(20, true, 16, "out-of-range vector store");
+  verify_failure(32, false, 0, "read-only vector store");
+  verify_failure(32, true, 1, "misaligned vector store");
+}
+
 void test_word_byte_swap() {
   using unijit::ir::ControlFlowBuilder;
   using unijit::ir::MemoryWidth;
@@ -7269,6 +7552,8 @@ int main() {
   test_bounded_memory_interpreter();
   test_bounded_memory_control_flow_interpreter();
   test_native_bounded_memory_matrix();
+  test_bounded_vector_memory_matrix();
+  test_bounded_vector_memory_failures();
   test_word_byte_swap();
   test_native_bounded_float_memory_matrix();
   test_bounded_float_memory_control_flow();

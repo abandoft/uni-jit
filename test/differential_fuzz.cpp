@@ -32,6 +32,9 @@ using unijit::ir::ControlFlowInterpreter;
 using unijit::ir::Function;
 using unijit::ir::FunctionBuilder;
 using unijit::ir::Interpreter;
+using unijit::ir::MemoryAccessDescriptor;
+using unijit::ir::MemoryByteOrder;
+using unijit::ir::MemoryWidth;
 using unijit::ir::Value;
 using unijit::ir::ValueType;
 using unijit::ir::VectorBinaryOperation;
@@ -46,6 +49,19 @@ struct Options final {
   std::size_t programs{128};
   std::size_t inputs{64};
   std::size_t nodes{48};
+};
+
+struct VectorMemoryState final {
+  VectorMemoryState()
+      : region{bytes.data(), bytes.size(), true},
+        status(context.bind_memory_regions(&region, 1)) {
+    bytes.fill(0xCC);
+  }
+
+  alignas(16) std::array<std::uint8_t, 32> bytes{};
+  unijit::runtime::MemoryRegion region;
+  unijit::runtime::ExecutionContext context;
+  unijit::Status status;
 };
 
 Word word_from_bits(std::uint64_t bits) noexcept {
@@ -599,10 +615,19 @@ Value build_vector_projection(Builder* builder, const VectorProgram& program,
 bool fuzz_vector_function(std::mt19937_64* random, const Options& options,
                           std::size_t program_index) {
   const VectorProgram program = random_vector_program(random);
+  MemoryAccessDescriptor memory_access;
+  memory_access.width = MemoryWidth::k128;
+  memory_access.byte_order = static_cast<MemoryByteOrder>((*random)() % 3ULL);
+  memory_access.alignment = ((*random)() & 1ULL) == 0 ? 1 : 16;
+  const Word memory_offset = memory_access.alignment == 16 ? 0 : 3;
 
-  FunctionBuilder straight_builder(2);
-  const Value straight_lhs = straight_builder.vector_splat(
+  FunctionBuilder straight_builder(2, 1);
+  const Value straight_input = straight_builder.vector_splat(
       program.type, straight_builder.parameter(0));
+  straight_builder.store_vector(straight_builder.constant(memory_offset),
+                                straight_input, memory_access, 1);
+  const Value straight_lhs = straight_builder.load_vector(
+      straight_builder.constant(memory_offset), program.type, memory_access, 2);
   const Value straight_result = build_vector_projection(
       &straight_builder, program, straight_lhs, straight_builder.parameter(1));
   if (!straight_builder.set_return(straight_result).ok()) {
@@ -623,9 +648,13 @@ bool fuzz_vector_function(std::mt19937_64* random, const Options& options,
     return false;
   }
 
-  ControlFlowBuilder cfg_builder(2);
-  const Value entry_vector =
+  ControlFlowBuilder cfg_builder(2, 1);
+  const Value cfg_input =
       cfg_builder.vector_splat(program.type, cfg_builder.parameter(0));
+  cfg_builder.store_vector(cfg_builder.constant(memory_offset), cfg_input,
+                           memory_access, 1);
+  const Value entry_vector = cfg_builder.load_vector(
+      cfg_builder.constant(memory_offset), program.type, memory_access, 2);
   const auto merge = cfg_builder.create_block({program.type});
   if (!cfg_builder.jump(merge, {entry_vector}).ok() ||
       !cfg_builder.set_insertion_block(merge).ok()) {
@@ -674,62 +703,91 @@ bool fuzz_vector_function(std::mt19937_64* random, const Options& options,
   for (std::size_t input = 0; input < options.inputs; ++input) {
     const std::array<Word, 2> arguments = {
         word_from_bits((*random)()), word_from_bits((*random)())};
-    const auto straight_result_value =
-        Interpreter::evaluate(straight, arguments.data(), arguments.size());
+    VectorMemoryState straight_memory;
+    VectorMemoryState optimized_straight_memory;
+    VectorMemoryState cfg_memory;
+    VectorMemoryState optimized_cfg_memory;
+    if (!straight_memory.status.ok() ||
+        !optimized_straight_memory.status.ok() || !cfg_memory.status.ok() ||
+        !optimized_cfg_memory.status.ok()) {
+      std::cerr << "unable to bind generated vector memory region\n";
+      return false;
+    }
+    const auto straight_result_value = Interpreter::evaluate(
+        straight, arguments.data(), arguments.size(), &straight_memory.context);
     const auto optimized_straight_value = Interpreter::evaluate(
-        optimized_straight.function, arguments.data(), arguments.size());
+        optimized_straight.function, arguments.data(), arguments.size(),
+        &optimized_straight_memory.context);
     if (!straight_result_value.ok() || !optimized_straight_value.ok() ||
-        straight_result_value.value != optimized_straight_value.value) {
+        straight_result_value.value != optimized_straight_value.value ||
+        straight_memory.bytes != optimized_straight_memory.bytes) {
       return report_mismatch("straight-line SIMD optimizer", options.seed,
                              program_index, input, straight_result_value,
                              optimized_straight_value);
     }
 
     const auto cfg_result_value = ControlFlowInterpreter::evaluate(
-        cfg, arguments.data(), arguments.size());
+        cfg, arguments.data(), arguments.size(), 16, &cfg_memory.context);
     const auto optimized_cfg_value = ControlFlowInterpreter::evaluate(
-        optimized_cfg.function, arguments.data(), arguments.size());
+        optimized_cfg.function, arguments.data(), arguments.size(), 16,
+        &optimized_cfg_memory.context);
     if (!cfg_result_value.ok() || !optimized_cfg_value.ok() ||
-        cfg_result_value.value != optimized_cfg_value.value) {
+        cfg_result_value.value != optimized_cfg_value.value ||
+        cfg_memory.bytes != optimized_cfg_memory.bytes) {
       return report_mismatch("CFG SIMD optimizer", options.seed,
                              program_index, input, cfg_result_value,
                              optimized_cfg_value);
     }
-    if (straight_result_value.value != cfg_result_value.value) {
+    if (straight_result_value.value != cfg_result_value.value ||
+        straight_memory.bytes != cfg_memory.bytes) {
       return report_mismatch("straight-line/CFG SIMD", options.seed,
                              program_index, input, straight_result_value,
                              cfg_result_value);
     }
 
 #if defined(UNIJIT_TEST_NATIVE_SIMD)
+    VectorMemoryState straight_baseline_memory;
+    VectorMemoryState straight_optimized_memory;
+    VectorMemoryState cfg_baseline_memory;
+    VectorMemoryState cfg_optimized_memory;
+    if (!straight_baseline_memory.status.ok() ||
+        !straight_optimized_memory.status.ok() ||
+        !cfg_baseline_memory.status.ok() || !cfg_optimized_memory.status.ok()) {
+      std::cerr << "unable to bind generated native vector memory region\n";
+      return false;
+    }
     const auto straight_baseline_value = straight_baseline.function->invoke(
-        arguments.data(), arguments.size());
+        arguments.data(), arguments.size(), &straight_baseline_memory.context);
     const auto straight_optimized_value = straight_optimized.function->invoke(
-        arguments.data(), arguments.size());
-    const auto cfg_baseline_value =
-        cfg_baseline.function->invoke(arguments.data(), arguments.size());
-    const auto cfg_optimized_value =
-        cfg_optimized.function->invoke(arguments.data(), arguments.size());
+        arguments.data(), arguments.size(), &straight_optimized_memory.context);
+    const auto cfg_baseline_value = cfg_baseline.function->invoke(
+        arguments.data(), arguments.size(), &cfg_baseline_memory.context);
+    const auto cfg_optimized_value = cfg_optimized.function->invoke(
+        arguments.data(), arguments.size(), &cfg_optimized_memory.context);
     if (!straight_baseline_value.ok() ||
-        straight_baseline_value.value != straight_result_value.value) {
+        straight_baseline_value.value != straight_result_value.value ||
+        straight_baseline_memory.bytes != straight_memory.bytes) {
       return report_mismatch("baseline native straight-line SIMD",
                              options.seed, program_index, input,
                              straight_result_value, straight_baseline_value);
     }
     if (!straight_optimized_value.ok() ||
-        straight_optimized_value.value != straight_result_value.value) {
+        straight_optimized_value.value != straight_result_value.value ||
+        straight_optimized_memory.bytes != straight_memory.bytes) {
       return report_mismatch("optimized native straight-line SIMD",
                              options.seed, program_index, input,
                              straight_result_value, straight_optimized_value);
     }
     if (!cfg_baseline_value.ok() ||
-        cfg_baseline_value.value != cfg_result_value.value) {
+        cfg_baseline_value.value != cfg_result_value.value ||
+        cfg_baseline_memory.bytes != cfg_memory.bytes) {
       return report_mismatch("baseline native CFG SIMD", options.seed,
                              program_index, input, cfg_result_value,
                              cfg_baseline_value);
     }
     if (!cfg_optimized_value.ok() ||
-        cfg_optimized_value.value != cfg_result_value.value) {
+        cfg_optimized_value.value != cfg_result_value.value ||
+        cfg_optimized_memory.bytes != cfg_memory.bytes) {
       return report_mismatch("optimized native CFG SIMD", options.seed,
                              program_index, input, cfg_result_value,
                              cfg_optimized_value);
@@ -833,7 +891,7 @@ int main(int argc, char** argv) {
             << "\",\"programs\":" << options.programs
             << ",\"inputs_per_program\":" << options.inputs
             << ",\"nodes_per_straight_line_program\":" << options.nodes
-            << ",\"strict_simd\":true"
+            << ",\"strict_simd\":true,\"bounded_vector_memory\":true"
             << "}\n";
   return EXIT_SUCCESS;
 }
