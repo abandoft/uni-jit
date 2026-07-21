@@ -324,9 +324,12 @@ class Assembler final {
     buffer_.emit_u8(0xF7U);
     emit_modrm(3, 7, kScratch1);
     const std::size_t exact = branch_zero(kRdx);
-    const int sign = destination == kRdx ? kR11 : destination;
-    bitwise_xor(sign, kRdx, kScratch1);
-    const std::size_t same_sign = branch_nonnegative(sign);
+    const std::size_t negative_remainder = branch_negative(kRdx);
+    const std::size_t positive_same_sign = branch_nonnegative(kScratch1);
+    const std::size_t positive_adjust = branch();
+    const std::size_t negative_path = size();
+    const std::size_t negative_same_sign = branch_negative(kScratch1);
+    const std::size_t adjust = size();
     if (modulo) {
       add(kRdx, kRdx, kScratch1);
     } else {
@@ -361,7 +364,16 @@ class Assembler final {
       status = patch_branch(exact, result);
     }
     if (status.ok()) {
-      status = patch_branch(same_sign, result);
+      status = patch_branch(negative_remainder, negative_path);
+    }
+    if (status.ok()) {
+      status = patch_branch(positive_same_sign, result);
+    }
+    if (status.ok()) {
+      status = patch_branch(positive_adjust, adjust);
+    }
+    if (status.ok()) {
+      status = patch_branch(negative_same_sign, result);
     }
     if (status.ok()) {
       status = patch_branch(normal_done, end);
@@ -855,9 +867,13 @@ LoweringResult lower_impl(const ir::Function& function,
         } else if (node.opcode == ir::Opcode::kFloorDivide ||
                    node.opcode == ir::Opcode::kFloorModulo) {
           const Status floor_status = assembler.floor_arithmetic(
-              target, lhs, rhs, node.opcode == ir::Opcode::kFloorModulo);
+              kReturnRegister, lhs, rhs,
+              node.opcode == ir::Opcode::kFloorModulo);
           if (!floor_status.ok()) {
             return {floor_status, {}, 0};
+          }
+          if (target != kReturnRegister) {
+            assembler.move_register(target, kReturnRegister);
           }
         } else {
           assembler.bitwise_xor(target, lhs, rhs);
@@ -1798,10 +1814,13 @@ LoweringResult lower_control_flow_impl(
           } else if (node.opcode == ir::ControlOpcode::kFloorDivide ||
                      node.opcode == ir::ControlOpcode::kFloorModulo) {
             const Status floor_status = assembler.floor_arithmetic(
-                word_destination, lhs, rhs,
+                kReturnRegister, lhs, rhs,
                 node.opcode == ir::ControlOpcode::kFloorModulo);
             if (!floor_status.ok()) {
               return {floor_status, {}, 0};
+            }
+            if (word_destination != kReturnRegister) {
+              assembler.move_register(word_destination, kReturnRegister);
             }
           } else {
             assembler.compare(word_destination, lhs, rhs,

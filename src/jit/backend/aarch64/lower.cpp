@@ -19,6 +19,7 @@ namespace {
 constexpr int kReturnRegister = 0;
 constexpr int kContextArgumentRegister = 1;
 constexpr int kArgumentBaseRegister = 9;
+constexpr int kScratch2 = 8;
 constexpr int kScratch0 = 16;
 constexpr int kScratch1 = 17;
 constexpr int kReturnAddressRegister = 30;
@@ -243,8 +244,8 @@ class Assembler final {
                      (reg(destination) << 10U) | (reg(kScratch0) << 5U) |
                      reg(kReturnRegister));
     const std::size_t exact = branch_zero(kReturnRegister);
-    bitwise_xor(destination, kReturnRegister, kScratch1);
-    compare_immediate(destination, 0);
+    bitwise_xor(kScratch2, kReturnRegister, kScratch1);
+    compare_immediate(kScratch2, 0);
     const std::size_t same_sign = branch_condition(0xAU);
     if (modulo) {
       add(kReturnRegister, kReturnRegister, kScratch1);
@@ -714,10 +715,9 @@ LoweringResult lower_impl(const ir::Function& function,
             &assembler, allocation.locations[node.rhs.id()], kScratch1);
         const bool is_floor = node.opcode == ir::Opcode::kFloorDivide ||
                               node.opcode == ir::Opcode::kFloorModulo;
-        const int target =
-            destination.in_register()
-                ? physical_register(destination)
-                : (is_floor ? kReturnRegister : kScratch0);
+        const int target = destination.in_register()
+                               ? physical_register(destination)
+                               : kScratch0;
         if (node.opcode == ir::Opcode::kAdd) {
           assembler.add(target, lhs, rhs);
         } else if (node.opcode == ir::Opcode::kSubtract) {
@@ -735,10 +735,12 @@ LoweringResult lower_impl(const ir::Function& function,
           }
         } else if (is_floor) {
           const Status floor_status = assembler.floor_arithmetic(
-              target, lhs, rhs, node.opcode == ir::Opcode::kFloorModulo);
+              kReturnRegister, lhs, rhs,
+              node.opcode == ir::Opcode::kFloorModulo);
           if (!floor_status.ok()) {
             return {floor_status, {}, 0};
           }
+          assembler.move_register(target, kReturnRegister);
         } else {
           assembler.bitwise_xor(target, lhs, rhs);
         }
@@ -1382,13 +1384,8 @@ LoweringResult lower_control_flow_impl(
           destination_is_float
               ? control_float_register(allocation, value, block_index)
               : -1;
-      const bool floor_destination =
-          node.opcode == ir::ControlOpcode::kFloorDivide ||
-          node.opcode == ir::ControlOpcode::kFloorModulo;
-      const int word_destination = allocated_word >= 0
-                                       ? allocated_word
-                                       : (floor_destination ? kReturnRegister
-                                                            : kScratch0);
+      const int word_destination =
+          allocated_word >= 0 ? allocated_word : kScratch0;
       const int float_destination =
           allocated_float >= 0 ? allocated_float : kFloatScratch0;
       const std::vector<ir::Value>& live_values =
@@ -1733,11 +1730,12 @@ LoweringResult lower_control_flow_impl(
           } else if (node.opcode == ir::ControlOpcode::kFloorDivide ||
                      node.opcode == ir::ControlOpcode::kFloorModulo) {
             const Status floor_status = assembler.floor_arithmetic(
-                word_destination, lhs, rhs,
+                kReturnRegister, lhs, rhs,
                 node.opcode == ir::ControlOpcode::kFloorModulo);
             if (!floor_status.ok()) {
               return {floor_status, {}, 0};
             }
+            assembler.move_register(word_destination, kReturnRegister);
           } else {
             assembler.compare(word_destination, lhs, rhs,
                               node.opcode == ir::ControlOpcode::kLessEqual);
