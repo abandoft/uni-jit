@@ -243,6 +243,25 @@ int main() {
           UINT64_C(0xffffffffffffffff)) {
     return 55;
   }
+  unijit::ir::FunctionBuilder shift_builder(2);
+  if (!shift_builder
+           .set_return(shift_builder.shift_left(shift_builder.parameter(0),
+                                                shift_builder.parameter(1)))
+           .ok()) {
+    return 58;
+  }
+  auto shift_compilation = unijit::jit::Compiler::compile(
+      std::move(shift_builder).build());
+  const std::array<unijit::ir::Word, 2> shift_arguments = {-1, -63};
+  const auto shift_result =
+      shift_compilation.ok()
+          ? shift_compilation.function->invoke(shift_arguments.data(),
+                                                shift_arguments.size())
+          : unijit::ir::EvaluationResult{};
+  if (!shift_compilation.ok() || !shift_result.ok() ||
+      shift_result.value != 1) {
+    return 59;
+  }
   unijit::jit::CompilationLimits package_limits;
   package_limits.maximum_ir_nodes = 2;
   const auto limited_compilation = unijit::jit::Compiler::compile(
@@ -383,6 +402,27 @@ int main() {
   if (!cfg_bitwise.ok() || !cfg_bitwise_result.ok() ||
       cfg_bitwise_result.value != 0x5a) {
     return 57;
+  }
+  unijit::ir::ControlFlowBuilder cfg_shift_builder(2);
+  if (!cfg_shift_builder
+           .set_return(cfg_shift_builder.shift_left(
+               cfg_shift_builder.parameter(0),
+               cfg_shift_builder.parameter(1)))
+           .ok()) {
+    return 60;
+  }
+  auto cfg_shift = unijit::jit::Compiler::compile(
+      std::move(cfg_shift_builder).build());
+  const std::array<unijit::ir::Word, 2> cfg_shift_arguments = {1, 63};
+  const auto cfg_shift_result =
+      cfg_shift.ok()
+          ? cfg_shift.function->invoke(cfg_shift_arguments.data(),
+                                       cfg_shift_arguments.size())
+          : unijit::ir::EvaluationResult{};
+  if (!cfg_shift.ok() || !cfg_shift_result.ok() ||
+      static_cast<std::uint64_t>(cfg_shift_result.value) !=
+          UINT64_C(0x8000000000000000)) {
+    return 61;
   }
   unijit::ir::FunctionBuilder safepoint_builder(0);
   if (!safepoint_builder.safepoint(23).valid() ||
