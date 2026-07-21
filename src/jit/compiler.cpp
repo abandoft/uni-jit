@@ -709,6 +709,25 @@ Status validate_compilation_limits(const CompilationLimits& limits) {
   return Status::ok_status();
 }
 
+Status validate_compilation_target(const TargetProfile& profile) {
+  const Status validation = validate_target_profile(profile);
+  if (!validation.ok()) {
+    return validation;
+  }
+  const TargetProfile baseline = baseline_target_profile();
+  if (profile.architecture != baseline.architecture ||
+      profile.abi != baseline.abi ||
+      profile.endianness != baseline.endianness) {
+    return {StatusCode::kUnsupportedArchitecture,
+            "requested target does not match the configured native backend"};
+  }
+  if (!target_profile_contains(host_target_profile(), profile)) {
+    return {StatusCode::kUnsupportedArchitecture,
+            "host does not provide every requested target feature"};
+  }
+  return Status::ok_status();
+}
+
 Status add_bounded(std::size_t value, std::size_t limit,
                    std::size_t* total, const char* message,
                    std::size_t location = 0) {
@@ -912,6 +931,7 @@ struct CompiledFunction::Impl final {
 CompiledFunction::CompiledFunction(std::unique_ptr<Impl> impl,
                                    std::vector<ir::ValueType> parameter_types,
                                    ir::ValueType return_type,
+                                   TargetProfile target_profile,
                                    CompilationStats stats,
                                    bool requires_context,
                                    runtime::DeoptimizationTable
@@ -922,6 +942,9 @@ CompiledFunction::CompiledFunction(std::unique_ptr<Impl> impl,
       parameter_count_(parameter_types.size()),
       parameter_types_(std::move(parameter_types)),
       return_type_(return_type),
+      target_profile_(target_profile),
+      host_compatible_(
+          target_profile_contains(host_target_profile(), target_profile)),
       stats_(stats),
       requires_context_(requires_context),
       deoptimization_table_(std::move(deoptimization_table)),
@@ -934,7 +957,7 @@ CompiledFunction& CompiledFunction::operator=(CompiledFunction&&) noexcept =
     default;
 
 NativeEntry CompiledFunction::native_entry() const noexcept {
-  return impl_ == nullptr ? nullptr : impl_->entry();
+  return impl_ == nullptr || !host_compatible_ ? nullptr : impl_->entry();
 }
 
 StackMapCaptureResult CompiledFunction::reconstruct_stack_map(
@@ -1126,6 +1149,11 @@ CompilationResult Compiler::compile(
     const runtime::DeoptimizationTable& deoptimization_table,
     const runtime::AssumptionSet& assumptions,
     CompilationOptions options) {
+  const Status target_status =
+      validate_compilation_target(options.target_profile);
+  if (!target_status.ok()) {
+    return {target_status, nullptr};
+  }
   const Status limit_status = validate_function_limits(
       function, deoptimization_table, assumptions, options.limits);
   if (!limit_status.ok()) {
@@ -1231,7 +1259,7 @@ CompilationResult Compiler::compile(
         });
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
         std::move(implementation), copy_parameter_types(function),
-        function.return_type(), stats, requires_context,
+        function.return_type(), options.target_profile, stats, requires_context,
         std::move(deoptimization.table), assumptions,
         StackMapTable(std::move(lowering.stack_maps))));
     return {Status::ok_status(), std::move(compiled)};
@@ -1316,6 +1344,11 @@ CompilationResult Compiler::compile(
     const ir::ControlFlowFunction& function,
     const runtime::DeoptimizationTable& deoptimization_table,
     const runtime::AssumptionSet& assumptions, CompilationOptions options) {
+  const Status target_status =
+      validate_compilation_target(options.target_profile);
+  if (!target_status.ok()) {
+    return {target_status, nullptr};
+  }
   const Status limit_status = validate_function_limits(
       function, deoptimization_table, assumptions, options.limits);
   if (!limit_status.ok()) {
@@ -1422,7 +1455,7 @@ CompilationResult Compiler::compile(
         });
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
         std::move(implementation), copy_parameter_types(function),
-        function.return_type(), stats, requires_context,
+        function.return_type(), options.target_profile, stats, requires_context,
         std::move(deoptimization.table), assumptions,
         StackMapTable(std::move(lowering.stack_maps))));
     return {Status::ok_status(), std::move(compiled)};

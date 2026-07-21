@@ -30,6 +30,14 @@ ir::ValueType CodeHandle::return_type() const noexcept {
                               : function_->return_type();
 }
 
+const TargetProfile* CodeHandle::target_profile() const noexcept {
+  return function_ == nullptr ? nullptr : &function_->target_profile();
+}
+
+std::uint64_t CodeHandle::target_profile_key() const noexcept {
+  return function_ == nullptr ? 0 : function_->target_profile_key();
+}
+
 bool CodeHandle::requires_context() const noexcept {
   return function_ != nullptr && function_->requires_context();
 }
@@ -123,8 +131,9 @@ struct CodeCache::Impl final {
     std::shared_ptr<const CompiledFunction> function;
   };
 
-  explicit Impl(CodeCacheLimits configured_limits) noexcept
-      : limits(configured_limits) {}
+  explicit Impl(CodeCacheLimits configured_limits,
+                TargetProfile configured_target) noexcept
+      : limits(configured_limits), target_profile(configured_target) {}
 
   std::uint64_t next_stamp() noexcept {
     if (access_clock == std::numeric_limits<std::uint64_t>::max()) {
@@ -163,6 +172,7 @@ struct CodeCache::Impl final {
   }
 
   CodeCacheLimits limits;
+  TargetProfile target_profile;
   mutable std::mutex mutex;
   std::unordered_map<std::string, Entry> entries;
   CodeCacheStats statistics;
@@ -170,8 +180,8 @@ struct CodeCache::Impl final {
   std::uint64_t generation{0};
 };
 
-CodeCache::CodeCache(CodeCacheLimits limits)
-    : impl_(std::make_unique<Impl>(limits)) {}
+CodeCache::CodeCache(CodeCacheLimits limits, TargetProfile target_profile)
+    : impl_(std::make_unique<Impl>(limits, target_profile)) {}
 
 CodeCache::~CodeCache() = default;
 CodeCache::CodeCache(CodeCache&&) noexcept = default;
@@ -218,6 +228,17 @@ CodeCachePublication CodeCache::publish(
   if (function == nullptr) {
     return {{StatusCode::kInvalidArgument,
              "cannot publish a null compiled function"},
+            {}, false, false};
+  }
+  if (!validate_target_profile(impl_->target_profile).ok()) {
+    return {{StatusCode::kInvalidArgument,
+             "code cache has an invalid target profile"},
+            {}, false, false};
+  }
+  if (!target_profiles_equal(function->target_profile(),
+                             impl_->target_profile)) {
+    return {{StatusCode::kInvalidArgument,
+             "compiled function target does not match the code cache"},
             {}, false, false};
   }
 
@@ -340,6 +361,14 @@ CodeCacheLimits CodeCache::limits() const noexcept {
   }
   std::lock_guard<std::mutex> lock(impl_->mutex);
   return impl_->limits;
+}
+
+TargetProfile CodeCache::target_profile() const noexcept {
+  if (impl_ == nullptr) {
+    return {};
+  }
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  return impl_->target_profile;
 }
 
 CodeCacheStats CodeCache::stats() const noexcept {

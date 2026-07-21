@@ -324,6 +324,118 @@ std::unique_ptr<unijit::jit::CompiledFunction> compile_constant(Word value) {
   return compilation.ok() ? std::move(compilation.function) : nullptr;
 }
 
+void test_target_profiles() {
+  using unijit::jit::CodeCache;
+  using unijit::jit::CodeCacheLimits;
+  using unijit::jit::CompilationOptions;
+  using unijit::jit::TargetAbi;
+  using unijit::jit::TargetArchitecture;
+  using unijit::jit::TargetEndianness;
+  using unijit::jit::TargetFeature;
+  using unijit::jit::TargetProfile;
+  using unijit::jit::VectorWidthPolicy;
+
+  const TargetProfile baseline = unijit::jit::baseline_target_profile();
+  const TargetProfile host = unijit::jit::host_target_profile();
+  expect(unijit::jit::validate_target_profile(baseline).ok() &&
+             unijit::jit::validate_target_profile(host).ok() &&
+             unijit::jit::target_profile_contains(host, baseline) &&
+             unijit::jit::target_profile_key(baseline) != 0,
+         "host discovery must contain the validated portable target baseline");
+  expect(!unijit::jit::has_target_feature(host, TargetFeature::kAvx) ||
+             (host.vector_width_policy == VectorWidthPolicy::kNative &&
+              host.maximum_vector_bits >= 256),
+         "AVX host discovery must report an OS-authorized native width");
+
+  TargetProfile malformed = baseline;
+  malformed.endianness = TargetEndianness::kBig;
+  expect(!unijit::jit::validate_target_profile(malformed).ok(),
+         "target validation must reject unsupported target endianness");
+
+  TargetProfile alien = baseline;
+  if (baseline.architecture == TargetArchitecture::kX86_64) {
+    alien.features |=
+        unijit::jit::target_feature_bit(TargetFeature::kNeon);
+  } else {
+    alien.features |=
+        unijit::jit::target_feature_bit(TargetFeature::kSse2);
+  }
+  expect(!unijit::jit::validate_target_profile(alien).ok(),
+         "target validation must reject cross-architecture feature bits");
+
+  TargetProfile incompatible;
+  incompatible.endianness = TargetEndianness::kLittle;
+  incompatible.maximum_vector_bits = 128;
+  if (baseline.architecture == TargetArchitecture::kX86_64) {
+    incompatible.architecture = TargetArchitecture::kAArch64;
+    incompatible.abi = TargetAbi::kAapcs64;
+    incompatible.features =
+        unijit::jit::target_feature_bit(TargetFeature::kFp64) |
+        unijit::jit::target_feature_bit(TargetFeature::kNeon);
+  } else {
+    incompatible.architecture = TargetArchitecture::kX86_64;
+    incompatible.abi = TargetAbi::kSystemV;
+    incompatible.features =
+        unijit::jit::target_feature_bit(TargetFeature::kFp64) |
+        unijit::jit::target_feature_bit(TargetFeature::kSse2);
+  }
+  FunctionBuilder incompatible_builder(0);
+  const Value incompatible_value = incompatible_builder.constant(1);
+  expect(incompatible_builder.set_return(incompatible_value).ok(),
+         "incompatible target fixture must have a return value");
+  CompilationOptions incompatible_options;
+  incompatible_options.target_profile = incompatible;
+  const auto incompatible_compilation = Compiler::compile(
+      std::move(incompatible_builder).build(), incompatible_options);
+  expect(!incompatible_compilation.ok() &&
+             incompatible_compilation.status.code() ==
+                 unijit::StatusCode::kUnsupportedArchitecture,
+         "compiler must reject a valid profile for another native backend");
+
+  TargetProfile specialized = baseline;
+  specialized.vector_width_policy = VectorWidthPolicy::kNative;
+  FunctionBuilder specialized_builder(0);
+  const Value specialized_value = specialized_builder.constant(29);
+  expect(specialized_builder.set_return(specialized_value).ok(),
+         "specialized target fixture must have a return value");
+  CompilationOptions specialized_options;
+  specialized_options.target_profile = specialized;
+  auto specialized_compilation = Compiler::compile(
+      std::move(specialized_builder).build(), specialized_options);
+  expect(specialized_compilation.ok() &&
+             unijit::jit::target_profiles_equal(
+                 specialized_compilation.function->target_profile(),
+                 specialized) &&
+             specialized_compilation.function->target_profile_key() ==
+                 unijit::jit::target_profile_key(specialized),
+         "compiled functions must retain their immutable target identity");
+  if (!specialized_compilation.ok()) {
+    return;
+  }
+
+  CodeCache baseline_cache;
+  auto wrong_cache = baseline_cache.publish(
+      "profile", 1, std::move(specialized_compilation.function));
+  expect(!wrong_cache.ok(),
+         "code caches must reject functions from another target profile");
+
+  FunctionBuilder matching_builder(0);
+  const Value matching_value = matching_builder.constant(31);
+  expect(matching_builder.set_return(matching_value).ok(),
+         "matching target fixture must have a return value");
+  auto matching_compilation = Compiler::compile(
+      std::move(matching_builder).build(), specialized_options);
+  CodeCache specialized_cache(CodeCacheLimits{}, specialized);
+  auto publication = specialized_cache.publish(
+      "profile", 2, std::move(matching_compilation.function));
+  const auto result = publication.handle.invoke(nullptr, 0);
+  expect(publication.ok() && publication.handle.target_profile() != nullptr &&
+             publication.handle.target_profile_key() ==
+                 unijit::jit::target_profile_key(specialized) &&
+             result.ok() && result.value == 31,
+         "profile-scoped code caches must retain and execute matching code");
+}
+
 void test_code_cache_lifecycle() {
   using unijit::jit::CodeCache;
   using unijit::jit::CodeCacheLimits;
@@ -4951,6 +5063,7 @@ void test_control_flow_builder_rejects_edge_arity() {
 }  // namespace
 
 int main() {
+  test_target_profiles();
   test_code_cache_lifecycle();
   test_code_cache_concurrency();
   test_verifier_rejects_forward_reference();

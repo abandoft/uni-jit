@@ -44,6 +44,8 @@ class CodeHandle final {
   std::size_t parameter_count() const noexcept;
   ir::ValueType parameter_type(std::size_t index) const noexcept;
   ir::ValueType return_type() const noexcept;
+  const TargetProfile* target_profile() const noexcept;
+  std::uint64_t target_profile_key() const noexcept;
   bool requires_context() const noexcept;
   std::size_t assumption_count() const noexcept;
   bool assumptions_valid() const noexcept;
@@ -93,7 +95,9 @@ struct CodeCachePublication final {
 
 class CodeCache final {
  public:
-  explicit CodeCache(CodeCacheLimits limits = {});
+  explicit CodeCache(
+      CodeCacheLimits limits = {},
+      TargetProfile target_profile = baseline_target_profile());
   ~CodeCache();
 
   CodeCache(CodeCache&&) noexcept;
@@ -113,6 +117,7 @@ class CodeCache final {
   void clear();
 
   CodeCacheLimits limits() const noexcept;
+  TargetProfile target_profile() const noexcept;
   CodeCacheStats stats() const noexcept;
 
  private:

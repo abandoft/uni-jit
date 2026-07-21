@@ -10,6 +10,7 @@
 #include "unijit/ir/function.h"
 #include "unijit/ir/interpreter.h"
 #include "unijit/jit/stack_map.h"
+#include "unijit/jit/target.h"
 #include "unijit/runtime/assumption.h"
 #include "unijit/runtime/deoptimization.h"
 #include "unijit/runtime/execution_context.h"
@@ -50,11 +51,15 @@ struct CompilationOptions final {
   CompilationOptions() noexcept = default;
   explicit CompilationOptions(
       OptimizationLevel level,
-      CompilationLimits configured_limits = {}) noexcept
-      : optimization_level(level), limits(configured_limits) {}
+      CompilationLimits configured_limits = {},
+      TargetProfile configured_target = baseline_target_profile()) noexcept
+      : optimization_level(level),
+        limits(configured_limits),
+        target_profile(configured_target) {}
 
   OptimizationLevel optimization_level{OptimizationLevel::kOptimized};
   CompilationLimits limits;
+  TargetProfile target_profile{baseline_target_profile()};
   bool measure_safepoint_polls{true};
 };
 
@@ -84,6 +89,12 @@ class CompiledFunction final {
                                            : ir::ValueType::kWord;
   }
   ir::ValueType return_type() const noexcept { return return_type_; }
+  const TargetProfile& target_profile() const noexcept {
+    return target_profile_;
+  }
+  std::uint64_t target_profile_key() const noexcept {
+    return jit::target_profile_key(target_profile_);
+  }
   bool requires_context() const noexcept { return requires_context_; }
   const runtime::AssumptionSet& assumptions() const noexcept {
     return assumptions_;
@@ -122,7 +133,8 @@ class CompiledFunction final {
 
   CompiledFunction(std::unique_ptr<Impl> impl,
                    std::vector<ir::ValueType> parameter_types,
-                   ir::ValueType return_type, CompilationStats stats,
+                   ir::ValueType return_type, TargetProfile target_profile,
+                   CompilationStats stats,
                    bool requires_context,
                    runtime::DeoptimizationTable deoptimization_table,
                    runtime::AssumptionSet assumptions,
@@ -132,6 +144,8 @@ class CompiledFunction final {
   std::size_t parameter_count_{0};
   std::vector<ir::ValueType> parameter_types_;
   ir::ValueType return_type_{ir::ValueType::kWord};
+  TargetProfile target_profile_;
+  bool host_compatible_{false};
   CompilationStats stats_;
   bool requires_context_{false};
   runtime::DeoptimizationTable deoptimization_table_;
