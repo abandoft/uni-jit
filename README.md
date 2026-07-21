@@ -10,7 +10,9 @@ management. Third-party JIT projects under `third/` are references and
 benchmark competitors; UniJIT does not link against them as its backend.
 
 Native Word and Float64 backends currently target AArch64, x86-64, and
-RISC-V 64.
+RISC-V 64. Bounded Word memory supports byte-exact 8/16/32/64-bit loads and
+stores, explicit byte order, alignment and permission checks, diagnosed exits,
+and native lowering on all three backends.
 See [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) for the design and delivery
 gates, [doc/PORTABILITY.md](doc/PORTABILITY.md) for verified platforms, and
 [doc/RUNTIME.md](doc/RUNTIME.md) for execution contexts, exits, and safepoints.
@@ -42,6 +44,9 @@ atomics, immutable patch cells, fast and tail calls, bounded frame locals,
 target profiles, and validated serialization/AOT.
 [doc/TARGET_PROFILES.md](doc/TARGET_PROFILES.md) defines host feature discovery,
 portable baselines, immutable compilation identity, and profile-scoped caches.
+[doc/TYPED_MEMORY.md](doc/TYPED_MEMORY.md) defines bounded regions, Word access
+descriptors, byte-exact endian and unaligned semantics, diagnosed failures,
+native lowering, resource limits, and the remaining memory roadmap.
 [doc/QUALIFICATION.md](doc/QUALIFICATION.md) defines deterministic fuzzing,
 concurrency stress, sanitizers, and commercial performance floors.
 [doc/LUA_FRONTEND.md](doc/LUA_FRONTEND.md) describes the stock Lua 5.5
