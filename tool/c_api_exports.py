@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 
@@ -16,9 +18,52 @@ WINDOWS_SYMBOL_PATTERN = re.compile(
 )
 
 
+def find_dumpbin() -> str:
+    executable = shutil.which("dumpbin")
+    if executable is not None:
+        return executable
+    program_files = os.environ.get("ProgramFiles(x86)")
+    if not program_files:
+        raise FileNotFoundError("dumpbin and ProgramFiles(x86) are unavailable")
+    vswhere = (
+        pathlib.Path(program_files)
+        / "Microsoft Visual Studio"
+        / "Installer"
+        / "vswhere.exe"
+    )
+    process = subprocess.run(
+        [
+            str(vswhere),
+            "-latest",
+            "-products",
+            "*",
+            "-requires",
+            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+            "-property",
+            "installationPath",
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    installation = process.stdout.strip()
+    if process.returncode != 0 or not installation:
+        raise FileNotFoundError("unable to locate an MSVC x64 installation")
+    candidates = sorted(
+        (pathlib.Path(installation) / "VC" / "Tools" / "MSVC").glob(
+            "*/bin/Hostx64/x64/dumpbin.exe"
+        ),
+        reverse=True,
+    )
+    if not candidates:
+        raise FileNotFoundError("unable to locate the MSVC x64 dumpbin executable")
+    return str(candidates[0])
+
+
 def inspect_library(library: pathlib.Path) -> str:
     if sys.platform == "win32" or library.suffix.lower() == ".dll":
-        command = ["dumpbin", "/nologo", "/exports", str(library)]
+        command = [find_dumpbin(), "/nologo", "/exports", str(library)]
     elif sys.platform == "darwin" or library.suffix.lower() == ".dylib":
         command = ["nm", "-gU", str(library)]
     else:

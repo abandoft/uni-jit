@@ -3,6 +3,7 @@
 import pathlib
 import sys
 import unittest
+from unittest import mock
 
 
 REPOSITORY_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -13,6 +14,18 @@ import c_api_exports  # noqa: E402
 
 
 class CApiExportsTest(unittest.TestCase):
+    @mock.patch("c_api_exports.shutil.which", return_value="C:/tools/dumpbin.exe")
+    def test_uses_dumpbin_from_path(self, unused_which: mock.Mock) -> None:
+        self.assertEqual("C:/tools/dumpbin.exe", c_api_exports.find_dumpbin())
+
+    @mock.patch("c_api_exports.shutil.which", return_value=None)
+    def test_reports_missing_visual_studio_environment(
+        self, unused_which: mock.Mock
+    ) -> None:
+        with mock.patch.dict(c_api_exports.os.environ, {}, clear=True):
+            with self.assertRaisesRegex(FileNotFoundError, "ProgramFiles"):
+                c_api_exports.find_dumpbin()
+
     def test_committed_manifest_is_versioned_and_unique(self) -> None:
         manifest = c_api_exports.load_manifest(
             REPOSITORY_ROOT / "tool" / "c_api_v1_symbols.txt"
