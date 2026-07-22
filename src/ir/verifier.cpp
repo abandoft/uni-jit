@@ -1,5 +1,6 @@
 #include "unijit/ir/function.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <string>
 
@@ -192,6 +193,18 @@ Status verify(const Function& function) {
       return {StatusCode::kInvalidIr, "patch cell descriptor is malformed"};
     }
   }
+  if (function.fast_calls().size() > FastCallSlot::kInvalidId) {
+    return {StatusCode::kInvalidIr,
+            "fast call count exceeds the IR index range"};
+  }
+  for (const FastCallDescriptor& call : function.fast_calls()) {
+    if (!is_scalar_value_type(call.return_type) ||
+        !std::all_of(call.parameter_types.begin(), call.parameter_types.end(),
+                     is_scalar_value_type)) {
+      return {StatusCode::kInvalidIr,
+              "fast call descriptor has a non-scalar signature"};
+    }
+  }
 
   std::size_t expected_call_argument = 0;
   std::size_t expected_memory_access = 0;
@@ -265,6 +278,36 @@ Status verify(const Function& function) {
         if (!is_scalar_value_type(nodes[argument.id()].type)) {
           return invalid_node(index,
                               "runtime call argument must be scalar");
+        }
+      }
+      expected_call_argument += node.argument_count;
+      continue;
+    }
+    if (node.opcode == Opcode::kFastCall) {
+      if (node.immediate < 0 ||
+          static_cast<std::size_t>(node.immediate) >=
+              function.fast_calls().size() ||
+          node.lhs.valid() || node.rhs.valid()) {
+        return invalid_node(index, "fast call target is malformed");
+      }
+      const FastCallDescriptor& descriptor =
+          function.fast_calls()[static_cast<std::size_t>(node.immediate)];
+      if (node.type != descriptor.return_type ||
+          node.argument_count != descriptor.parameter_types.size() ||
+          node.argument_begin != expected_call_argument ||
+          static_cast<std::size_t>(node.argument_count) >
+              function.call_arguments().size() - expected_call_argument) {
+        return invalid_node(index, "fast call signature is malformed");
+      }
+      for (std::size_t argument_index = 0;
+           argument_index < node.argument_count; ++argument_index) {
+        const Value argument =
+            function.call_arguments()[expected_call_argument + argument_index];
+        if (!argument.valid() || argument.id() >= index ||
+            nodes[argument.id()].type !=
+                descriptor.parameter_types[argument_index]) {
+          return invalid_node(
+              index, "fast call argument does not match its signature");
         }
       }
       expected_call_argument += node.argument_count;
@@ -685,7 +728,7 @@ Status verify(const Function& function) {
 
   if (expected_call_argument != function.call_arguments().size()) {
     return {StatusCode::kInvalidIr,
-            "function contains unreferenced runtime call arguments"};
+            "function contains unreferenced call arguments"};
   }
   if (expected_memory_access != function.memory_accesses().size()) {
     return {StatusCode::kInvalidIr,

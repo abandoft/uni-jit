@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "unijit/ir/atomic.h"
+#include "unijit/ir/fast_call.h"
 #include "unijit/ir/memory.h"
 #include "unijit/ir/object.h"
 #include "unijit/ir/patch_cell.h"
@@ -82,6 +83,7 @@ enum class Opcode : std::uint8_t {
   kGuardWordNonzero,
   kGuardFloatNonzero,
   kCall,
+  kFastCall,
   kSafepoint,
   kLoadWord,
   kStoreWord,
@@ -199,6 +201,9 @@ class Function final {
   const std::vector<Value>& call_arguments() const noexcept {
     return call_arguments_;
   }
+  const std::vector<FastCallDescriptor>& fast_calls() const noexcept {
+    return fast_calls_;
+  }
   std::size_t memory_region_count() const noexcept {
     return memory_region_count_;
   }
@@ -245,6 +250,7 @@ class Function final {
   std::vector<ValueType> parameter_types_;
   std::vector<Node> nodes_;
   std::vector<Value> call_arguments_;
+  std::vector<FastCallDescriptor> fast_calls_;
   std::size_t memory_region_count_{0};
   std::vector<MemoryAccessDescriptor> memory_accesses_;
   std::vector<AtomicAccessDescriptor> atomic_accesses_;
@@ -304,6 +310,9 @@ class FunctionBuilder final {
   Value guard_float64_nonzero(Value value, std::size_t site);
   Value call(RuntimeHelper helper, std::vector<Value> arguments,
              ValueType result_type = ValueType::kWord);
+  FastCallSlot create_fast_call(std::vector<ValueType> parameter_types,
+                                ValueType return_type = ValueType::kWord);
+  Value fast_call(FastCallSlot target, std::vector<Value> arguments);
   Value safepoint(std::size_t site);
   Value load_word(Value byte_offset, MemoryAccessDescriptor access,
                   std::size_t site);

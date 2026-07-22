@@ -19,6 +19,10 @@ class CompiledFunction;
 namespace unijit::runtime {
 
 class Assumption;
+class ExecutionContext;
+
+using FastCallNativeEntry =
+    ir::Word (*)(const ir::Word*, ExecutionContext*);
 
 enum class ExitReason : std::uint64_t {
   kNone = 0,
@@ -119,6 +123,27 @@ class ExecutionContext final {
     return trusted_object_count_;
   }
 
+  Status bind_fast_call_oracles(const ir::RuntimeHelper* oracles,
+                                std::size_t count) noexcept {
+    if (count != 0 && oracles == nullptr) {
+      return {StatusCode::kInvalidArgument,
+              "fast-call oracle storage is null for a non-empty binding"};
+    }
+    fast_call_oracles_ = oracles;
+    fast_call_oracle_count_ = count;
+    return Status::ok_status();
+  }
+  void clear_fast_call_oracles() noexcept {
+    fast_call_oracles_ = nullptr;
+    fast_call_oracle_count_ = 0;
+  }
+  const ir::RuntimeHelper* fast_call_oracles() const noexcept {
+    return fast_call_oracles_;
+  }
+  std::size_t fast_call_oracle_count() const noexcept {
+    return fast_call_oracle_count_;
+  }
+
   static constexpr std::size_t interrupt_requested_offset() noexcept;
   static constexpr std::size_t exit_reason_offset() noexcept;
   static constexpr std::size_t exit_site_offset() noexcept;
@@ -132,6 +157,8 @@ class ExecutionContext final {
   static constexpr std::size_t trusted_object_count_offset() noexcept;
   static constexpr std::size_t patch_cells_offset() noexcept;
   static constexpr std::size_t patch_cell_count_offset() noexcept;
+  static constexpr std::size_t fast_call_entries_offset() noexcept;
+  static constexpr std::size_t fast_call_entry_count_offset() noexcept;
 
  private:
   friend class Assumption;
@@ -164,6 +191,10 @@ class ExecutionContext final {
   std::size_t trusted_object_count_{0};
   const PatchCellStorage* patch_cells_{nullptr};
   std::size_t patch_cell_count_{0};
+  const ir::RuntimeHelper* fast_call_oracles_{nullptr};
+  std::size_t fast_call_oracle_count_{0};
+  const FastCallNativeEntry* fast_call_entries_{nullptr};
+  std::size_t fast_call_entry_count_{0};
 };
 
 constexpr std::size_t ExecutionContext::interrupt_requested_offset() noexcept {
@@ -219,6 +250,15 @@ constexpr std::size_t ExecutionContext::patch_cells_offset() noexcept {
 
 constexpr std::size_t ExecutionContext::patch_cell_count_offset() noexcept {
   return offsetof(ExecutionContext, patch_cell_count_);
+}
+
+constexpr std::size_t ExecutionContext::fast_call_entries_offset() noexcept {
+  return offsetof(ExecutionContext, fast_call_entries_);
+}
+
+constexpr std::size_t
+ExecutionContext::fast_call_entry_count_offset() noexcept {
+  return offsetof(ExecutionContext, fast_call_entry_count_);
 }
 
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free,

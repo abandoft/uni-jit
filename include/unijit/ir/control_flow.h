@@ -65,6 +65,7 @@ enum class ControlOpcode : std::uint8_t {
   kEqual,
   kNotEqual,
   kCall,
+  kFastCall,
   kGuardWordNonzero,
   kGuardFloatNonzero,
   kSafepoint,
@@ -188,6 +189,9 @@ public:
   const std::vector<Value> &call_arguments() const noexcept {
     return call_arguments_;
   }
+  const std::vector<FastCallDescriptor> &fast_calls() const noexcept {
+    return fast_calls_;
+  }
   std::size_t memory_region_count() const noexcept {
     return memory_region_count_;
   }
@@ -225,6 +229,7 @@ private:
   Block entry_block_;
   std::vector<ControlNode> nodes_;
   std::vector<Value> call_arguments_;
+  std::vector<FastCallDescriptor> fast_calls_;
   std::size_t memory_region_count_{0};
   std::vector<MemoryAccessDescriptor> memory_accesses_;
   std::vector<AtomicAccessDescriptor> atomic_accesses_;
@@ -285,6 +290,9 @@ public:
   Value not_equal(Value lhs, Value rhs);
   Value call(RuntimeHelper helper, std::vector<Value> arguments,
              ValueType result_type = ValueType::kWord);
+  FastCallSlot create_fast_call(std::vector<ValueType> parameter_types,
+                                ValueType return_type = ValueType::kWord);
+  Value fast_call(FastCallSlot target, std::vector<Value> arguments);
   Value guard_word_nonzero(Value value, std::size_t site);
   Value guard_float64_nonzero(Value value, std::size_t site);
   Value safepoint(std::size_t site);

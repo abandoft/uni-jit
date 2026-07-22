@@ -58,6 +58,7 @@ bool is_binary(ControlOpcode opcode) {
   case ControlOpcode::kByteSwap:
   case ControlOpcode::kFloatNegate:
   case ControlOpcode::kCall:
+  case ControlOpcode::kFastCall:
   case ControlOpcode::kGuardWordNonzero:
   case ControlOpcode::kGuardFloatNonzero:
   case ControlOpcode::kSafepoint:
@@ -294,6 +295,18 @@ Status verify_impl(const ControlFlowFunction &function) {
     if (!is_valid_patch_cell_kind(cell.kind)) {
       return {StatusCode::kInvalidIr,
               "CFG patch cell descriptor is malformed"};
+    }
+  }
+  if (function.fast_calls().size() > FastCallSlot::kInvalidId) {
+    return {StatusCode::kInvalidIr,
+            "CFG fast call count exceeds the IR index range"};
+  }
+  for (const FastCallDescriptor &call : function.fast_calls()) {
+    if (!is_scalar_value_type(call.return_type) ||
+        !std::all_of(call.parameter_types.begin(), call.parameter_types.end(),
+                     is_scalar_value_type)) {
+      return {StatusCode::kInvalidIr,
+              "CFG fast call descriptor has a non-scalar signature"};
     }
   }
 
@@ -536,6 +549,41 @@ Status verify_impl(const ControlFlowFunction &function) {
           if (!is_scalar_value_type(function.value_type(argument))) {
             return invalid_control_flow(
                 value.id(), "CFG runtime call argument must be scalar");
+          }
+          claimed_call_arguments[flat_index] = true;
+        }
+        continue;
+      }
+      if (node.opcode == ControlOpcode::kFastCall) {
+        const std::size_t begin = node.argument_begin;
+        const std::size_t count = node.argument_count;
+        if (node.immediate < 0 ||
+            static_cast<std::size_t>(node.immediate) >=
+                function.fast_calls().size() ||
+            node.lhs.valid() || node.rhs.valid() ||
+            begin > function.call_arguments().size() ||
+            count > function.call_arguments().size() - begin) {
+          return invalid_control_flow(value.id(),
+                                      "control-flow fast call is malformed");
+        }
+        const FastCallDescriptor &descriptor =
+            function.fast_calls()[static_cast<std::size_t>(node.immediate)];
+        if (node.type != descriptor.return_type ||
+            count != descriptor.parameter_types.size()) {
+          return invalid_control_flow(
+              value.id(), "control-flow fast call signature is malformed");
+        }
+        for (std::size_t argument_index = 0; argument_index < count;
+             ++argument_index) {
+          const std::size_t flat_index = begin + argument_index;
+          const Value argument = function.call_arguments()[flat_index];
+          if (claimed_call_arguments[flat_index] ||
+              !available(argument, block_index, instruction_index) ||
+              function.value_type(argument) !=
+                  descriptor.parameter_types[argument_index]) {
+            return invalid_control_flow(
+                value.id(),
+                "fast call argument is duplicated, unavailable, or mistyped");
           }
           claimed_call_arguments[flat_index] = true;
         }
@@ -1449,6 +1497,41 @@ Value ControlFlowBuilder::call(RuntimeHelper helper,
   return result;
 }
 
+FastCallSlot ControlFlowBuilder::create_fast_call(
+    std::vector<ValueType> parameter_types, ValueType return_type) {
+  if (function_.fast_calls_.size() >= FastCallSlot::kInvalidId) {
+    return {};
+  }
+  const auto id = static_cast<std::uint32_t>(function_.fast_calls_.size());
+  function_.fast_calls_.emplace_back(std::move(parameter_types), return_type);
+  return FastCallSlot{id};
+}
+
+Value ControlFlowBuilder::fast_call(FastCallSlot target,
+                                    std::vector<Value> arguments) {
+  if (arguments.size() > std::numeric_limits<std::uint32_t>::max() ||
+      function_.call_arguments_.size() >
+          std::numeric_limits<std::uint32_t>::max() - arguments.size()) {
+    return {};
+  }
+  const auto argument_begin =
+      static_cast<std::uint32_t>(function_.call_arguments_.size());
+  const auto argument_count = static_cast<std::uint32_t>(arguments.size());
+  function_.call_arguments_.insert(function_.call_arguments_.end(),
+                                   arguments.begin(), arguments.end());
+  const ValueType result_type =
+      target.id() < function_.fast_calls_.size()
+          ? function_.fast_calls_[target.id()].return_type
+          : ValueType::kWord;
+  const Value result = append_node(ControlNode{
+      ControlOpcode::kFastCall, {}, {}, static_cast<Word>(target.id()),
+      result_type, argument_begin, argument_count});
+  if (!result.valid()) {
+    function_.call_arguments_.resize(argument_begin);
+  }
+  return result;
+}
+
 Value ControlFlowBuilder::guard_float64_nonzero(Value value,
                                                 std::size_t site) {
   if (site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {
@@ -2124,6 +2207,25 @@ ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
             helper_arguments[argument_index] = values[argument.id()];
           }
           values[value.id()] = unpack_runtime_helper(node.immediate)(
+              helper_arguments.data(), helper_arguments.size());
+        } else if (node.opcode == ControlOpcode::kFastCall) {
+          const std::size_t target = static_cast<std::size_t>(node.immediate);
+          if (context == nullptr ||
+              target >= context->fast_call_oracle_count() ||
+              context->fast_call_oracles()[target] == nullptr) {
+            return {{StatusCode::kInvalidArgument,
+                     "CFG fast call has no bound interpreter oracle", target},
+                    0};
+          }
+          helper_arguments.resize(node.argument_count);
+          for (std::size_t argument_index = 0;
+               argument_index < node.argument_count; ++argument_index) {
+            const Value argument = function.call_arguments()[
+                static_cast<std::size_t>(node.argument_begin) +
+                argument_index];
+            helper_arguments[argument_index] = values[argument.id()];
+          }
+          values[value.id()] = context->fast_call_oracles()[target](
               helper_arguments.data(), helper_arguments.size());
         } else if (node.opcode == ControlOpcode::kGuardWordNonzero ||
                    node.opcode == ControlOpcode::kGuardFloatNonzero) {

@@ -205,6 +205,10 @@ bool is_patch_cell(Opcode opcode) noexcept {
   return opcode == Opcode::kLoadPatchCell;
 }
 
+bool is_call(Opcode opcode) noexcept {
+  return opcode == Opcode::kCall || opcode == Opcode::kFastCall;
+}
+
 bool is_vector(Opcode opcode) noexcept {
   return opcode == Opcode::kVectorConstant ||
          opcode == Opcode::kVectorSplat ||
@@ -260,6 +264,11 @@ bool is_object(ControlOpcode opcode) noexcept {
 
 bool is_patch_cell(ControlOpcode opcode) noexcept {
   return opcode == ControlOpcode::kLoadPatchCell;
+}
+
+bool is_call(ControlOpcode opcode) noexcept {
+  return opcode == ControlOpcode::kCall ||
+         opcode == ControlOpcode::kFastCall;
 }
 
 bool is_vector(ControlOpcode opcode) noexcept {
@@ -954,7 +963,7 @@ PassResult transform_once(
   std::vector<bool> live(node_count, false);
   live[input.return_value().id()] = true;
   for (std::size_t index = 0; index < node_count; ++index) {
-    if (input.nodes()[index].opcode == Opcode::kCall ||
+    if (is_call(input.nodes()[index].opcode) ||
         is_memory(input.nodes()[index].opcode) ||
         is_atomic(input.nodes()[index].opcode) ||
         is_frame(input.nodes()[index].opcode) ||
@@ -984,7 +993,7 @@ PassResult transform_once(
     } else if (is_binary(node.opcode)) {
       live[node.lhs.id()] = true;
       live[node.rhs.id()] = true;
-    } else if (node.opcode == Opcode::kCall) {
+    } else if (is_call(node.opcode)) {
       for (std::size_t argument_index = 0;
            argument_index < node.argument_count; ++argument_index) {
         const Value argument = input.call_arguments()[
@@ -1029,6 +1038,9 @@ PassResult transform_once(
   }
   for (const PatchCellDescriptor& cell : input.patch_cells()) {
     builder.create_patch_cell(cell.initial_value, cell.kind);
+  }
+  for (const FastCallDescriptor& call : input.fast_calls()) {
+    builder.create_fast_call(call.parameter_types, call.return_type);
   }
   std::vector<Value> mapped(node_count);
   std::vector<bool> known_constant(node_count, false);
@@ -1084,7 +1096,7 @@ PassResult transform_once(
       continue;
     }
 
-    if (node.opcode == Opcode::kCall) {
+    if (is_call(node.opcode)) {
       std::vector<Value> arguments;
       arguments.reserve(node.argument_count);
       for (std::size_t argument_index = 0;
@@ -1093,8 +1105,13 @@ PassResult transform_once(
             static_cast<std::size_t>(node.argument_begin) + argument_index];
         arguments.push_back(mapped[argument.id()]);
       }
-      mapped[index] = builder.call(unpack_runtime_helper(node.immediate),
-                                   std::move(arguments), node.type);
+      mapped[index] =
+          node.opcode == Opcode::kCall
+              ? builder.call(unpack_runtime_helper(node.immediate),
+                             std::move(arguments), node.type)
+              : builder.fast_call(
+                    FastCallSlot{static_cast<std::uint32_t>(node.immediate)},
+                    std::move(arguments));
       continue;
     }
 
@@ -1524,6 +1541,9 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
   for (const PatchCellDescriptor& cell : input.patch_cells()) {
     builder.create_patch_cell(cell.initial_value, cell.kind);
   }
+  for (const FastCallDescriptor& call : input.fast_calls()) {
+    builder.create_fast_call(call.parameter_types, call.return_type);
+  }
   std::vector<Block> blocks(block_count);
   blocks[input.entry_block().id()] = builder.entry_block();
   std::vector<Value> mapped(node_count);
@@ -1565,7 +1585,7 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
         reachable_owner &&
         (opcode == ControlOpcode::kParameter ||
          opcode == ControlOpcode::kBlockParameter ||
-         opcode == ControlOpcode::kCall || is_memory(opcode) ||
+         is_call(opcode) || is_memory(opcode) ||
          is_atomic(opcode) || is_frame(opcode) || is_object(opcode) ||
          is_patch_cell(opcode) ||
          is_nonzero_guard(opcode) || opcode == ControlOpcode::kSafepoint);
@@ -1616,7 +1636,7 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
     if (is_vector(node.opcode)) {
       visit_vector_operands(input, node,
                             [&](Value value) { live[value.id()] = true; });
-    } else if (node.opcode == ControlOpcode::kCall) {
+    } else if (is_call(node.opcode)) {
       for (std::size_t argument_index = 0;
            argument_index < node.argument_count; ++argument_index) {
         const Value argument = input.call_arguments()[
@@ -1698,7 +1718,7 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
       mapped[index] = node.type == ValueType::kFloat64
                           ? builder.float64_constant_bits(node.immediate)
                           : builder.constant(node.immediate);
-    } else if (node.opcode == ControlOpcode::kCall) {
+    } else if (is_call(node.opcode)) {
       std::vector<Value> arguments;
       arguments.reserve(node.argument_count);
       for (std::size_t argument_index = 0;
@@ -1707,8 +1727,13 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
             static_cast<std::size_t>(node.argument_begin) + argument_index];
         arguments.push_back(mapped[argument.id()]);
       }
-      mapped[index] = builder.call(unpack_runtime_helper(node.immediate),
-                                   std::move(arguments), node.type);
+      mapped[index] =
+          node.opcode == ControlOpcode::kCall
+              ? builder.call(unpack_runtime_helper(node.immediate),
+                             std::move(arguments), node.type)
+              : builder.fast_call(
+                    FastCallSlot{static_cast<std::uint32_t>(node.immediate)},
+                    std::move(arguments));
     } else if (node.opcode == ControlOpcode::kSafepoint) {
       mapped[index] =
           builder.safepoint(static_cast<std::size_t>(node.immediate));
@@ -1778,7 +1803,7 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
                "optimizer could not canonicalize a CFG node", index},
               {}, {}, 0, 0};
     }
-    if (node.opcode == ControlOpcode::kCall || is_memory(node.opcode) ||
+    if (is_call(node.opcode) || is_memory(node.opcode) ||
         is_atomic(node.opcode) || is_frame(node.opcode) ||
         is_object(node.opcode) || is_patch_cell(node.opcode) ||
         is_nonzero_guard(node.opcode) ||
@@ -1943,6 +1968,9 @@ ControlFlowOptimizationResult Optimizer::run(
     }
     for (const PatchCellDescriptor& cell : function.patch_cells()) {
       builder.create_patch_cell(cell.initial_value, cell.kind);
+    }
+    for (const FastCallDescriptor& call : function.fast_calls()) {
+      builder.create_fast_call(call.parameter_types, call.return_type);
     }
     std::vector<Block> blocks(block_count);
     blocks[function.entry_block().id()] = builder.entry_block();
@@ -2136,7 +2164,7 @@ ControlFlowOptimizationResult Optimizer::run(
       const ControlOpcode opcode = function.nodes()[index].opcode;
       live[index] = opcode == ControlOpcode::kParameter ||
                     opcode == ControlOpcode::kBlockParameter ||
-                    opcode == ControlOpcode::kCall || is_memory(opcode) ||
+                    is_call(opcode) || is_memory(opcode) ||
                     is_atomic(opcode) || is_frame(opcode) ||
                     is_object(opcode) || is_patch_cell(opcode) ||
                     is_nonzero_guard(opcode) ||
@@ -2175,7 +2203,7 @@ ControlFlowOptimizationResult Optimizer::run(
           visit_vector_operands(
               function, node, [&](Value value) { live[value.id()] = true; });
         }
-      } else if (node.opcode == ControlOpcode::kCall) {
+      } else if (is_call(node.opcode)) {
         for (std::size_t argument_index = 0;
              argument_index < node.argument_count; ++argument_index) {
           const Value argument = function.call_arguments()[
@@ -2251,7 +2279,7 @@ ControlFlowOptimizationResult Optimizer::run(
         mapped[index] = node.type == ValueType::kFloat64
                             ? builder.float64_constant_bits(node.immediate)
                             : builder.constant(node.immediate);
-      } else if (node.opcode == ControlOpcode::kCall) {
+      } else if (is_call(node.opcode)) {
         std::vector<Value> arguments;
         arguments.reserve(node.argument_count);
         for (std::size_t argument_index = 0;
@@ -2260,8 +2288,14 @@ ControlFlowOptimizationResult Optimizer::run(
               static_cast<std::size_t>(node.argument_begin) + argument_index];
           arguments.push_back(mapped[argument.id()]);
         }
-        mapped[index] = builder.call(unpack_runtime_helper(node.immediate),
-                                     std::move(arguments), node.type);
+        mapped[index] =
+            node.opcode == ControlOpcode::kCall
+                ? builder.call(unpack_runtime_helper(node.immediate),
+                               std::move(arguments), node.type)
+                : builder.fast_call(
+                      FastCallSlot{
+                          static_cast<std::uint32_t>(node.immediate)},
+                      std::move(arguments));
       } else if (node.opcode == ControlOpcode::kSafepoint) {
         mapped[index] =
             builder.safepoint(static_cast<std::size_t>(node.immediate));

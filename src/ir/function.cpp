@@ -324,6 +324,40 @@ Value FunctionBuilder::call(RuntimeHelper helper,
   return Value{id};
 }
 
+FastCallSlot FunctionBuilder::create_fast_call(
+    std::vector<ValueType> parameter_types, ValueType return_type) {
+  if (function_.fast_calls_.size() >= FastCallSlot::kInvalidId) {
+    return {};
+  }
+  const auto id = static_cast<std::uint32_t>(function_.fast_calls_.size());
+  function_.fast_calls_.emplace_back(std::move(parameter_types), return_type);
+  return FastCallSlot{id};
+}
+
+Value FunctionBuilder::fast_call(FastCallSlot target,
+                                 std::vector<Value> arguments) {
+  if (function_.nodes_.size() >= Value::kInvalidId ||
+      arguments.size() > std::numeric_limits<std::uint32_t>::max() ||
+      function_.call_arguments_.size() >
+          std::numeric_limits<std::uint32_t>::max() - arguments.size()) {
+    return {};
+  }
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  const auto argument_begin =
+      static_cast<std::uint32_t>(function_.call_arguments_.size());
+  const auto argument_count = static_cast<std::uint32_t>(arguments.size());
+  function_.call_arguments_.insert(function_.call_arguments_.end(),
+                                   arguments.begin(), arguments.end());
+  const ValueType result_type =
+      target.id() < function_.fast_calls_.size()
+          ? function_.fast_calls_[target.id()].return_type
+          : ValueType::kWord;
+  function_.nodes_.push_back(
+      Node{Opcode::kFastCall, {}, {}, static_cast<Word>(target.id()),
+           result_type, argument_begin, argument_count});
+  return Value{id};
+}
+
 Value FunctionBuilder::safepoint(std::size_t site) {
   if (function_.nodes_.size() >= Value::kInvalidId ||
       site > static_cast<std::size_t>(std::numeric_limits<Word>::max())) {

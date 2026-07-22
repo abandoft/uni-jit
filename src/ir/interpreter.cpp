@@ -96,6 +96,7 @@ Word evaluate_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
     case Opcode::kParameter:
     case Opcode::kConstant:
     case Opcode::kCall:
+    case Opcode::kFastCall:
     case Opcode::kSafepoint:
     case Opcode::kLoadWord:
     case Opcode::kStoreWord:
@@ -217,6 +218,27 @@ EvaluationResult Interpreter::evaluate(const Function& function,
             helper_arguments[argument_index] = values[argument.id()];
           }
           values[index] = unpack_runtime_helper(node.immediate)(
+              helper_arguments.data(), helper_arguments.size());
+          break;
+        }
+        case Opcode::kFastCall: {
+          const std::size_t target = static_cast<std::size_t>(node.immediate);
+          if (context == nullptr ||
+              target >= context->fast_call_oracle_count() ||
+              context->fast_call_oracles()[target] == nullptr) {
+            return {{StatusCode::kInvalidArgument,
+                     "fast call has no bound interpreter oracle", target},
+                    0};
+          }
+          helper_arguments.resize(node.argument_count);
+          for (std::size_t argument_index = 0;
+               argument_index < node.argument_count; ++argument_index) {
+            const Value argument = function.call_arguments()[
+                static_cast<std::size_t>(node.argument_begin) +
+                argument_index];
+            helper_arguments[argument_index] = values[argument.id()];
+          }
+          values[index] = context->fast_call_oracles()[target](
               helper_arguments.data(), helper_arguments.size());
           break;
         }
