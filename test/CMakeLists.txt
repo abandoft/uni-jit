@@ -12,6 +12,18 @@ endif()
 
 add_test(NAME unijit.unit COMMAND unijit_tests)
 
+add_executable(unijit_embedding_test embedding_test.c)
+target_link_libraries(unijit_embedding_test PRIVATE UniJIT::unijit)
+target_compile_features(unijit_embedding_test PRIVATE c_std_17)
+set_target_properties(unijit_embedding_test PROPERTIES LINKER_LANGUAGE CXX)
+if(MSVC)
+  target_compile_options(unijit_embedding_test PRIVATE /W4)
+else()
+  target_compile_options(
+    unijit_embedding_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+add_test(NAME unijit.embedding_c_abi COMMAND unijit_embedding_test)
+
 add_executable(unijit_atomic_litmus atomic_litmus.cpp)
 target_link_libraries(
   unijit_atomic_litmus PRIVATE UniJIT::unijit Threads::Threads)
@@ -140,6 +152,10 @@ if(Python3_Interpreter_FOUND)
     NAME unijit.performance_gate_tool
     COMMAND "${Python3_EXECUTABLE}"
             "${PROJECT_SOURCE_DIR}/test/performance_gate_test.py")
+  add_test(
+    NAME unijit.c_api_exports_tool
+    COMMAND "${Python3_EXECUTABLE}"
+            "${PROJECT_SOURCE_DIR}/test/c_api_exports_test.py")
   add_test(
     NAME unijit.lua_benchmark_tool
     COMMAND "${Python3_EXECUTABLE}"
