@@ -1,3 +1,7 @@
+## 0.2.5
+
+- 新增一套面向64位AArch64、x86-64与RISC-V 64主机、完全独立设计的版本化C17商业嵌入ABI，不暴露或复用SLJIT及任何C++实现布局：提供67个`unijit_v1_*`共享库入口、不透明且所有权明确的builder/function/compiler/compiled generation/execution context/code cache/code handle/error、固定宽度可扩展的ABI/目标/限额/统计结构、精确的Word与Float64值位签名、标量构建和编译、guard与可计数safepoint、协作式中断和可诊断退出、目标档案验证、有界编译与缓存预算、代次安全的类型化快速调用绑定、不可变代码的数据补丁单元发布、缓存查找/失效/保留代次语义、结构化状态码、1024字节有界诊断以及完整异常隔离；新增C17聚合布局冻结、畸形结构/保留字段/签名/资源限额负向验证、标量/Float64/safepoint/缓存/补丁单元/快速调用生命周期资格测试、与C++消费者并列的纯C安装包消费者、精确导出清单与泄漏检查器，以及在真实Ubuntu GCC x86-64、Windows MSVC x86-64和Apple Clang AArch64主机上职责明确的共享库流水线；在CFG、类型化内存与对象、原子、SIMD值、恢复、分层、调度、可移植IR和AOT的完整版本化契约交付前，这些能力不会通过该ABI开放。
+
 ## 0.2.4
 
 - 为直线与 CFG IR 新增面向上下文无关 Word/Float64 目标的代次安全类型化 JIT 到 JIT 内部调用，覆盖独立受限且经过验证的调用描述符、显式解释器 oracle 绑定、副作用安全优化、通过 release/acquire 发布的不可变目标表快照、精确已编译代次缓存租约、未绑定与托管入口失效关闭、严格签名与目标档案校验、安全缓存失效和并发目标切换，以及 AArch64、x86-64 System V/Windows 与 RISC-V 64 上独立的间接原生入口降级；补齐安装包消费、400000 次调用/10000 次切换扩展压力、ThreadSanitizer 覆盖，以及将完整 CFG 循环限制为等价运行时 helper 延迟 1.5 倍以内、调用者 256 字节以内、目标 64 字节以内的留存性能门槛；完整契约已通过包含 Ubuntu 与 Windows x86-64、Linux/Windows Sanitizer 的 13 任务托管流水线、另一台真实 Ubuntu GCC 13.3 x86-64 主机和真实 RISC-V 64 GCC 14.2 硬件验证，同时让需要上下文、嵌套、GC 引用、寄存器前缀和尾调用的目标继续失效关闭并留待后续契约。
