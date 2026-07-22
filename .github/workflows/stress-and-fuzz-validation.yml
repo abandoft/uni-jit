@@ -29,7 +29,7 @@ jobs:
           cmake --build build/qualification --parallel
           --target unijit_differential_fuzz unijit_code_cache_stress
           unijit_compilation_scheduler_stress unijit_atomic_litmus
-          unijit_patch_cell_stress
+          unijit_patch_cell_stress unijit_fast_call_stress
 
       - name: Run committed qualification corpus
         run: >-
@@ -74,6 +74,12 @@ jobs:
           --publication-iterations 10000 --increments 10000
           > build/qualification/records/patch-cell-stress.json
 
+      - name: Run extended generation-safe fast-call retargeting stress
+        run: >-
+          build/qualification/test/unijit_fast_call_stress
+          --readers 8 --reader-invocations 50000 --retargets 10000
+          > build/qualification/records/fast-call-stress.json
+
       - name: Retain qualification records
         uses: actions/upload-artifact@v7
         with:
@@ -107,7 +113,7 @@ jobs:
           cmake --build build/thread-sanitize --parallel
           --target unijit_code_cache_stress
           unijit_compilation_scheduler_stress unijit_patch_cell_stress
-          unijit_tests
+          unijit_fast_call_stress unijit_tests
 
       - name: Run ThreadSanitizer cache stress
         run: >-
@@ -128,3 +134,8 @@ jobs:
         run: >-
           build/thread-sanitize/test/unijit_patch_cell_stress
           --publication-iterations 1000 --increments 2000
+
+      - name: Run ThreadSanitizer generation-safe fast-call stress
+        run: >-
+          build/thread-sanitize/test/unijit_fast_call_stress
+          --readers 4 --reader-invocations 10000 --retargets 2000
