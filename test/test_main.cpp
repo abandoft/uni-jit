@@ -2945,6 +2945,197 @@ void test_controlled_frame_slots() {
          "verifier must reject a frame store whose SSA type differs from its slot");
 }
 
+void test_data_patch_cells() {
+  using unijit::ir::ControlFlowBuilder;
+  using unijit::ir::ControlFlowInterpreter;
+  using unijit::ir::PatchCellKind;
+  using unijit::ir::PatchCellSlot;
+
+  FunctionBuilder builder(0);
+  const PatchCellSlot target =
+      builder.create_patch_cell(7, PatchCellKind::kTarget);
+  const PatchCellSlot counter =
+      builder.create_patch_cell(1, PatchCellKind::kCounter);
+  const Value target_value = builder.load_patch_cell(target);
+  const Value counter_value = builder.load_patch_cell(counter);
+  expect(builder.set_return(builder.add(target_value, counter_value)).ok(),
+         "patch-cell fixture must return two acquired values");
+  const Function function = std::move(builder).build();
+  const auto interpreted = Interpreter::evaluate(function, nullptr, 0);
+  const auto optimization = unijit::ir::Optimizer::run(function);
+  const auto optimized_interpreted =
+      optimization.ok()
+          ? Interpreter::evaluate(optimization.function, nullptr, 0)
+          : unijit::ir::EvaluationResult{optimization.status, 0};
+  auto compilation = Compiler::compile(function);
+  expect(unijit::ir::verify(function).ok() && interpreted.ok() &&
+             interpreted.value == 8 && optimization.ok() &&
+             optimization.function.patch_cells().size() == 2 &&
+             optimized_interpreted.ok() && optimized_interpreted.value == 8 &&
+             compilation.ok(),
+         "patch cells must survive verification, interpretation, and optimization");
+  if (compilation.ok()) {
+    const auto initial = compilation.function->invoke(nullptr, 0);
+    const auto initial_target = compilation.function->read_patch_cell(0);
+    const auto failed_compare =
+        compilation.function->compare_exchange_patch_cell(0, 8, 50);
+    const auto successful_compare =
+        compilation.function->compare_exchange_patch_cell(0, 7, 50);
+    const auto previous_counter =
+        compilation.function->fetch_add_patch_cell(1, 9);
+    const auto updated = compilation.function->invoke(nullptr, 0);
+    const auto invalid_read = compilation.function->read_patch_cell(2);
+    expect(initial.ok() && initial.value == 8 && initial_target.ok() &&
+               initial_target.value == 7 && failed_compare.ok() &&
+               !failed_compare.exchanged && failed_compare.observed == 7 &&
+               successful_compare.ok() && successful_compare.exchanged &&
+               successful_compare.observed == 7 && previous_counter.ok() &&
+               previous_counter.value == 1 && updated.ok() &&
+               updated.value == 60 && !invalid_read.ok() &&
+               compilation.function->requires_context() &&
+               compilation.function->native_entry() == nullptr &&
+               compilation.function->stats().patch_cells == 2 &&
+               compilation.function->patch_cells()[0].kind ==
+                   PatchCellKind::kTarget,
+           "managed patch cells must publish, compare, count, report metadata, and hide raw entry");
+  }
+
+  unijit::jit::CompilationOptions baseline_options;
+  baseline_options.optimization_level =
+      unijit::jit::OptimizationLevel::kBaseline;
+  auto baseline_compilation = Compiler::compile(function, baseline_options);
+  const auto baseline_initial =
+      baseline_compilation.ok()
+          ? baseline_compilation.function->invoke(nullptr, 0)
+          : unijit::ir::EvaluationResult{baseline_compilation.status, 0};
+  const unijit::Status baseline_publication =
+      baseline_compilation.ok()
+          ? baseline_compilation.function->publish_patch_cell(0, 40)
+          : baseline_compilation.status;
+  const auto baseline_updated =
+      baseline_compilation.ok()
+          ? baseline_compilation.function->invoke(nullptr, 0)
+          : unijit::ir::EvaluationResult{baseline_compilation.status, 0};
+  expect(baseline_compilation.ok() && baseline_initial.ok() &&
+             baseline_initial.value == 8 && baseline_publication.ok() &&
+             baseline_updated.ok() && baseline_updated.value == 41,
+         "baseline lowering must acquire the current patch-cell value");
+
+  ControlFlowBuilder cfg_builder(0);
+  const PatchCellSlot generation =
+      cfg_builder.create_patch_cell(3, PatchCellKind::kGeneration);
+  const Value first_load = cfg_builder.load_patch_cell(generation);
+  const auto continuation = cfg_builder.create_block(1);
+  expect(cfg_builder.jump(continuation, {first_load}).ok() &&
+             cfg_builder.set_insertion_block(continuation).ok(),
+         "CFG patch-cell fixture must cross a typed edge");
+  const Value second_load = cfg_builder.load_patch_cell(generation);
+  expect(cfg_builder
+             .set_return(cfg_builder.add(
+                 cfg_builder.block_parameter(continuation, 0), second_load))
+             .ok(),
+         "CFG patch-cell fixture must return both acquired loads");
+  const auto cfg_function = std::move(cfg_builder).build();
+  const auto cfg_reference =
+      ControlFlowInterpreter::evaluate(cfg_function, nullptr, 0);
+  const auto cfg_optimization = unijit::ir::Optimizer::run(cfg_function);
+  auto cfg_compilation = Compiler::compile(cfg_function);
+  const auto cfg_initial =
+      cfg_compilation.ok()
+          ? cfg_compilation.function->invoke(nullptr, 0)
+          : unijit::ir::EvaluationResult{cfg_compilation.status, 0};
+  const unijit::Status cfg_publication =
+      cfg_compilation.ok()
+          ? cfg_compilation.function->publish_patch_cell(0, 11)
+          : cfg_compilation.status;
+  const auto cfg_updated =
+      cfg_compilation.ok()
+          ? cfg_compilation.function->invoke(nullptr, 0)
+          : unijit::ir::EvaluationResult{cfg_compilation.status, 0};
+  expect(unijit::ir::verify(cfg_function).ok() && cfg_reference.ok() &&
+             cfg_reference.value == 6 && cfg_optimization.ok() &&
+             cfg_optimization.function.patch_cells().size() == 1 &&
+             cfg_compilation.ok() && cfg_initial.ok() &&
+             cfg_initial.value == 6 && cfg_publication.ok() &&
+             cfg_updated.ok() && cfg_updated.value == 22,
+         "CFG lowering must acquire the current function-owned patch generation across an edge");
+
+  FunctionBuilder concurrent_builder(0);
+  const PatchCellSlot concurrent_counter =
+      concurrent_builder.create_patch_cell(0, PatchCellKind::kCounter);
+  expect(concurrent_builder
+             .set_return(concurrent_builder.load_patch_cell(concurrent_counter))
+             .ok(),
+         "concurrent patch-cell fixture must return its counter");
+  auto concurrent_compilation =
+      Compiler::compile(std::move(concurrent_builder).build());
+  unijit::jit::CodeCache cache({1, 64U * 1024U});
+  auto publication =
+      concurrent_compilation.ok()
+          ? cache.publish("patch-cell-counter", 1,
+                          std::move(concurrent_compilation.function))
+          : unijit::jit::CodeCachePublication{
+                concurrent_compilation.status, {}, false, false};
+  auto lease = publication.ok() ? publication.handle
+                                : unijit::jit::CodeHandle{};
+  std::atomic<bool> concurrent_failed{false};
+  std::vector<std::thread> workers;
+  if (lease) {
+    for (std::size_t thread = 0; thread < 4; ++thread) {
+      workers.emplace_back([&]() {
+        for (std::size_t iteration = 0; iteration < 2000; ++iteration) {
+          if (!lease.fetch_add_patch_cell(0, 1).ok()) {
+            concurrent_failed.store(true, std::memory_order_relaxed);
+            return;
+          }
+        }
+      });
+    }
+  }
+  for (std::thread& worker : workers) {
+    worker.join();
+  }
+  const bool invalidated = cache.invalidate("patch-cell-counter", 1);
+  const auto retained_value = lease ? lease.invoke(nullptr, 0)
+                                    : unijit::ir::EvaluationResult{};
+  const auto retained_update = lease ? lease.publish_patch_cell(0, 9001)
+                                     : unijit::Status{
+                                           unijit::StatusCode::kInvalidArgument,
+                                           "missing patch-cell lease"};
+  const auto retained_updated_value = lease ? lease.invoke(nullptr, 0)
+                                            : unijit::ir::EvaluationResult{};
+  expect(publication.ok() && !concurrent_failed.load(std::memory_order_relaxed) &&
+             invalidated && !cache.find("patch-cell-counter", 1) &&
+             retained_value.ok() && retained_value.value == 8000 &&
+             retained_update.ok() && retained_updated_value.ok() &&
+             retained_updated_value.value == 9001,
+         "cache eviction must retire lookup visibility while a lease keeps patch data safe under contention");
+
+  FunctionBuilder invalid_slot_builder(0);
+  expect(invalid_slot_builder
+             .set_return(invalid_slot_builder.load_patch_cell(
+                 PatchCellSlot{999}))
+             .ok() &&
+             !unijit::ir::verify(std::move(invalid_slot_builder).build()).ok(),
+         "verifier must reject an undeclared patch cell");
+
+  FunctionBuilder invalid_kind_builder(0);
+  const PatchCellSlot invalid_kind = invalid_kind_builder.create_patch_cell(
+      0, static_cast<PatchCellKind>(255));
+  expect(invalid_kind_builder
+             .set_return(invalid_kind_builder.load_patch_cell(invalid_kind))
+             .ok() &&
+             !unijit::ir::verify(std::move(invalid_kind_builder).build()).ok(),
+         "verifier must reject an unknown patch-cell purpose");
+
+  unijit::jit::CompilationOptions limited_options;
+  limited_options.limits.maximum_patch_cells = 1;
+  const auto limited = Compiler::compile(function, limited_options);
+  expect(!limited.ok() &&
+             limited.status.code() == unijit::StatusCode::kResourceExhausted,
+         "patch-cell descriptors must obey an independent compilation limit");
+}
+
 void test_trusted_object_layouts() {
   using unijit::ir::ControlFlowBuilder;
   using unijit::ir::ControlFlowInterpreter;
@@ -8943,6 +9134,7 @@ int main() {
   test_native_bounded_float_memory_matrix();
   test_bounded_float_memory_control_flow();
   test_controlled_frame_slots();
+  test_data_patch_cells();
   test_trusted_object_layouts();
   test_code_cache_lifecycle();
   test_code_cache_concurrency();

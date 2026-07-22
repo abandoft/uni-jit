@@ -29,6 +29,7 @@ jobs:
           cmake --build build/qualification --parallel
           --target unijit_differential_fuzz unijit_code_cache_stress
           unijit_compilation_scheduler_stress unijit_atomic_litmus
+          unijit_patch_cell_stress
 
       - name: Run committed qualification corpus
         run: >-
@@ -67,6 +68,12 @@ jobs:
           --iterations 5000 --cas-successes 5000
           > build/qualification/records/atomic-litmus.json
 
+      - name: Run extended data patch-cell concurrency stress
+        run: >-
+          build/qualification/test/unijit_patch_cell_stress
+          --publication-iterations 10000 --increments 10000
+          > build/qualification/records/patch-cell-stress.json
+
       - name: Retain qualification records
         uses: actions/upload-artifact@v7
         with:
@@ -99,7 +106,8 @@ jobs:
         run: >-
           cmake --build build/thread-sanitize --parallel
           --target unijit_code_cache_stress
-          unijit_compilation_scheduler_stress unijit_tests
+          unijit_compilation_scheduler_stress unijit_patch_cell_stress
+          unijit_tests
 
       - name: Run ThreadSanitizer cache stress
         run: >-
@@ -115,3 +123,8 @@ jobs:
         run: >-
           build/thread-sanitize/test/unijit_compilation_scheduler_stress
           --producers 8 --submissions 2000 --identities 64 --workers 4
+
+      - name: Run ThreadSanitizer data patch-cell stress
+        run: >-
+          build/thread-sanitize/test/unijit_patch_cell_stress
+          --publication-iterations 1000 --increments 2000

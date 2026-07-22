@@ -883,6 +883,59 @@ int main() {
     return 74;
   }
 
+  unijit::ir::FunctionBuilder patch_builder(0);
+  const auto patch_counter = patch_builder.create_patch_cell(
+      40, unijit::ir::PatchCellKind::kCounter);
+  if (!patch_builder
+           .set_return(patch_builder.add(
+               patch_builder.load_patch_cell(patch_counter),
+               patch_builder.constant(2)))
+           .ok()) {
+    return 81;
+  }
+  const auto patch_function = std::move(patch_builder).build();
+  const auto patch_preflight = unijit::jit::preflight_capabilities(
+      patch_function, unijit::jit::baseline_target_profile());
+  auto patch_compilation = unijit::jit::Compiler::compile(patch_function);
+  const auto patch_initial =
+      patch_compilation.ok()
+          ? patch_compilation.function->invoke(nullptr, 0)
+          : unijit::ir::EvaluationResult{};
+  const auto patch_read =
+      patch_compilation.ok()
+          ? patch_compilation.function->read_patch_cell(0)
+          : unijit::jit::PatchCellReadResult{};
+  const auto patch_publish =
+      patch_compilation.ok()
+          ? patch_compilation.function->publish_patch_cell(0, 50)
+          : patch_compilation.status;
+  const auto patch_compare =
+      patch_compilation.ok()
+          ? patch_compilation.function->compare_exchange_patch_cell(0, 50, 60)
+          : unijit::jit::PatchCellCompareExchangeResult{};
+  const auto patch_previous =
+      patch_compilation.ok()
+          ? patch_compilation.function->fetch_add_patch_cell(0, 2)
+          : unijit::jit::PatchCellReadResult{};
+  const auto patch_updated =
+      patch_compilation.ok()
+          ? patch_compilation.function->invoke(nullptr, 0)
+          : unijit::ir::EvaluationResult{};
+  if (!patch_preflight.ok() || !patch_preflight.requires_execution_context ||
+      !patch_compilation.ok() || !patch_initial.ok() ||
+      patch_initial.value != 42 || !patch_read.ok() ||
+      patch_read.value != 40 || !patch_publish.ok() || !patch_compare.ok() ||
+      !patch_compare.exchanged || patch_compare.observed != 50 ||
+      !patch_previous.ok() || patch_previous.value != 60 ||
+      !patch_updated.ok() || patch_updated.value != 64 ||
+      patch_compilation.function->native_entry() != nullptr ||
+      patch_compilation.function->stats().patch_cells != 1 ||
+      patch_compilation.function->patch_cells().size() != 1 ||
+      patch_compilation.function->patch_cells()[0].kind !=
+          unijit::ir::PatchCellKind::kCounter) {
+    return 82;
+  }
+
   const auto atomic_access = [](unijit::ir::AtomicMemoryOrder order) {
     unijit::ir::AtomicAccessDescriptor descriptor;
     descriptor.memory.width = unijit::ir::MemoryWidth::k64;

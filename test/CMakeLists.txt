@@ -29,6 +29,24 @@ set_tests_properties(
   unijit.qualification.atomic_litmus
   PROPERTIES LABELS qualification TIMEOUT 180 SKIP_RETURN_CODE 77)
 
+add_executable(unijit_patch_cell_stress patch_cell_stress.cpp)
+target_link_libraries(
+  unijit_patch_cell_stress PRIVATE UniJIT::unijit Threads::Threads)
+target_compile_features(unijit_patch_cell_stress PRIVATE cxx_std_17)
+if(MSVC)
+  target_compile_options(unijit_patch_cell_stress PRIVATE /W4 /permissive-)
+else()
+  target_compile_options(
+    unijit_patch_cell_stress PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_test(
+  NAME unijit.qualification.patch_cell_stress
+  COMMAND unijit_patch_cell_stress
+          --publication-iterations 512 --increments 1000)
+set_tests_properties(
+  unijit.qualification.patch_cell_stress
+  PROPERTIES LABELS qualification TIMEOUT 180)
+
 if(UNIJIT_BUILD_QUALIFICATION_TESTS)
   add_executable(unijit_code_cache_stress code_cache_stress.cpp)
   target_link_libraries(
