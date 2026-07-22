@@ -1873,7 +1873,8 @@ LoweringResult lower_impl(const ir::Function& function,
         has_vector_operations || is_vector_opcode(node.opcode);
     has_atomic_operations =
         has_atomic_operations || is_atomic_access(node.opcode);
-    if (node.opcode == ir::Opcode::kCall) {
+    if (node.opcode == ir::Opcode::kCall ||
+        node.opcode == ir::Opcode::kFastCall) {
       maximum_call_arguments =
           std::max(maximum_call_arguments,
                    static_cast<std::size_t>(node.argument_count));
@@ -1889,6 +1890,7 @@ LoweringResult lower_impl(const ir::Function& function,
                is_atomic_access(node.opcode) ||
                node.opcode == ir::Opcode::kLoadObject ||
                node.opcode == ir::Opcode::kStoreObject ||
+               node.opcode == ir::Opcode::kFastCall ||
                node.opcode == ir::Opcode::kLoadPatchCell) {
       has_context_operations = true;
     }
@@ -2158,7 +2160,8 @@ LoweringResult lower_impl(const ir::Function& function,
         }
         break;
       }
-      case ir::Opcode::kCall: {
+      case ir::Opcode::kCall:
+      case ir::Opcode::kFastCall: {
         save_live_across_call(&assembler, function, allocation, index);
         for (std::size_t argument_index = 0;
              argument_index < node.argument_count; ++argument_index) {
@@ -2179,9 +2182,20 @@ LoweringResult lower_impl(const ir::Function& function,
         }
         assembler.address(kRuntimeArgument0, kRsp,
                           call_argument_base * sizeof(ir::Word));
-        assembler.move_immediate(
-            kRuntimeArgument1, static_cast<ir::Word>(node.argument_count));
-        assembler.move_immediate(kScratch0, node.immediate);
+        if (node.opcode == ir::Opcode::kCall) {
+          assembler.move_immediate(
+              kRuntimeArgument1, static_cast<ir::Word>(node.argument_count));
+          assembler.move_immediate(kScratch0, node.immediate);
+        } else {
+          assembler.load(kRuntimeArgument1, kRsp,
+                         context_slot * sizeof(ir::Word));
+          assembler.load(
+              kScratch0, kRuntimeArgument1,
+              runtime::ExecutionContext::fast_call_entries_offset());
+          assembler.load(kScratch0, kScratch0,
+                         static_cast<std::size_t>(node.immediate) *
+                             sizeof(runtime::FastCallNativeEntry));
+        }
         assembler.reserve_stack(
             runtime_call_stack_adjustment(has_vector_operations));
         assembler.call_register(kScratch0);
@@ -3455,6 +3469,7 @@ LoweringResult lower_control_flow_impl(
                is_atomic_access(node.opcode) ||
                node.opcode == ir::ControlOpcode::kLoadObject ||
                node.opcode == ir::ControlOpcode::kStoreObject ||
+               node.opcode == ir::ControlOpcode::kFastCall ||
                node.opcode == ir::ControlOpcode::kLoadPatchCell;
       });
   std::size_t maximum_call_arguments = 0;
@@ -3465,7 +3480,8 @@ LoweringResult lower_control_flow_impl(
         has_vector_operations || is_vector_opcode(node.opcode);
     has_atomic_operations =
         has_atomic_operations || is_atomic_access(node.opcode);
-    if (node.opcode == ir::ControlOpcode::kCall) {
+    if (node.opcode == ir::ControlOpcode::kCall ||
+        node.opcode == ir::ControlOpcode::kFastCall) {
       maximum_call_arguments =
           std::max(maximum_call_arguments,
                    static_cast<std::size_t>(node.argument_count));
@@ -3629,6 +3645,7 @@ LoweringResult lower_control_flow_impl(
           }
           break;
         case ir::ControlOpcode::kCall:
+        case ir::ControlOpcode::kFastCall:
           save_control_live_across_call(&assembler, function, allocation,
                                         value, block_index);
           for (std::size_t argument_index = 0;
@@ -3651,9 +3668,21 @@ LoweringResult lower_control_flow_impl(
           }
           assembler.address(kRuntimeArgument0, kRsp,
                             call_argument_base * sizeof(ir::Word));
-          assembler.move_immediate(
-              kRuntimeArgument1, static_cast<ir::Word>(node.argument_count));
-          assembler.move_immediate(kScratch0, node.immediate);
+          if (node.opcode == ir::ControlOpcode::kCall) {
+            assembler.move_immediate(
+                kRuntimeArgument1,
+                static_cast<ir::Word>(node.argument_count));
+            assembler.move_immediate(kScratch0, node.immediate);
+          } else {
+            assembler.load(kRuntimeArgument1, kRsp,
+                           context_slot * sizeof(ir::Word));
+            assembler.load(
+                kScratch0, kRuntimeArgument1,
+                runtime::ExecutionContext::fast_call_entries_offset());
+            assembler.load(kScratch0, kScratch0,
+                           static_cast<std::size_t>(node.immediate) *
+                               sizeof(runtime::FastCallNativeEntry));
+          }
           assembler.reserve_stack(
               runtime_call_stack_adjustment(has_vector_operations));
           assembler.call_register(kScratch0);
