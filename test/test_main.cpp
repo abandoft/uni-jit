@@ -1230,6 +1230,55 @@ void test_bounded_atomic_semantics() {
            "profile-selected atomic baseline must match optimized execution");
   }
 
+  if (has_riscv_atomic) {
+    FunctionBuilder subword_builder(1, 1);
+    const Value live_parameter = subword_builder.parameter(0);
+    const Value subword_offset = subword_builder.constant(0);
+    subword_builder.atomic_store(
+        subword_offset, subword_builder.constant(0x1234),
+        access(MemoryWidth::k16, AtomicMemoryOrder::kRelease), 198);
+    const Value loaded = subword_builder.atomic_load(
+        subword_offset,
+        access(MemoryWidth::k16, AtomicMemoryOrder::kAcquire), 199);
+    expect(subword_builder.set_return(
+               subword_builder.add(live_parameter, loaded)).ok(),
+           "RISC-V subword helper fixture must keep a value live across calls");
+    const Function subword_function = std::move(subword_builder).build();
+    const auto subword_capability =
+        unijit::jit::preflight_capabilities(subword_function, host);
+    expect(subword_capability.ok() &&
+               subword_capability.overall_strategy ==
+                   LoweringStrategy::kHelper &&
+               subword_capability.operation_count(LoweringStrategy::kHelper) ==
+                   2 &&
+               subword_capability.required_features ==
+                   unijit::jit::target_feature_bit(
+                       unijit::jit::TargetFeature::kRiscVAtomic),
+           "RISC-V subword load/store must disclose helper lowering");
+    const std::uint64_t initial = UINT64_C(0x8877665544332211);
+    const std::uint64_t expected =
+        (initial & ~UINT64_C(0xffff)) | UINT64_C(0x1234);
+    for (const auto level : {unijit::jit::OptimizationLevel::kBaseline,
+                             unijit::jit::OptimizationLevel::kOptimized}) {
+      unijit::jit::CompilationOptions subword_options;
+      subword_options.target_profile = host;
+      subword_options.optimization_level = level;
+      const auto subword_compilation =
+          Compiler::compile(subword_function, subword_options);
+      cell = initial;
+      const std::array<Word, 1> arguments = {7};
+      const auto subword_result =
+          subword_compilation.ok()
+              ? subword_compilation.function->invoke(
+                    arguments.data(), arguments.size(), &context)
+              : unijit::ir::EvaluationResult{subword_compilation.status, 0};
+      expect(subword_result.ok() && subword_result.value == 0x123b &&
+                 read_word(cell) == expected,
+             "RISC-V subword load/store helper must preserve live values and "
+             "adjacent bytes");
+    }
+  }
+
   const std::array<MemoryWidth, 4> widths = {
       MemoryWidth::k8, MemoryWidth::k16, MemoryWidth::k32, MemoryWidth::k64};
   for (const MemoryWidth width : widths) {
@@ -1794,6 +1843,56 @@ void test_bounded_atomic_semantics() {
                read_word(cell) == kThreadCount * kIncrementsPerThread,
            "profile-selected fetch-add must not lose concurrent updates");
   }
+  if (has_riscv_atomic) {
+    FunctionBuilder subword_increment_builder(0, 1);
+    const Value subword_increment =
+        subword_increment_builder.atomic_fetch_add(
+            subword_increment_builder.constant(0),
+            subword_increment_builder.constant(1),
+            access(MemoryWidth::k16,
+                   AtomicMemoryOrder::kSequentiallyConsistent),
+            251);
+    expect(subword_increment_builder.set_return(subword_increment).ok(),
+           "RISC-V subword contention fixture must return its observation");
+    unijit::jit::CompilationOptions subword_options;
+    subword_options.target_profile = host;
+    const auto subword_compilation = Compiler::compile(
+        std::move(subword_increment_builder).build(), subword_options);
+    const std::uint64_t initial = UINT64_C(0x8877665544330000);
+    cell = initial;
+    concurrent_failed.store(false, std::memory_order_relaxed);
+    threads.clear();
+    for (std::size_t thread_index = 0; thread_index < kThreadCount;
+         ++thread_index) {
+      threads.emplace_back([&] {
+        MemoryRegion thread_region{&cell, sizeof(cell), true};
+        ExecutionContext thread_context;
+        if (!thread_context.bind_memory_regions(&thread_region, 1).ok()) {
+          concurrent_failed.store(true, std::memory_order_relaxed);
+          return;
+        }
+        for (std::size_t iteration = 0; iteration < kIncrementsPerThread;
+             ++iteration) {
+          if (!subword_compilation.ok() ||
+              !subword_compilation.function
+                   ->invoke(nullptr, 0, &thread_context)
+                   .ok()) {
+            concurrent_failed.store(true, std::memory_order_relaxed);
+            return;
+          }
+        }
+      });
+    }
+    for (std::thread& thread : threads) {
+      thread.join();
+    }
+    expect(subword_compilation.ok() &&
+               !concurrent_failed.load(std::memory_order_relaxed) &&
+               read_word(cell) == initial +
+                                      kThreadCount * kIncrementsPerThread,
+           "RISC-V exact-width subword helper must not lose contended "
+           "updates or modify adjacent bytes");
+  }
 }
 
 void test_bounded_atomic_control_flow() {
@@ -1927,6 +2026,66 @@ void test_bounded_atomic_control_flow() {
     expect(baseline_result.ok() && baseline_result.value == 8 && cell == 7,
            "profile-selected CFG atomic baseline must match optimized "
            "execution");
+  }
+
+  const bool has_riscv_atomic =
+      host.architecture == unijit::jit::TargetArchitecture::kRiscV64 &&
+      unijit::jit::has_target_feature(
+          host, unijit::jit::TargetFeature::kRiscVAtomic);
+  if (has_riscv_atomic) {
+    const auto subword_access = [](AtomicMemoryOrder order) {
+      AtomicAccessDescriptor descriptor;
+      descriptor.memory.width = MemoryWidth::k16;
+      descriptor.memory.alignment = 2;
+      descriptor.order = order;
+      return descriptor;
+    };
+    ControlFlowBuilder subword_builder(1, 1);
+    const auto merge = subword_builder.create_block(2);
+    const Value loaded = subword_builder.atomic_load(
+        subword_builder.parameter(0),
+        subword_access(AtomicMemoryOrder::kAcquire), 262);
+    const Value exchanged = subword_builder.atomic_exchange(
+        subword_builder.parameter(0), subword_builder.constant(5),
+        subword_access(AtomicMemoryOrder::kAcquireRelease), 263);
+    expect(subword_builder.jump(merge, {loaded, exchanged}).ok() &&
+               subword_builder.set_insertion_block(merge).ok() &&
+               subword_builder
+                   .set_return(subword_builder.add(
+                       subword_builder.block_parameter(merge, 0),
+                       subword_builder.block_parameter(merge, 1)))
+                   .ok(),
+           "RISC-V subword CFG fixture must carry helper results over an "
+           "edge");
+    const auto subword_function = std::move(subword_builder).build();
+    const auto subword_capability =
+        unijit::jit::preflight_capabilities(subword_function, host);
+    expect(subword_capability.ok() &&
+               subword_capability.overall_strategy ==
+                   unijit::jit::LoweringStrategy::kHelper &&
+               subword_capability.operation_count(
+                   unijit::jit::LoweringStrategy::kHelper) == 2,
+           "RISC-V subword CFG atomics must disclose helper lowering");
+    const std::uint64_t initial = UINT64_C(0x8877665544330003);
+    const std::uint64_t expected =
+        (initial & ~UINT64_C(0xffff)) | UINT64_C(5);
+    for (const auto level : {unijit::jit::OptimizationLevel::kBaseline,
+                             unijit::jit::OptimizationLevel::kOptimized}) {
+      unijit::jit::CompilationOptions options;
+      options.target_profile = host;
+      options.optimization_level = level;
+      const auto compilation = Compiler::compile(subword_function, options);
+      cell = initial;
+      const std::array<Word, 1> arguments = {0};
+      const auto result =
+          compilation.ok()
+              ? compilation.function->invoke(arguments.data(),
+                                             arguments.size(), &context)
+              : unijit::ir::EvaluationResult{compilation.status, 0};
+      expect(result.ok() && result.value == 6 && cell == expected,
+             "RISC-V subword CFG helper must preserve edge values and "
+             "adjacent bytes");
+    }
   }
 }
 
