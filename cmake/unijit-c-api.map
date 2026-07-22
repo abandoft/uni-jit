@@ -1,0 +1,6 @@
+{
+  global:
+    unijit_v1_*;
+  local:
+    *;
+};

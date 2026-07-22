@@ -67,6 +67,16 @@ if(BUILD_SHARED_LIBS)
   target_compile_definitions(unijit PRIVATE UNIJIT_BUILDING_LIBRARY=1)
 endif()
 
+if(BUILD_SHARED_LIBS AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  set(UNIJIT_C_API_VERSION_SCRIPT
+      "${PROJECT_SOURCE_DIR}/cmake/unijit-c-api.map")
+  target_link_options(
+    unijit PRIVATE "-Wl,--version-script=${UNIJIT_C_API_VERSION_SCRIPT}")
+  set_property(
+    TARGET unijit APPEND PROPERTY LINK_DEPENDS
+    "${UNIJIT_C_API_VERSION_SCRIPT}")
+endif()
+
 if(MSVC)
   target_compile_options(unijit PRIVATE /W4 /permissive-)
   if(UNIJIT_WARNINGS_AS_ERRORS)
