@@ -24,7 +24,7 @@ class PerformanceGateTest(unittest.TestCase):
             "schema": "unijit.patch-cell-benchmark.v1",
             "benchmark": "managed_acquire_load",
             "measurement_boundary": "managed_compiled_invocation",
-            "architecture": "x86_64",
+            "architecture": "x86-64",
             "warmup_iterations": 10000,
             "measurement_iterations": 200000,
             "samples": 7,

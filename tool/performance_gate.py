@@ -280,7 +280,7 @@ def evaluate_patch_cell(
         raise GateError(
             "patch-cell gate requires the complete managed invocation boundary"
         )
-    if document.get("architecture") not in {"aarch64", "x86_64", "riscv64"}:
+    if document.get("architecture") not in {"aarch64", "x86-64", "riscv64"}:
         raise GateError("patch-cell record has an unsupported architecture")
 
     samples = number_at(document, "samples")
