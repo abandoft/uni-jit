@@ -22,7 +22,7 @@ qualifying the shared commercial contract on those three targets.
 | SIMD | The strict 128-bit type/operation contract, both IR forms, verifier, interpreters, CFG whole-vector edges, folding, limits, differential generation, bounded vector memory, typed shared-SIMD allocation, aligned two-word vector slots, mixed-bank parallel copies, complete AArch64 Advanced SIMD/NEON and x86-64 SSE2 lowering, bounded stack-only RV64IMD scalar lowering, target-scoped lowering preflight/telemetry, and a retained three-architecture complete-CFG-loop performance gate for the current explicit surface are delivered | Retain this portable floor and add an optional profile-specific RVV fast path before claiming RVV or wider profiles | Delivered portable floor; optional profile follow-on |
 | Typed memory, unaligned access, byte reversal | Bounded 8/16/32/64-bit Word memory, Float32/Float64 storage, standalone 16/32/64-bit byte reversal, fixed Word/Float64 frame slots, and preflighted trusted Word/Float64 object layouts are delivered in both IR forms, the interpreter, optimizer, and all three native backends | Use the completed scalar provenance floor for SIMD, atomics, and later FFI lowering | Delivered scalar floor |
 | Generated-code atomics | Bounded typed atomic IR, verification, interpretation, optimization, runtime-exit metadata, capability telemetry, and independent x86-64, AArch64 LSE/bounded LL/SC, and RISC-V `A` AMO/bounded LR/SC lowering are delivered with exact-width helper fallback | Retain cross-target litmus, contention, sanitizer, real-host, and installed-package gates | Delivered |
-| Fast internal calls | Calls currently use the portable runtime-helper ABI | Add a private JIT-to-JIT convention without weakening external ABI safety | P1 |
+| Fast internal calls | Typed Word/Float64 descriptors, interpreter oracles, immutable generation-leased target snapshots, managed fail-closed binding, independent three-backend lowering, concurrency stress, package consumption, and a retained complete-CFG-loop performance gate are delivered for context-free targets | Retain the generation-safe scalar floor, then add contextual targets and a profile-specific register-prefix convention without weakening external ABI safety | Delivered scalar floor; contextual/register follow-on |
 | Tail calls | Not represented | Add verified tail transfers after fast calls and unwind metadata exist | P2 |
 | Self-modifying code | Published code remains immutable RX; function-owned atomic RW non-executable patch cells, managed binding, lease lifetime, and three-backend acquire loads are delivered | Retain data-only retargeting and never reopen published code pages | Delivered |
 | Direct physical-register access | Intentionally absent from public IR | Keep physical registers private to MIR; expose only verified role constraints | Architectural rule |
@@ -331,12 +331,21 @@ adds full-width and subword contention plus UBSan.
 
 ## Calls, tail transfers, and frame locals
 
-The existing helper ABI remains the safe external boundary. A private
-JIT-to-JIT fast convention may pass a bounded prefix of Word, Float64, and
+The existing helper ABI remains the safe external boundary. The delivered first
+JIT-to-JIT layer uses typed Word/Float64 descriptors in both IR forms, an
+explicit interpreter-oracle table, and the compiled native-entry ABI. Managed
+invocation acquires one immutable target-table snapshot, fails closed if any
+slot is unbound, and keeps every exact callee generation alive through a cache
+lease. Bind and clear operations release-publish complete replacement tables,
+so eviction or concurrent retargeting cannot create a dangling or mixed target.
+Only context-free callees with exact signatures and target profiles are admitted;
+raw caller entries are withheld. The normative contract is in
+[`FAST_CALLS.md`](FAST_CALLS.md).
+
+A later private convention may pass a bounded prefix of Word, Float64, and
 vector arguments in target registers while reserving the execution context and
-publishing a complete stack map at the call site. Callee code is held through a
-generation-stable cache lease or an atomic patch cell so eviction cannot create
-a dangling target.
+publishing a complete stack map at contextual call sites. It must preserve the
+existing descriptor, generation-snapshot, and managed-entry contract.
 
 A tail transfer is legal only when signatures and target profiles match, no
 caller value remains live, pending materialization and cleanup obligations are
@@ -376,10 +385,12 @@ Patch-cell ownership follows the compiled-function lease. Cache invalidation
 retires lookup visibility while outstanding handles keep both executable code
 and its private cell array alive. Managed invocation supplies the internal cell
 base, and `native_entry()` is unavailable for a function with cells so the
-binding cannot be bypassed. The current target kind is data only; verified
-indirect JIT calls, polymorphic policy, and GC target retention remain later
-runtime contracts. This provides the useful data part of code patching without
-weakening W^X, instruction-cache coherency, or concurrent reclamation.
+binding cannot be bypassed. The current patch-cell target kind remains data
+only; verified indirect JIT calls now use the separate typed generation-leased
+table in [`FAST_CALLS.md`](FAST_CALLS.md), while polymorphic policy and GC target
+retention remain later runtime contracts. This provides the useful data part of
+code patching without weakening W^X, instruction-cache coherency, or concurrent
+reclamation.
 
 ## Encapsulation, serialization, and AOT
 
@@ -441,8 +452,9 @@ byte-identical packages for identical inputs and target profiles.
 4. Retain the delivered atomic memory-operation and data-only patch-cell gates,
    including concurrency, invalidation, sanitizer, reclamation, installed
    package, real-host, code-size, and managed-invocation performance evidence.
-5. Deliver the JIT-to-JIT convention, unwind-aware tail transfers, and
-   generation-stable direct-call targets.
+5. Retain the delivered typed generation-stable scalar JIT-to-JIT call floor,
+   then deliver contextual/register-prefix calls, unwind-aware tail transfers,
+   and generation-stable direct-call targets.
 6. Deliver the opaque C17 embedding API and portable IR package, then the
    validated native AOT object and deterministic rebuild gate.
 7. Consider additional architectures only after all preceding contracts pass

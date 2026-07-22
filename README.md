@@ -31,6 +31,11 @@ values, targets, shapes, generations, and counters without rewriting immutable
 RX code, with release/CAS/fetch-add publication, generation-stable cache leases,
 three-backend lowering, concurrency stress, and a retained managed-call
 performance ceiling.
+Generation-safe JIT internal calls now provide typed Word/Float64 descriptors
+in both IR forms, explicitly bound interpreter oracles, immutable native target
+table snapshots, exact target-generation leases, fail-closed managed entry,
+three-backend indirect lowering, concurrent retargeting stress, installed-package
+coverage, and a retained complete-CFG-loop performance ceiling.
 See [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) for the design and delivery
 gates, [doc/PORTABILITY.md](doc/PORTABILITY.md) for verified platforms, and
 [doc/RUNTIME.md](doc/RUNTIME.md) for execution contexts, exits, and safepoints.
@@ -77,6 +82,9 @@ concurrency qualification contract.
 [doc/PATCH_CELLS.md](doc/PATCH_CELLS.md) defines immutable-code data patching,
 publication order, managed-entry binding, cache-generation lifetime,
 three-backend lowering, concurrency qualification, and performance limits.
+[doc/FAST_CALLS.md](doc/FAST_CALLS.md) defines typed JIT-internal dispatch,
+generation-safe target publication, managed-entry enforcement, target lifetime,
+three-backend lowering, qualification, and deferred contextual/tail-call work.
 [doc/FRAME_LOCALS.md](doc/FRAME_LOCALS.md) defines fixed typed invocation
 storage, zero initialization, sensitive-slot clearing, optimizer rules,
 resource limits, and the boundary for future vector and aggregate frames.

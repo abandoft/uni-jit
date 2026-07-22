@@ -130,6 +130,44 @@ passed on a separate real Ubuntu GCC 13.3 x86-64 host and real RISC-V 64 GCC
 because an independent minimal program fails on that host before entering
 UniJIT code.
 
+## Generation-safe JIT internal-call qualification
+
+Core tests build typed Word and Float64 call descriptors in straight-line and
+CFG IR and require verifier, interpreter-oracle, optimizer, baseline/optimized
+compiler, and all native backends to agree. They cover unbound rejection, exact
+signature/profile binding, generation retargeting, cache invalidation with a
+retained target lease, safe clearing, self-target rejection, raw-entry denial,
+metadata, and the independent 64-descriptor compilation budget. The installed
+package consumer repeats oracle execution, publication, binding, invalidation,
+retained execution, and clearing through exported APIs only.
+
+`unijit_fast_call_stress` runs multiple generated-code readers while a writer
+release-publishes thousands of alternating target generations. Every result must
+belong to one complete generation, the exact requested invocation count must
+finish, invalidated target lookups must remain safely callable through the
+caller snapshot, and clearing must fail closed. The ordinary gate runs four
+readers, 20,000 invocations per reader, and 4,096 retargets.
+
+`unijit_fast_call_benchmark` compares a compiled target with an equivalent
+runtime helper inside the same generated CFG loop. A sample crosses the complete
+managed caller boundary once and performs 1,000 internal dispatches. The
+`unijit.fast-call-benchmark.v1` gate requires 100 warmups, seven samples of 500
+managed invocations, a nonzero parity checksum, no more than 1.5 times helper
+latency, at most 256 caller code bytes, and at most 64 target code bytes. Raw
+records and structured decisions are retained for every core platform; emulator
+results remain supplemental to real AArch64, Ubuntu/Windows x86-64, and RISC-V
+64 qualification.
+
+At commit `3b5fb3f`, the complete 13-job hosted workflow passed, including
+macOS AArch64, Ubuntu GCC/Clang x86-64, macOS x86-64, Windows MSVC x86-64,
+Linux ASan/UBSan, Windows ASan, ThreadSanitizer retargeting stress, installed
+packages, and all language baselines. A separate real Ubuntu GCC 13.3 x86-64
+host completed 400,000 reader invocations with 10,000 retargets and passed the
+performance gate at 0.811x helper latency with 208 caller and 27 target bytes.
+Real RISC-V 64 GCC 14.2 hardware passed the same extended stress, installed
+package, and performance boundary at 0.796x helper latency with 168 caller and
+24 target bytes.
+
 ## Concurrent code-cache stress
 
 `unijit_code_cache_stress` runs configurable reader and writer populations over
@@ -389,6 +427,12 @@ floor. Hosted validation currently enforces:
 | UniJIT over stock PocketPy | 1.25x |
 | UniJIT over CPython 3.14.6 interpreter | 1.10x |
 | UniJIT over CPython 3.14.6 JIT | 1.10x |
+
+Core platform gates additionally cap generation-safe JIT internal dispatch at
+1.5 times equivalent runtime-helper latency across the complete managed CFG
+invocation, with 256-byte caller and 64-byte target code-size ceilings. The
+immutable patch-cell gate caps managed acquire-load invocation at 2.5 times an
+equivalent constant function and 128 code bytes.
 
 The margins are performance floors, not claims that the current observed ratio
 is stable across unrelated machines. Both the raw comparison and the

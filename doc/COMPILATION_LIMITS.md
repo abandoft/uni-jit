@@ -18,6 +18,8 @@ regions.
 | Strict SIMD selection operands | 65,536 |
 | Controlled frame slots | 256 |
 | Trusted object bindings | 64 |
+| Immutable data patch cells | 256 |
+| JIT internal-call descriptors | 64 |
 | Stack maps and exit records | 4,096 |
 | Recovery and stack-map values | 262,144 |
 | Native code bytes per function | 16 MiB |
@@ -47,8 +49,9 @@ straight-line or CFG runtime-call arguments, CFG edge arguments, requested exit
 records, declared memory regions, memory accesses, vector constants, shuffle
 descriptors, selection side-table operands, and recovery operations before the
 IR verifier runs. Controlled frame slots are counted independently
-from allocator spills, and trusted-object bindings have their own table limit;
-both are rejected before layout or lowering. Each trusted layout is also
+from allocator spills, while trusted-object bindings, data patch cells, and JIT
+internal-call descriptors have independent table limits; all are rejected
+before layout or lowering. Each trusted layout is also
 verifier-limited to 2,048 bytes. CFG call and edge arguments share the
 aggregate `maximum_ir_arguments` budget. This
 ordering bounds verifier work, including CFG dominance state, rather than

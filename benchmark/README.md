@@ -37,6 +37,25 @@ product platform. The gate rejects fewer than seven samples, a shortened
 measurement boundary, more than 2.5 times the constant managed-call latency,
 or more than 128 patch-reader code bytes.
 
+The generation-safe internal-call benchmark compares a typed compiled target
+with an equivalent runtime helper inside the same generated 1,000-iteration CFG
+loop. Every sample includes the complete managed caller invocation and its
+immutable target-snapshot acquisition:
+
+```sh
+build/benchmark/benchmark/unijit_fast_call_benchmark \
+  --loop-iterations 1000 --warmup 100 --invocations 500 --samples 7 \
+  > build/benchmark/fast-call.json
+python3 tool/performance_gate.py fast-call build/benchmark/fast-call.json \
+  --maximum-overhead 1.5 --maximum-caller-code-bytes 256 \
+  --maximum-target-code-bytes 64
+```
+
+The retained gate rejects a shortened boundary, fewer than seven samples, more
+than 1.5 times the equivalent helper dispatch latency, more than 256 caller code
+bytes, or more than 64 target code bytes. Results must also carry a nonzero
+checksum shared by both paths.
+
 The CFG Float64 benchmark keeps four loop-carried values live while native
 addition, subtraction, multiplication, and division update them. It reports
 latency per completed loop iteration and native code size, making register-bank

@@ -20,6 +20,8 @@ defined: arbitrary physical-register access remains private to MIR, and
 published code remains immutable RX rather than adopting self-modifying code.
 The delivered function-owned patch-cell contract is specified separately in
 `doc/PATCH_CELLS.md`.
+The delivered generation-safe scalar JIT-internal-call floor is specified in
+`doc/FAST_CALLS.md`.
 
 ## Compilation pipeline
 
@@ -138,6 +140,18 @@ and cannot be removed when their result is dead. Lowering saves caller-clobbered
 Word and Float64 values that remain live, materializes ordered mixed-type
 arguments from registers or spills, satisfies each platform's stack and
 shadow-space ABI, and preserves the link register on AArch64 and RISC-V 64.
+
+Typed JIT-internal calls use portable descriptors rather than embedding native
+addresses in IR. Reference execution resolves each slot through an explicitly
+bound oracle, while managed native invocation acquire-loads one immutable target
+table snapshot whose leases retain the exact compiled generations. The current
+Word/Float64 floor admits only context-free targets with exact signatures and
+target profiles, fails before native entry if a slot is unbound, withholds raw
+caller entries, and lowers indirect calls independently on all three backends.
+Retargeting release-publishes a complete replacement table so concurrent callers
+observe one generation-consistent snapshot. The full contract and deferred
+contextual, register-prefix, and tail-transfer layers are in
+`doc/FAST_CALLS.md`.
 
 Native entries also accept an optional execution context. Explicit effectful
 safepoints poll its lock-free sticky interrupt flag, publish a stable exit site,
