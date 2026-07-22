@@ -8,6 +8,7 @@
 #include "unijit/ir/control_flow.h"
 #include "unijit/ir/function.h"
 #include "unijit/ir/interpreter.h"
+#include "unijit/ir/package.h"
 #include "unijit/jit/code_cache.h"
 #include "unijit/jit/compilation_scheduler.h"
 #include "unijit/jit/compiler.h"
@@ -131,8 +132,28 @@ int main() {
     return 1;
   }
   const auto function = std::move(builder).build();
+  const auto portable_package = unijit::ir::encode_portable_ir(function);
+  if (!portable_package.ok() ||
+      portable_package.metadata.kind !=
+          unijit::ir::PortableIrKind::kFunction ||
+      portable_package.metadata.parameter_count != 2) {
+    return 78;
+  }
+  auto portable_function =
+      unijit::ir::decode_portable_function(portable_package.bytes);
+  if (!portable_function.ok()) {
+    return 79;
+  }
+  const auto rebuilt_package =
+      unijit::ir::encode_portable_ir(portable_function.function);
+  if (!rebuilt_package.ok() ||
+      rebuilt_package.bytes != portable_package.bytes ||
+      rebuilt_package.metadata.payload_sha256 !=
+          portable_package.metadata.payload_sha256) {
+    return 80;
+  }
   auto compilation = unijit::jit::Compiler::compile(
-      function,
+      portable_function.function,
       unijit::jit::CompilationOptions{
           unijit::jit::OptimizationLevel::kBaseline});
   if (!compilation.ok()) {
