@@ -7,6 +7,7 @@ add_library(unijit
   ir/memory_access.cpp
   ir/object_access.cpp
   ir/optimizer.cpp
+  ir/package_sha256.cpp
   ir/vector.cpp
   ir/verifier.cpp
   jit/capability.cpp
