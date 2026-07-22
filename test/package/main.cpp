@@ -882,5 +882,106 @@ int main() {
       vector_memory_bytes[17] != 14 || vector_memory_bytes[18] != 13) {
     return 74;
   }
+
+  const auto atomic_access = [](unijit::ir::AtomicMemoryOrder order) {
+    unijit::ir::AtomicAccessDescriptor descriptor;
+    descriptor.memory.width = unijit::ir::MemoryWidth::k64;
+    descriptor.memory.alignment = 8;
+    descriptor.order = order;
+    return descriptor;
+  };
+  const auto atomic_host = unijit::jit::host_target_profile();
+  unijit::jit::CompilationOptions atomic_options;
+  atomic_options.target_profile = atomic_host;
+  unijit::ir::FunctionBuilder atomic_builder(0, 1);
+  const auto atomic_offset = atomic_builder.constant(0);
+  atomic_builder.atomic_store(
+      atomic_offset, atomic_builder.constant(41),
+      atomic_access(unijit::ir::AtomicMemoryOrder::kRelease), 75);
+  const auto atomic_observed = atomic_builder.atomic_fetch_add(
+      atomic_offset, atomic_builder.constant(1),
+      atomic_access(
+          unijit::ir::AtomicMemoryOrder::kSequentiallyConsistent),
+      76);
+  const auto atomic_loaded = atomic_builder.atomic_load(
+      atomic_offset,
+      atomic_access(unijit::ir::AtomicMemoryOrder::kAcquire), 77);
+  if (!atomic_builder
+           .set_return(atomic_builder.add(atomic_observed, atomic_loaded))
+           .ok()) {
+    return 75;
+  }
+  const auto atomic_function = std::move(atomic_builder).build();
+  const auto atomic_preflight =
+      unijit::jit::preflight_capabilities(atomic_function, atomic_host);
+  auto atomic_compilation =
+      unijit::jit::Compiler::compile(atomic_function, atomic_options);
+
+  unijit::ir::ControlFlowBuilder atomic_cfg_builder(1, 1);
+  const auto atomic_cfg_merge = atomic_cfg_builder.create_block(1);
+  const auto atomic_cfg_observed = atomic_cfg_builder.atomic_exchange(
+      atomic_cfg_builder.parameter(0), atomic_cfg_builder.constant(5),
+      atomic_access(unijit::ir::AtomicMemoryOrder::kAcquireRelease), 78);
+  if (!atomic_cfg_builder.jump(atomic_cfg_merge, {atomic_cfg_observed}).ok() ||
+      !atomic_cfg_builder.set_insertion_block(atomic_cfg_merge).ok() ||
+      !atomic_cfg_builder
+           .set_return(atomic_cfg_builder.add(
+               atomic_cfg_builder.block_parameter(atomic_cfg_merge, 0),
+               atomic_cfg_builder.constant(1)))
+           .ok()) {
+    return 76;
+  }
+  const auto atomic_cfg_function = std::move(atomic_cfg_builder).build();
+  const auto atomic_cfg_preflight =
+      unijit::jit::preflight_capabilities(atomic_cfg_function, atomic_host);
+  auto atomic_cfg_compilation =
+      unijit::jit::Compiler::compile(atomic_cfg_function, atomic_options);
+  const bool atomic_profile_supported =
+      atomic_host.architecture !=
+          unijit::jit::TargetArchitecture::kRiscV64 ||
+      unijit::jit::has_target_feature(
+          atomic_host, unijit::jit::TargetFeature::kRiscVAtomic);
+  if (!atomic_profile_supported) {
+    if (atomic_preflight.ok() || atomic_compilation.ok() ||
+        atomic_cfg_preflight.ok() || atomic_cfg_compilation.ok()) {
+      return 77;
+    }
+    return 0;
+  }
+
+  alignas(8) std::uint64_t atomic_cell = 0;
+  unijit::runtime::MemoryRegion atomic_region{&atomic_cell,
+                                               sizeof(atomic_cell), true};
+  unijit::runtime::ExecutionContext atomic_context;
+  if (!atomic_context.bind_memory_regions(&atomic_region, 1).ok()) {
+    return 78;
+  }
+  const auto atomic_result =
+      atomic_compilation.ok()
+          ? atomic_compilation.function->invoke(nullptr, 0, &atomic_context)
+          : unijit::ir::EvaluationResult{};
+  if (!atomic_preflight.ok() || !atomic_compilation.ok() ||
+      !atomic_result.ok() || atomic_result.value != 83 || atomic_cell != 42 ||
+      !atomic_preflight.requires_execution_context ||
+      atomic_compilation.function->capabilities().target_key() !=
+          atomic_preflight.target_key()) {
+    return 79;
+  }
+
+  atomic_cell = 3;
+  const std::array<unijit::ir::Word, 1> atomic_cfg_arguments = {0};
+  const auto atomic_cfg_result =
+      atomic_cfg_compilation.ok()
+          ? atomic_cfg_compilation.function->invoke(
+                atomic_cfg_arguments.data(), atomic_cfg_arguments.size(),
+                &atomic_context)
+          : unijit::ir::EvaluationResult{};
+  if (!atomic_cfg_preflight.ok() || !atomic_cfg_compilation.ok() ||
+      !atomic_cfg_result.ok() || atomic_cfg_result.value != 4 ||
+      atomic_cell != 5 ||
+      atomic_cfg_compilation.function->capabilities().target_key() !=
+          atomic_cfg_preflight.target_key()) {
+    return 80;
+  }
   return 0;
 }
