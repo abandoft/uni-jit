@@ -112,6 +112,20 @@ jobs:
           --warmup 10000 --iterations 200000 --samples 7
           | Out-File -Encoding utf8 build/platform/patch-cell.json
 
+      - name: Measure generation-safe JIT internal calls on Unix
+        if: runner.os != 'Windows'
+        run: >-
+          ./build/platform/benchmark/unijit_fast_call_benchmark
+          --loop-iterations 1000 --warmup 100 --invocations 500 --samples 7
+          > build/platform/fast-call.json
+
+      - name: Measure generation-safe JIT internal calls on Windows
+        if: runner.os == 'Windows'
+        run: >-
+          .\build\platform\benchmark\RelWithDebInfo\unijit_fast_call_benchmark.exe
+          --loop-iterations 1000 --warmup 100 --invocations 500 --samples 7
+          | Out-File -Encoding utf8 build/platform/fast-call.json
+
       - name: Enforce CFG Float64 register-residency floor on Unix
         if: runner.os != 'Windows'
         run: >-
@@ -169,6 +183,27 @@ jobs:
           | Out-File -Encoding utf8
           build/platform/patch-cell-performance-gate.json
 
+      - name: Enforce generation-safe JIT internal-call floor on Unix
+        if: runner.os != 'Windows'
+        run: >-
+          python3 tool/performance_gate.py fast-call
+          build/platform/fast-call.json
+          --maximum-overhead 1.5
+          --maximum-caller-code-bytes 256
+          --maximum-target-code-bytes 64
+          > build/platform/fast-call-performance-gate.json
+
+      - name: Enforce generation-safe JIT internal-call floor on Windows
+        if: runner.os == 'Windows'
+        run: >-
+          python tool/performance_gate.py fast-call
+          build/platform/fast-call.json
+          --maximum-overhead 1.5
+          --maximum-caller-code-bytes 256
+          --maximum-target-code-bytes 64
+          | Out-File -Encoding utf8
+          build/platform/fast-call-performance-gate.json
+
       - name: Retain CFG Float64 platform evidence
         if: always()
         uses: actions/upload-artifact@v7
@@ -197,6 +232,16 @@ jobs:
           path: |
             build/platform/patch-cell.json
             build/platform/patch-cell-performance-gate.json
+          if-no-files-found: error
+
+      - name: Retain generation-safe JIT internal-call platform evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fast-call-${{ matrix.name }}
+          path: |
+            build/platform/fast-call.json
+            build/platform/fast-call-performance-gate.json
           if-no-files-found: error
 
       - name: Install
