@@ -16,6 +16,10 @@
 
 namespace unijit::ir {
 
+namespace detail {
+struct PortableIrAccess;
+}
+
 using RuntimeHelper = Word (*)(const Word* arguments, std::size_t count);
 
 Word pack_float64(double value) noexcept;
@@ -245,6 +249,7 @@ class Function final {
 
  private:
   friend class FunctionBuilder;
+  friend struct detail::PortableIrAccess;
 
   std::size_t parameter_count_{0};
   std::vector<ValueType> parameter_types_;

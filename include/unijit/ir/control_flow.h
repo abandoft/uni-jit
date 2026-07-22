@@ -223,6 +223,7 @@ public:
 
 private:
   friend class ControlFlowBuilder;
+  friend struct detail::PortableIrAccess;
 
   std::size_t parameter_count_{0};
   std::vector<ValueType> parameter_types_;
