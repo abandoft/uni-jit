@@ -268,8 +268,12 @@ jobs:
 
       - name: Run installed-package consumer on Unix
         if: runner.os != 'Windows'
-        run: ./build/package-consumer/unijit_package_consumer
+        run: |
+          ./build/package-consumer/unijit_package_consumer
+          ./build/package-consumer/unijit_c_package_consumer
 
       - name: Run installed-package consumer on Windows
         if: runner.os == 'Windows'
-        run: .\build\package-consumer\Release\unijit_package_consumer.exe
+        run: |
+          .\build\package-consumer\Release\unijit_package_consumer.exe
+          .\build\package-consumer\Release\unijit_c_package_consumer.exe
