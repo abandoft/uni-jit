@@ -1,4 +1,5 @@
 add_library(unijit
+  embedding.cpp
   ir/atomic_access.cpp
   ir/control_flow.cpp
   ir/function.cpp
@@ -61,6 +62,10 @@ target_include_directories(unijit
     "$<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>")
 
 target_compile_features(unijit PUBLIC cxx_std_17)
+
+if(BUILD_SHARED_LIBS)
+  target_compile_definitions(unijit PRIVATE UNIJIT_BUILDING_LIBRARY=1)
+endif()
 
 if(MSVC)
   target_compile_options(unijit PRIVATE /W4 /permissive-)
