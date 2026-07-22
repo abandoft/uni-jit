@@ -7,7 +7,7 @@
 
 UniJIT is an independent, typed, multi-architecture JIT runtime for embedders and language implementers. It provides a C++17 compilation core, a versioned C17 embedding ABI, native AArch64, x86-64, and RISC-V 64 backends, and JIT integrations for stock Lua, QuickJS, and PocketPy.
 
-UniJIT owns its complete production path—from SSA verification and optimization through register allocation, native instruction encoding, W^X publication, and generation-safe reclamation. LuaJIT and SLJIT are retained under `third/` only as benchmark or capability references; neither is used as UniJIT's backend or runtime dependency.
+UniJIT owns its complete production path—from SSA verification and optimization through register allocation, native instruction encoding, W^X publication, and generation-safe reclamation.
 
 > **Project status:** UniJIT is under active `0.x` development. The repository already has executable multi-platform qualification and a versioned `unijit_v1_*` C ABI, but the public feature surface and artifact formats are still expanding. Pin an exact release and run the qualification suite before production adoption.
 
@@ -221,8 +221,6 @@ Issues and focused pull requests are welcome. Before opening a change:
 4. Keep architecture-specific implementation inside its backend boundary.
 5. Run the core test command above; use the qualification build for compiler, cache, concurrency, or serialization changes.
 6. Update the relevant design contract and prepend a single-line changelog bullet when the change belongs to the active release.
-
-UniJIT intentionally does not accept a dependency on SLJIT or another code-generation backend. Reference implementations can inform capability coverage, but production code must preserve UniJIT's independent semantics, ownership, and validation model.
 
 ## License
 
