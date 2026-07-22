@@ -37,15 +37,15 @@ constexpr std::uint32_t rotate_right(std::uint32_t value,
   return (value >> amount) | (value << (32U - amount));
 }
 
-std::uint32_t load_big_endian(const std::uint8_t* bytes) noexcept {
+std::uint32_t load_big_endian(const std::uint8_t *bytes) noexcept {
   return (static_cast<std::uint32_t>(bytes[0]) << 24U) |
          (static_cast<std::uint32_t>(bytes[1]) << 16U) |
          (static_cast<std::uint32_t>(bytes[2]) << 8U) |
          static_cast<std::uint32_t>(bytes[3]);
 }
 
-void compress(const std::uint8_t* block,
-              std::array<std::uint32_t, 8>* state) noexcept {
+void compress(const std::uint8_t *block,
+              std::array<std::uint32_t, 8> *state) noexcept {
   std::array<std::uint32_t, 64> schedule{};
   for (std::size_t index = 0; index < 16; ++index) {
     schedule[index] = load_big_endian(block + index * 4U);
@@ -59,8 +59,8 @@ void compress(const std::uint8_t* block,
     const std::uint32_t sigma1 = rotate_right(previous_2, 17U) ^
                                  rotate_right(previous_2, 19U) ^
                                  (previous_2 >> 10U);
-    schedule[index] = schedule[index - 16U] + sigma0 +
-                      schedule[index - 7U] + sigma1;
+    schedule[index] =
+        schedule[index - 16U] + sigma0 + schedule[index - 7U] + sigma1;
   }
 
   std::uint32_t a = (*state)[0];
@@ -73,13 +73,13 @@ void compress(const std::uint8_t* block,
   std::uint32_t h = (*state)[7];
 
   for (std::size_t index = 0; index < schedule.size(); ++index) {
-    const std::uint32_t sum1 = rotate_right(e, 6U) ^ rotate_right(e, 11U) ^
-                               rotate_right(e, 25U);
+    const std::uint32_t sum1 =
+        rotate_right(e, 6U) ^ rotate_right(e, 11U) ^ rotate_right(e, 25U);
     const std::uint32_t choice = (e & f) ^ ((~e) & g);
     const std::uint32_t temporary1 =
         h + sum1 + choice + kRoundConstants[index] + schedule[index];
-    const std::uint32_t sum0 = rotate_right(a, 2U) ^ rotate_right(a, 13U) ^
-                               rotate_right(a, 22U);
+    const std::uint32_t sum0 =
+        rotate_right(a, 2U) ^ rotate_right(a, 13U) ^ rotate_right(a, 22U);
     const std::uint32_t majority = (a & b) ^ (a & c) ^ (b & c);
     const std::uint32_t temporary2 = sum0 + majority;
     h = g;
@@ -102,9 +102,9 @@ void compress(const std::uint8_t* block,
   (*state)[7] += h;
 }
 
-}  // namespace
+} // namespace
 
-std::array<std::uint8_t, 32> package_sha256(const std::uint8_t* bytes,
+std::array<std::uint8_t, 32> package_sha256(const std::uint8_t *bytes,
                                             std::size_t byte_count) noexcept {
   std::array<std::uint32_t, 8> state = {
       UINT32_C(0x6a09e667), UINT32_C(0xbb67ae85), UINT32_C(0x3c6ef372),
@@ -136,11 +136,11 @@ std::array<std::uint8_t, 32> package_sha256(const std::uint8_t* bytes,
   std::array<std::uint8_t, 32> digest{};
   for (std::size_t word = 0; word < state.size(); ++word) {
     for (std::size_t byte = 0; byte < 4U; ++byte) {
-      digest[word * 4U + byte] = static_cast<std::uint8_t>(
-          state[word] >> ((3U - byte) * 8U));
+      digest[word * 4U + byte] =
+          static_cast<std::uint8_t>(state[word] >> ((3U - byte) * 8U));
     }
   }
   return digest;
 }
 
-}  // namespace unijit::ir::detail
+} // namespace unijit::ir::detail

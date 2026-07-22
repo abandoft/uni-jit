@@ -86,46 +86,46 @@ struct PortableControlFlowDecodeResult final {
 };
 
 PortableIrEncodeResult encode_portable_ir(
-    const Function& function,
-    const PortableIrLimits& limits = PortableIrLimits{}) noexcept;
+    const Function &function,
+    const PortableIrLimits &limits = PortableIrLimits{}) noexcept;
 
 PortableIrEncodeResult encode_portable_ir(
-    const ControlFlowFunction& function,
-    const PortableIrLimits& limits = PortableIrLimits{}) noexcept;
+    const ControlFlowFunction &function,
+    const PortableIrLimits &limits = PortableIrLimits{}) noexcept;
 
 PortableIrInspectResult inspect_portable_ir(
-    const std::uint8_t* bytes, std::size_t byte_count,
-    const PortableIrLimits& limits = PortableIrLimits{}) noexcept;
+    const std::uint8_t *bytes, std::size_t byte_count,
+    const PortableIrLimits &limits = PortableIrLimits{}) noexcept;
 
 inline PortableIrInspectResult inspect_portable_ir(
-    const std::vector<std::uint8_t>& bytes,
-    const PortableIrLimits& limits = PortableIrLimits{}) noexcept {
+    const std::vector<std::uint8_t> &bytes,
+    const PortableIrLimits &limits = PortableIrLimits{}) noexcept {
   return inspect_portable_ir(bytes.data(), bytes.size(), limits);
 }
 
 PortableFunctionDecodeResult decode_portable_function(
-    const std::uint8_t* bytes, std::size_t byte_count,
-    const PortableIrLimits& limits = PortableIrLimits{}) noexcept;
+    const std::uint8_t *bytes, std::size_t byte_count,
+    const PortableIrLimits &limits = PortableIrLimits{}) noexcept;
 
 inline PortableFunctionDecodeResult decode_portable_function(
-    const std::vector<std::uint8_t>& bytes,
-    const PortableIrLimits& limits = PortableIrLimits{}) noexcept {
+    const std::vector<std::uint8_t> &bytes,
+    const PortableIrLimits &limits = PortableIrLimits{}) noexcept {
   return decode_portable_function(bytes.data(), bytes.size(), limits);
 }
 
 PortableControlFlowDecodeResult decode_portable_control_flow(
-    const std::uint8_t* bytes, std::size_t byte_count,
-    const PortableIrLimits& limits = PortableIrLimits{}) noexcept;
+    const std::uint8_t *bytes, std::size_t byte_count,
+    const PortableIrLimits &limits = PortableIrLimits{}) noexcept;
 
 inline PortableControlFlowDecodeResult decode_portable_control_flow(
-    const std::vector<std::uint8_t>& bytes,
-    const PortableIrLimits& limits = PortableIrLimits{}) noexcept {
+    const std::vector<std::uint8_t> &bytes,
+    const PortableIrLimits &limits = PortableIrLimits{}) noexcept {
   return decode_portable_control_flow(bytes.data(), bytes.size(), limits);
 }
 
 std::string portable_ir_digest_hex(
-    const std::array<std::uint8_t, kPortableIrDigestSize>& digest);
+    const std::array<std::uint8_t, kPortableIrDigestSize> &digest);
 
-}  // namespace unijit::ir
+} // namespace unijit::ir
 
-#endif  // UNIJIT_IR_PACKAGE_H
+#endif // UNIJIT_IR_PACKAGE_H
