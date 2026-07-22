@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <optional>
 #include <utility>
@@ -764,7 +765,9 @@ Status validate_compilation_limits(const CompilationLimits& limits) {
       limits.maximum_vector_constants == 0 ||
       limits.maximum_vector_shuffles == 0 ||
       limits.maximum_vector_selects == 0 || limits.maximum_frame_slots == 0 ||
-      limits.maximum_trusted_objects == 0 || limits.maximum_stack_maps == 0 ||
+      limits.maximum_trusted_objects == 0 ||
+      limits.maximum_patch_cells == 0 || limits.maximum_fast_calls == 0 ||
+      limits.maximum_stack_maps == 0 ||
       limits.maximum_metadata_values == 0 || limits.maximum_code_bytes == 0) {
     return {StatusCode::kInvalidArgument,
             "compilation resource limits must all be positive"};
@@ -921,6 +924,11 @@ Status validate_function_limits(
             "compilation exceeds the patch-cell limit",
             function.patch_cells().size()};
   }
+  if (function.fast_calls().size() > limits.maximum_fast_calls) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the fast-call limit",
+            function.fast_calls().size()};
+  }
   return validate_requested_metadata(deoptimization_table, assumptions,
                                      function.parameter_count(), limits);
 }
@@ -997,6 +1005,11 @@ Status validate_function_limits(
     return {StatusCode::kResourceExhausted,
             "compilation exceeds the CFG patch-cell limit",
             function.patch_cells().size()};
+  }
+  if (function.fast_calls().size() > limits.maximum_fast_calls) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the CFG fast-call limit",
+            function.fast_calls().size()};
   }
   std::size_t arguments = function.call_arguments().size();
   if (arguments > limits.maximum_ir_arguments) {
@@ -1076,10 +1089,17 @@ Status validate_lowering_limits(const LoweringResult& lowering,
 
 }  // namespace
 
+struct FastCallTargetTable final {
+  std::vector<runtime::FastCallNativeEntry> entries;
+  std::vector<std::shared_ptr<const CompiledFunction>> leases;
+};
+
 struct CompiledFunction::Impl final {
   detail::ExecutableMemory memory;
   std::unique_ptr<runtime::PatchCellStorage[]> patch_cells;
   std::size_t patch_cell_count{0};
+  mutable std::mutex fast_call_mutex;
+  mutable std::shared_ptr<const FastCallTargetTable> fast_call_targets;
 
   NativeEntry entry() const noexcept {
     static_assert(sizeof(NativeEntry) == sizeof(void*),
@@ -1099,6 +1119,7 @@ CompiledFunction::CompiledFunction(
     std::vector<ir::TrustedObjectDescriptor> trusted_objects,
     std::vector<bool> trusted_object_writable,
     std::vector<ir::PatchCellDescriptor> patch_cells,
+    std::vector<ir::FastCallDescriptor> fast_calls,
     runtime::DeoptimizationTable deoptimization_table,
     runtime::AssumptionSet assumptions, StackMapTable stack_maps) noexcept
     : impl_(std::move(impl)), parameter_count_(parameter_types.size()),
@@ -1111,6 +1132,7 @@ CompiledFunction::CompiledFunction(
       trusted_objects_(std::move(trusted_objects)),
       trusted_object_writable_(std::move(trusted_object_writable)),
       patch_cells_(std::move(patch_cells)),
+      fast_calls_(std::move(fast_calls)),
       deoptimization_table_(std::move(deoptimization_table)),
       assumptions_(std::move(assumptions)), stack_maps_(std::move(stack_maps)) {
 }
@@ -1122,9 +1144,105 @@ CompiledFunction& CompiledFunction::operator=(CompiledFunction&&) noexcept =
 
 NativeEntry CompiledFunction::native_entry() const noexcept {
   return impl_ == nullptr || !host_compatible_ || !trusted_objects_.empty() ||
-                 !patch_cells_.empty()
+                 !patch_cells_.empty() || !fast_calls_.empty()
              ? nullptr
              : impl_->entry();
+}
+
+bool CompiledFunction::fast_call_bound(std::size_t index) const noexcept {
+  if (impl_ == nullptr || index >= fast_calls_.size()) {
+    return false;
+  }
+  const auto targets = std::atomic_load_explicit(
+      &impl_->fast_call_targets, std::memory_order_acquire);
+  return targets != nullptr && index < targets->entries.size() &&
+         targets->entries[index] != nullptr;
+}
+
+Status CompiledFunction::bind_fast_call(
+    std::size_t index,
+    std::shared_ptr<const CompiledFunction> target) const noexcept {
+  if (impl_ == nullptr || index >= fast_calls_.size()) {
+    return {StatusCode::kInvalidArgument,
+            "fast call index is outside the compiled function"};
+  }
+  if (target == nullptr || target.get() == this ||
+      target->requires_context() || target->native_entry() == nullptr) {
+    return {StatusCode::kInvalidArgument,
+            "fast call target must be a context-free compiled generation"};
+  }
+  if (target_profile_key() != target->target_profile_key()) {
+    return {StatusCode::kInvalidArgument,
+            "fast call target profile does not match the caller"};
+  }
+  const ir::FastCallDescriptor& descriptor = fast_calls_[index];
+  if (descriptor.parameter_types.size() != target->parameter_count() ||
+      descriptor.return_type != target->return_type()) {
+    return {StatusCode::kInvalidArgument,
+            "fast call target signature does not match the call site"};
+  }
+  for (std::size_t parameter = 0;
+       parameter < descriptor.parameter_types.size(); ++parameter) {
+    if (descriptor.parameter_types[parameter] !=
+        target->parameter_type(parameter)) {
+      return {StatusCode::kInvalidArgument,
+              "fast call target parameter type does not match the call site",
+              parameter};
+    }
+  }
+  try {
+    std::lock_guard<std::mutex> lock(impl_->fast_call_mutex);
+    const auto current = std::atomic_load_explicit(
+        &impl_->fast_call_targets, std::memory_order_acquire);
+    if (current == nullptr || index >= current->entries.size()) {
+      return {StatusCode::kUnavailable,
+              "fast call target table is not initialized"};
+    }
+    auto replacement = std::make_shared<FastCallTargetTable>(*current);
+    replacement->entries[index] = target->native_entry();
+    replacement->leases[index] = std::move(target);
+    std::atomic_store_explicit(
+        &impl_->fast_call_targets,
+        std::shared_ptr<const FastCallTargetTable>(std::move(replacement)),
+        std::memory_order_release);
+    return Status::ok_status();
+  } catch (const std::bad_alloc&) {
+    return {StatusCode::kResourceExhausted,
+            "unable to publish the fast call target table"};
+  } catch (...) {
+    return {StatusCode::kUnavailable,
+            "unable to synchronize fast call target publication"};
+  }
+}
+
+Status CompiledFunction::clear_fast_call(std::size_t index) const noexcept {
+  if (impl_ == nullptr || index >= fast_calls_.size()) {
+    return {StatusCode::kInvalidArgument,
+            "fast call index is outside the compiled function"};
+  }
+  try {
+    std::lock_guard<std::mutex> lock(impl_->fast_call_mutex);
+    const auto current = std::atomic_load_explicit(
+        &impl_->fast_call_targets, std::memory_order_acquire);
+    if (current == nullptr || index >= current->entries.size()) {
+      return {StatusCode::kUnavailable,
+              "fast call target table is not initialized"};
+    }
+    auto replacement = std::make_shared<FastCallTargetTable>(*current);
+    replacement->entries[index] = nullptr;
+    replacement->leases[index].reset();
+    std::atomic_store_explicit(
+        &impl_->fast_call_targets,
+        std::shared_ptr<const FastCallTargetTable>(std::move(replacement)),
+        std::memory_order_release);
+    return Status::ok_status();
+  } catch (const std::bad_alloc&) {
+    return {StatusCode::kResourceExhausted,
+            "unable to clear the fast call target table"};
+  } catch (...) {
+    return {StatusCode::kUnavailable,
+            "unable to synchronize fast call target removal"};
+  }
 }
 
 PatchCellReadResult CompiledFunction::read_patch_cell(
@@ -1292,6 +1410,22 @@ ir::EvaluationResult CompiledFunction::invoke(
   if (active_context == nullptr && requires_context_) {
     active_context = &local_context;
   }
+  std::shared_ptr<const FastCallTargetTable> fast_call_targets;
+  if (!fast_calls_.empty()) {
+    fast_call_targets = std::atomic_load_explicit(
+        &impl_->fast_call_targets, std::memory_order_acquire);
+    if (fast_call_targets == nullptr ||
+        fast_call_targets->entries.size() != fast_calls_.size() ||
+        std::any_of(fast_call_targets->entries.begin(),
+                    fast_call_targets->entries.end(),
+                    [](runtime::FastCallNativeEntry entry) {
+                      return entry == nullptr;
+                    })) {
+      return {{StatusCode::kUnavailable,
+               "compiled function has an unbound fast call target"},
+              0};
+    }
+  }
   const Status object_status = ir::detail::validate_trusted_object_bindings(
       trusted_objects_, trusted_object_writable_, active_context);
   if (!object_status.ok()) {
@@ -1303,23 +1437,37 @@ ir::EvaluationResult CompiledFunction::invoke(
   }
   const runtime::PatchCellStorage* previous_patch_cells = nullptr;
   std::size_t previous_patch_cell_count = 0;
+  const runtime::FastCallNativeEntry* previous_fast_call_entries = nullptr;
+  std::size_t previous_fast_call_entry_count = 0;
   if (active_context != nullptr && impl_->patch_cell_count != 0) {
     previous_patch_cells = active_context->patch_cells_;
     previous_patch_cell_count = active_context->patch_cell_count_;
     active_context->patch_cells_ = impl_->patch_cells.get();
     active_context->patch_cell_count_ = impl_->patch_cell_count;
   }
-  const auto restore_patch_cells = [&]() noexcept {
+  if (active_context != nullptr && fast_call_targets != nullptr) {
+    previous_fast_call_entries = active_context->fast_call_entries_;
+    previous_fast_call_entry_count = active_context->fast_call_entry_count_;
+    active_context->fast_call_entries_ = fast_call_targets->entries.data();
+    active_context->fast_call_entry_count_ =
+        fast_call_targets->entries.size();
+  }
+  const auto restore_runtime_bindings = [&]() noexcept {
     if (active_context != nullptr && impl_->patch_cell_count != 0) {
       active_context->patch_cells_ = previous_patch_cells;
       active_context->patch_cell_count_ = previous_patch_cell_count;
+    }
+    if (active_context != nullptr && fast_call_targets != nullptr) {
+      active_context->fast_call_entries_ = previous_fast_call_entries;
+      active_context->fast_call_entry_count_ =
+          previous_fast_call_entry_count;
     }
   };
   if (!assumptions_.empty()) {
     runtime::AssumptionActivation activation =
         assumptions_.activate(active_context);
     if (!activation.status().ok()) {
-      restore_patch_cells();
+      restore_runtime_bindings();
       return {activation.status(), 0};
     }
     const runtime::AssumptionDependency* invalid =
@@ -1328,7 +1476,7 @@ ir::EvaluationResult CompiledFunction::invoke(
       active_context->record_exit(runtime::ExitReason::kRuntime,
                                   invalid->site);
       ir::EvaluationResult result = finish_invocation(0, active_context);
-      restore_patch_cells();
+      restore_runtime_bindings();
       return result;
     }
 
@@ -1339,16 +1487,16 @@ ir::EvaluationResult CompiledFunction::invoke(
       active_context->record_exit(runtime::ExitReason::kRuntime,
                                   invalid->site);
       ir::EvaluationResult result = finish_invocation(0, active_context);
-      restore_patch_cells();
+      restore_runtime_bindings();
       return result;
     }
     ir::EvaluationResult result = finish_invocation(value, active_context);
-    restore_patch_cells();
+    restore_runtime_bindings();
     return result;
   }
   ir::EvaluationResult result =
       finish_invocation(entry(args, active_context), active_context);
-  restore_patch_cells();
+  restore_runtime_bindings();
   return result;
 }
 
@@ -1488,6 +1636,10 @@ CompilationResult Compiler::compile(
 
   try {
     auto implementation = std::make_unique<CompiledFunction::Impl>();
+    auto fast_call_targets = std::make_shared<FastCallTargetTable>();
+    fast_call_targets->entries.resize(function.fast_calls().size(), nullptr);
+    fast_call_targets->leases.resize(function.fast_calls().size());
+    implementation->fast_call_targets = std::move(fast_call_targets);
     implementation->patch_cell_count = function.patch_cells().size();
     if (implementation->patch_cell_count != 0) {
       implementation->patch_cells =
@@ -1510,18 +1662,21 @@ CompilationResult Compiler::compile(
                            lowering.spill_slots, function.frame_slots().size(),
                            function.trusted_objects().size(),
                            function.patch_cells().size(),
+                           function.fast_calls().size(),
                            function.nodes().size(),
                            lowered->nodes().size(), lowering.stack_maps.size(),
                            stack_map_value_count(lowering.stack_maps)};
     capabilities.requires_execution_context =
         capabilities.requires_execution_context || !assumptions.empty() ||
-        !function.trusted_objects().empty() || !function.patch_cells().empty();
+        !function.trusted_objects().empty() || !function.patch_cells().empty() ||
+        !function.fast_calls().empty();
     const bool requires_context = capabilities.requires_execution_context;
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
         std::move(implementation), copy_parameter_types(function),
         function.return_type(), options.target_profile, stats,
         std::move(capabilities), requires_context, function.trusted_objects(),
         trusted_object_writes(function), function.patch_cells(),
+        function.fast_calls(),
         std::move(deoptimization.table),
         assumptions, StackMapTable(std::move(lowering.stack_maps))));
     return {Status::ok_status(), std::move(compiled)};
@@ -1704,6 +1859,10 @@ CompilationResult Compiler::compile(
 
   try {
     auto implementation = std::make_unique<CompiledFunction::Impl>();
+    auto fast_call_targets = std::make_shared<FastCallTargetTable>();
+    fast_call_targets->entries.resize(function.fast_calls().size(), nullptr);
+    fast_call_targets->leases.resize(function.fast_calls().size());
+    implementation->fast_call_targets = std::move(fast_call_targets);
     implementation->patch_cell_count = function.patch_cells().size();
     if (implementation->patch_cell_count != 0) {
       implementation->patch_cells =
@@ -1726,18 +1885,21 @@ CompilationResult Compiler::compile(
                            lowering.spill_slots, function.frame_slots().size(),
                            function.trusted_objects().size(),
                            function.patch_cells().size(),
+                           function.fast_calls().size(),
                            function.nodes().size(),
                            lowered->nodes().size(), lowering.stack_maps.size(),
                            stack_map_value_count(lowering.stack_maps)};
     capabilities.requires_execution_context =
         capabilities.requires_execution_context || !assumptions.empty() ||
-        !function.trusted_objects().empty() || !function.patch_cells().empty();
+        !function.trusted_objects().empty() || !function.patch_cells().empty() ||
+        !function.fast_calls().empty();
     const bool requires_context = capabilities.requires_execution_context;
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
         std::move(implementation), copy_parameter_types(function),
         function.return_type(), options.target_profile, stats,
         std::move(capabilities), requires_context, function.trusted_objects(),
         trusted_object_writes(function), function.patch_cells(),
+        function.fast_calls(),
         std::move(deoptimization.table),
         assumptions, StackMapTable(std::move(lowering.stack_maps))));
     return {Status::ok_status(), std::move(compiled)};

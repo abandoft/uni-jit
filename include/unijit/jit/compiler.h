@@ -30,6 +30,7 @@ struct CompilationStats final {
   std::size_t frame_slots{0};
   std::size_t trusted_objects{0};
   std::size_t patch_cells{0};
+  std::size_t fast_calls{0};
   std::size_t input_ir_nodes{0};
   std::size_t optimized_ir_nodes{0};
   std::size_t stack_map_count{0};
@@ -55,6 +56,7 @@ struct CompilationLimits final {
   std::size_t maximum_frame_slots{256};
   std::size_t maximum_trusted_objects{64};
   std::size_t maximum_patch_cells{256};
+  std::size_t maximum_fast_calls{64};
   std::size_t maximum_stack_maps{4096};
   std::size_t maximum_metadata_values{256U * 1024U};
   std::size_t maximum_code_bytes{16U * 1024U * 1024U};
@@ -164,6 +166,10 @@ class CompiledFunction final {
   const std::vector<ir::PatchCellDescriptor>& patch_cells() const noexcept {
     return patch_cells_;
   }
+  const std::vector<ir::FastCallDescriptor>& fast_calls() const noexcept {
+    return fast_calls_;
+  }
+  bool fast_call_bound(std::size_t index) const noexcept;
   PatchCellReadResult read_patch_cell(std::size_t index) const noexcept;
   Status publish_patch_cell(std::size_t index, ir::Word value) const noexcept;
   PatchCellCompareExchangeResult compare_exchange_patch_cell(
@@ -174,6 +180,7 @@ class CompiledFunction final {
  private:
   struct Impl;
   friend class Compiler;
+  friend class CodeHandle;
 
   CompiledFunction(std::unique_ptr<Impl> impl,
                    std::vector<ir::ValueType> parameter_types,
@@ -183,6 +190,7 @@ class CompiledFunction final {
                    std::vector<ir::TrustedObjectDescriptor> trusted_objects,
                    std::vector<bool> trusted_object_writable,
                    std::vector<ir::PatchCellDescriptor> patch_cells,
+                   std::vector<ir::FastCallDescriptor> fast_calls,
                    runtime::DeoptimizationTable deoptimization_table,
                    runtime::AssumptionSet assumptions,
                    StackMapTable stack_maps) noexcept;
@@ -199,9 +207,15 @@ class CompiledFunction final {
   std::vector<ir::TrustedObjectDescriptor> trusted_objects_;
   std::vector<bool> trusted_object_writable_;
   std::vector<ir::PatchCellDescriptor> patch_cells_;
+  std::vector<ir::FastCallDescriptor> fast_calls_;
   runtime::DeoptimizationTable deoptimization_table_;
   runtime::AssumptionSet assumptions_;
   StackMapTable stack_maps_;
+
+  Status bind_fast_call(
+      std::size_t index,
+      std::shared_ptr<const CompiledFunction> target) const noexcept;
+  Status clear_fast_call(std::size_t index) const noexcept;
 };
 
 struct CompilationResult final {

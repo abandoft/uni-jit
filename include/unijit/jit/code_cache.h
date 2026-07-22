@@ -58,6 +58,11 @@ class CodeHandle final {
       std::size_t index, ir::Word expected, ir::Word desired) const noexcept;
   PatchCellReadResult fetch_add_patch_cell(std::size_t index,
                                            ir::Word increment) const noexcept;
+  const std::vector<ir::FastCallDescriptor>* fast_calls() const noexcept;
+  bool fast_call_bound(std::size_t index) const noexcept;
+  Status bind_fast_call(std::size_t index,
+                        const CodeHandle& target) const noexcept;
+  Status clear_fast_call(std::size_t index) const noexcept;
   const StackMapTable* stack_maps() const noexcept;
   const StackMapRecord* stack_map(std::size_t site) const noexcept;
   StackMapCaptureResult reconstruct_stack_map(

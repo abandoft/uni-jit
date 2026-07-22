@@ -98,9 +98,11 @@ NormalizedVectorOpcode normalize(ir::ControlOpcode opcode) noexcept {
   }
 }
 
-bool is_call(ir::Opcode opcode) noexcept { return opcode == ir::Opcode::kCall; }
+bool is_runtime_call(ir::Opcode opcode) noexcept {
+  return opcode == ir::Opcode::kCall;
+}
 
-bool is_call(ir::ControlOpcode opcode) noexcept {
+bool is_runtime_call(ir::ControlOpcode opcode) noexcept {
   return opcode == ir::ControlOpcode::kCall;
 }
 
@@ -244,7 +246,8 @@ bool requires_context(ir::Opcode opcode) noexcept {
          opcode == ir::Opcode::kStoreVector || is_atomic_access(opcode) ||
          opcode == ir::Opcode::kLoadObject ||
          opcode == ir::Opcode::kStoreObject ||
-         opcode == ir::Opcode::kLoadPatchCell;
+         opcode == ir::Opcode::kLoadPatchCell ||
+         opcode == ir::Opcode::kFastCall;
 }
 
 bool requires_context(ir::ControlOpcode opcode) noexcept {
@@ -259,7 +262,8 @@ bool requires_context(ir::ControlOpcode opcode) noexcept {
          opcode == ir::ControlOpcode::kStoreVector ||
          is_atomic_access(opcode) || opcode == ir::ControlOpcode::kLoadObject ||
          opcode == ir::ControlOpcode::kStoreObject ||
-         opcode == ir::ControlOpcode::kLoadPatchCell;
+         opcode == ir::ControlOpcode::kLoadPatchCell ||
+         opcode == ir::ControlOpcode::kFastCall;
 }
 
 bool is_word_multiply(ir::Opcode opcode, ir::ValueType type) noexcept {
@@ -513,7 +517,7 @@ CapabilityReport analyze_verified(const FunctionType &function,
     }
     const NormalizedVectorOpcode vector_opcode = normalize(node.opcode);
     if (vector_opcode == NormalizedVectorOpcode::kNone) {
-      LoweringStrategy strategy = is_call(node.opcode)
+      LoweringStrategy strategy = is_runtime_call(node.opcode)
                                       ? LoweringStrategy::kHelper
                                       : LoweringStrategy::kNative;
       const std::uint64_t required = scalar_features(

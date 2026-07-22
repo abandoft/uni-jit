@@ -134,6 +134,7 @@ void visit_control_operands(const ir::ControlFlowFunction& function,
       visitor(node.lhs);
       break;
     case ir::ControlOpcode::kCall:
+    case ir::ControlOpcode::kFastCall:
       for (std::size_t index = 0; index < node.argument_count; ++index) {
         visitor(function.call_arguments()[
             static_cast<std::size_t>(node.argument_begin) + index]);
@@ -291,7 +292,8 @@ RegisterAllocation allocate_impl(const ir::Function& function,
     } else if (node.opcode == ir::Opcode::kStoreFrame ||
                node.opcode == ir::Opcode::kStoreObject) {
       note_use(&last_use, node.lhs, index);
-    } else if (node.opcode == ir::Opcode::kCall) {
+    } else if (node.opcode == ir::Opcode::kCall ||
+               node.opcode == ir::Opcode::kFastCall) {
       for (std::size_t argument_index = 0;
            argument_index < node.argument_count; ++argument_index) {
         note_use(&last_use,
@@ -378,6 +380,7 @@ RegisterAllocation allocate_impl(const ir::Function& function,
 
   for (std::size_t call_index = 0; call_index < value_count; ++call_index) {
     if (function.nodes()[call_index].opcode != ir::Opcode::kCall &&
+        function.nodes()[call_index].opcode != ir::Opcode::kFastCall &&
         !may_call_atomic_fallback(function, call_index)) {
       continue;
     }
@@ -521,6 +524,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
           note_local_use(node.lhs);
           break;
         case ir::ControlOpcode::kCall:
+        case ir::ControlOpcode::kFastCall:
           for (std::size_t argument_index = 0;
                argument_index < node.argument_count; ++argument_index) {
             note_local_use(function.call_arguments()[
@@ -591,6 +595,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
       const ir::Value value = block.instructions[index];
       const ir::ControlOpcode opcode = function.nodes()[value.id()].opcode;
       if (opcode == ir::ControlOpcode::kCall ||
+          opcode == ir::ControlOpcode::kFastCall ||
           may_call_atomic_fallback(function, value)) {
         std::vector<ir::Value>& live = live_across_calls[value.id()];
         live.reserve(active_word.size() + active_simd.size());
@@ -772,6 +777,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
           note_nonlocal_use(block_index, node.lhs);
           break;
         case ir::ControlOpcode::kCall:
+        case ir::ControlOpcode::kFastCall:
           for (std::size_t argument_index = 0;
                argument_index < node.argument_count; ++argument_index) {
             note_nonlocal_use(

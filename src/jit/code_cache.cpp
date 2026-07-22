@@ -100,6 +100,30 @@ PatchCellReadResult CodeHandle::fetch_add_patch_cell(
              : function_->fetch_add_patch_cell(index, increment);
 }
 
+const std::vector<ir::FastCallDescriptor>* CodeHandle::fast_calls()
+    const noexcept {
+  return function_ == nullptr ? nullptr : &function_->fast_calls();
+}
+
+bool CodeHandle::fast_call_bound(std::size_t index) const noexcept {
+  return function_ != nullptr && function_->fast_call_bound(index);
+}
+
+Status CodeHandle::bind_fast_call(std::size_t index,
+                                  const CodeHandle& target) const noexcept {
+  if (function_ == nullptr || target.function_ == nullptr) {
+    return {StatusCode::kInvalidArgument, "code handle is not valid"};
+  }
+  return function_->bind_fast_call(index, target.function_);
+}
+
+Status CodeHandle::clear_fast_call(std::size_t index) const noexcept {
+  return function_ == nullptr
+             ? Status{StatusCode::kInvalidArgument,
+                      "code handle is not valid"}
+             : function_->clear_fast_call(index);
+}
+
 const StackMapTable* CodeHandle::stack_maps() const noexcept {
   return function_ == nullptr ? nullptr : &function_->stack_maps();
 }
