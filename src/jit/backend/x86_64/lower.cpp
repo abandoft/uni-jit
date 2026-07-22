@@ -1878,20 +1878,21 @@ LoweringResult lower_impl(const ir::Function& function,
       maximum_call_arguments =
           std::max(maximum_call_arguments,
                    static_cast<std::size_t>(node.argument_count));
-    } else if (node.opcode == ir::Opcode::kSafepoint ||
-               node.opcode == ir::Opcode::kGuardWordNonzero ||
-               node.opcode == ir::Opcode::kGuardFloatNonzero ||
-               node.opcode == ir::Opcode::kLoadWord ||
-               node.opcode == ir::Opcode::kStoreWord ||
-               node.opcode == ir::Opcode::kLoadFloat ||
-               node.opcode == ir::Opcode::kStoreFloat ||
-               node.opcode == ir::Opcode::kLoadVector ||
-               node.opcode == ir::Opcode::kStoreVector ||
-               is_atomic_access(node.opcode) ||
-               node.opcode == ir::Opcode::kLoadObject ||
-               node.opcode == ir::Opcode::kStoreObject ||
-               node.opcode == ir::Opcode::kFastCall ||
-               node.opcode == ir::Opcode::kLoadPatchCell) {
+    }
+    if (node.opcode == ir::Opcode::kSafepoint ||
+        node.opcode == ir::Opcode::kGuardWordNonzero ||
+        node.opcode == ir::Opcode::kGuardFloatNonzero ||
+        node.opcode == ir::Opcode::kLoadWord ||
+        node.opcode == ir::Opcode::kStoreWord ||
+        node.opcode == ir::Opcode::kLoadFloat ||
+        node.opcode == ir::Opcode::kStoreFloat ||
+        node.opcode == ir::Opcode::kLoadVector ||
+        node.opcode == ir::Opcode::kStoreVector ||
+        is_atomic_access(node.opcode) ||
+        node.opcode == ir::Opcode::kLoadObject ||
+        node.opcode == ir::Opcode::kStoreObject ||
+        node.opcode == ir::Opcode::kFastCall ||
+        node.opcode == ir::Opcode::kLoadPatchCell) {
       has_context_operations = true;
     }
   }
