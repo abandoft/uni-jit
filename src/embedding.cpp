@@ -516,7 +516,9 @@ unijit_status_code_v1 unijit_v1_abi_info(unijit_abi_info_v1* info,
 }
 
 unijit_status_code_v1 unijit_v1_error_code(const unijit_error_v1* error) {
-  return error == nullptr ? UNIJIT_STATUS_OK_V1 : error->code;
+  return error == nullptr
+             ? static_cast<unijit_status_code_v1>(UNIJIT_STATUS_OK_V1)
+             : error->code;
 }
 
 uint64_t unijit_v1_error_detail(const unijit_error_v1* error) {
