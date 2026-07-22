@@ -2,8 +2,9 @@
 
 UniJIT treats correctness under generated inputs, concurrent native-code
 lifecycle safety, and repeatable target performance as release-blocking product
-properties. Qualification executables are opt-in for ordinary local builds and
-mandatory in hosted continuous validation.
+properties. Extended qualification executables are opt-in for ordinary local
+builds and mandatory in hosted continuous validation; the bounded atomic
+memory-model gate is part of every ordinary test build.
 
 ## Deterministic differential fuzzing
 
@@ -75,6 +76,25 @@ headers. At commit `e22dcd1`, this matrix passed warnings-as-errors core and
 package qualification on local AArch64 and Rosetta x86-64, real Ubuntu GCC
 13.3 x86-64, real Bianbu GCC 14.2 RISC-V 64, and the complete hosted workflow
 including Windows MSVC x86-64, sanitizers, stress/fuzz, and language baselines.
+
+## Atomic memory-model qualification
+
+`unijit_atomic_litmus` compiles generated-code participants against the
+discovered immutable host profile. Its release/acquire message-passing case
+rejects publication that exposes stale payload data, its sequentially
+consistent store-buffering case rejects the forbidden both-zero observation,
+and its four-thread compare-exchange loop requires the exact requested success
+count under contention. RISC-V 64 without an explicit discovered `A` extension
+is skipped rather than compiled optimistically.
+
+The ordinary CTest gate runs 512 iterations of both litmus cases and 500
+successful compare-exchanges per thread. The extended stress workflow runs
+5,000 of each and retains a `unijit.atomic-litmus.v1` JSON record containing the
+architecture and exact iteration/success totals. The gate executes on hosted
+macOS AArch64 and x86-64, Ubuntu GCC/Clang x86-64, Windows MSVC x86-64, Linux
+ASan/UBSan, a separate real Ubuntu x86-64 host, and a real RISC-V 64 `A` host.
+The external installed-package consumer independently compiles and executes
+straight-line and CFG atomics through only exported CMake and C++ interfaces.
 
 ## Concurrent code-cache stress
 

@@ -102,9 +102,13 @@ execution with a false success result, not a runtime exit.
   Otherwise it uses bounded LL/SC attempts followed by a progress-preserving
   runtime fallback rather than an unbounded exclusive loop.
 - RISC-V 64 requires an explicit `A` target feature for AMO or LR/SC lowering.
-  Baseline RV64IMD does not imply atomic-extension availability. Bounded LR/SC
-  retries fall back to a runtime helper; unsupported widths or profiles are
-  reported by capability preflight instead of optimistically emitted.
+  Baseline RV64IMD does not imply atomic-extension availability. With `A`,
+  32- and 64-bit load/store and read-modify-write operations use finite native
+  load/store, fence, and AMO sequences. Compare-exchange performs at most 16
+  LR/SC attempts before entering the progress helper. Exact-width 8- and
+  16-bit accesses use the helper without widening into adjacent bytes. A
+  fence remains native without `A`, while every memory access fails capability
+  preflight when `A` is absent.
 
 Runtime fallback is a disclosed `helper` lowering decision. Helpers use the
 same generated-code-resolved region address, width, and return-value contract,
@@ -112,12 +116,14 @@ apply an order at least as strong as the declared order, and do not receive an
 unchecked frontend pointer. Lock freedom is therefore a target capability,
 while semantic availability and progress remain deterministic.
 
-The current delivery boundary enables atomic capability preflight and lowering
-for x86-64 and AArch64. AArch64 RMW operations are reported as `native` with an
-LSE requirement when the immutable profile authorizes LSE, or as `helper` for
-the baseline bounded-LL/SC path because progress fallback remains possible.
-RISC-V 64 remains `unsupported` before code emission until its `A` feature,
-mapping, and qualification contract are complete.
+Atomic capability preflight and lowering are delivered for all three product
+architectures. AArch64 RMW operations are reported as `native` with an LSE
+requirement when the immutable profile authorizes LSE, or as `helper` for the
+baseline bounded-LL/SC path because progress fallback remains possible. On
+RISC-V 64, 32- and 64-bit non-CAS operations are `native`, subword accesses and
+compare-exchange are `helper`, and the report requires `A` for every access.
+This classification describes possible progress fallback rather than weakening
+the operation's semantics.
 
 ## Qualification gates
 
@@ -145,6 +151,21 @@ for every operation, width, and valid order; direct LSE lowering under a
 discovered host profile; bounded 16-attempt LL/SC lowering with a lock-free
 atomic progress helper; diagnosed failure stack maps; and contended fetch-add.
 It passes the complete qualification suite on a real Apple AArch64 host in both
-baseline and LSE modes plus ASan/UBSan. Cross-architecture litmus tests, Windows
-x64 execution, installed-package coverage, and RISC-V 64 lowering remain
-release gates for the overall atomic feature block.
+baseline and LSE modes plus ASan/UBSan.
+
+The completed RISC-V 64 slice has straight-line and CFG baseline/optimized
+parity for every width and valid order under a discovered `A` profile, native
+32/64-bit AMO operations, bounded LR/SC compare-exchange, exact-width subword
+helpers, diagnosed failures, live-value preservation across helpers, and
+contended subword and full-width updates. It passes the core suite, default and
+extended litmus runs, installed-package consumption, and UBSan on a real
+RISC-V 64 host. That host's GCC ASan runtime fails at `main` for an independent
+minimal program, so it is not represented as UniJIT ASan evidence.
+
+The default memory-model gate executes release/acquire message passing,
+sequentially consistent store buffering, and contended compare-exchange on
+hosted AArch64, Ubuntu and Windows x86-64, plus the real RISC-V 64 host. The
+extended Ubuntu gate retains a machine-readable 5,000-iteration record. The
+installed package repeats generated-code atomic compilation and execution on
+the hosted platform matrix. These gates complete the three-target atomic
+feature block; non-executable data patch cells remain a separate P1 feature.

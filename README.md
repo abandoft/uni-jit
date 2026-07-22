@@ -22,6 +22,10 @@ reference interpreter on every product architecture. Public cross-target
 capability preflight classifies verified operation sets without emitting code,
 and compiled functions retain the post-optimization lowering decision for
 capacity planning and production telemetry.
+Bounded 8/16/32/64-bit generated-code atomics are also delivered in both IR
+forms on all three targets, with profile-selected native instructions, bounded
+progress fallback, explicit capability telemetry, cross-architecture
+memory-model litmus tests, and installed-package execution.
 See [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) for the design and delivery
 gates, [doc/PORTABILITY.md](doc/PORTABILITY.md) for verified platforms, and
 [doc/RUNTIME.md](doc/RUNTIME.md) for execution contexts, exits, and safepoints.
