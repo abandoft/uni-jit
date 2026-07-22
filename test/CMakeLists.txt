@@ -12,6 +12,21 @@ endif()
 
 add_test(NAME unijit.unit COMMAND unijit_tests)
 
+add_executable(unijit_portable_ir_test portable_ir_test.cpp)
+target_link_libraries(unijit_portable_ir_test PRIVATE UniJIT::unijit)
+target_include_directories(
+  unijit_portable_ir_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+target_compile_features(unijit_portable_ir_test PRIVATE cxx_std_17)
+if(MSVC)
+  target_compile_options(
+    unijit_portable_ir_test PRIVATE /W4 /permissive-)
+else()
+  target_compile_options(
+    unijit_portable_ir_test PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_test(NAME unijit.portable_ir COMMAND unijit_portable_ir_test)
+set_tests_properties(unijit.portable_ir PROPERTIES TIMEOUT 60)
+
 add_executable(unijit_embedding_test embedding_test.c)
 target_link_libraries(unijit_embedding_test PRIVATE UniJIT::unijit)
 target_compile_features(unijit_embedding_test PRIVATE c_std_17)
