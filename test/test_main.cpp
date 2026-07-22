@@ -329,6 +329,22 @@ Word mixed_runtime_helper(const Word* arguments, std::size_t count) {
   return unijit::ir::pack_float64(result);
 }
 
+Word fast_word_sum_oracle(const Word* arguments, std::size_t count) {
+  if (count != 2) {
+    return 0;
+  }
+  return arguments[0] + arguments[1];
+}
+
+Word fast_float_sum_oracle(const Word* arguments, std::size_t count) {
+  if (count != 2) {
+    return unijit::ir::pack_float64(0.0);
+  }
+  return unijit::ir::pack_float64(
+      unijit::ir::unpack_float64(arguments[0]) +
+      unijit::ir::unpack_float64(arguments[1]));
+}
+
 void expect(bool condition, const std::string& message) {
   if (!condition) {
     std::cerr << "FAIL: " << message << '\n';
@@ -3134,6 +3150,223 @@ void test_data_patch_cells() {
   expect(!limited.ok() &&
              limited.status.code() == unijit::StatusCode::kResourceExhausted,
          "patch-cell descriptors must obey an independent compilation limit");
+}
+
+void test_generation_safe_fast_calls() {
+  using unijit::ir::ControlFlowBuilder;
+  using unijit::ir::ControlFlowInterpreter;
+  using unijit::ir::RuntimeHelper;
+  using unijit::ir::ValueType;
+  using unijit::jit::CodeCache;
+  using unijit::runtime::ExecutionContext;
+
+  FunctionBuilder caller_builder({ValueType::kWord, ValueType::kWord});
+  const auto word_target = caller_builder.create_fast_call(
+      {ValueType::kWord, ValueType::kWord}, ValueType::kWord);
+  const Value word_result = caller_builder.fast_call(
+      word_target, {caller_builder.parameter(0), caller_builder.parameter(1)});
+  expect(caller_builder.set_return(caller_builder.add(
+             word_result, caller_builder.constant(7))).ok(),
+         "fast-call fixture must return the typed target result");
+  const Function caller_function = std::move(caller_builder).build();
+
+  ExecutionContext oracle_context;
+  const std::array<RuntimeHelper, 1> word_oracles = {fast_word_sum_oracle};
+  const std::array<Word, 2> word_arguments = {20, 15};
+  const auto missing_oracle = Interpreter::evaluate(
+      caller_function, word_arguments.data(), word_arguments.size());
+  const auto oracle_status = oracle_context.bind_fast_call_oracles(
+      word_oracles.data(), word_oracles.size());
+  const auto interpreted = Interpreter::evaluate(
+      caller_function, word_arguments.data(), word_arguments.size(),
+      &oracle_context);
+  const auto optimized = unijit::ir::Optimizer::run(caller_function);
+  const auto optimized_interpreted =
+      optimized.ok()
+          ? Interpreter::evaluate(optimized.function, word_arguments.data(),
+                                  word_arguments.size(), &oracle_context)
+          : unijit::ir::EvaluationResult{optimized.status, 0};
+  expect(!missing_oracle.ok() && oracle_status.ok() && interpreted.ok() &&
+             interpreted.value == 42 && optimized.ok() &&
+             optimized.function.fast_calls().size() == 1 &&
+             optimized_interpreted.ok() &&
+             optimized_interpreted.value == 42,
+         "typed fast calls must fail closed without an oracle and survive optimization");
+
+  FunctionBuilder first_target_builder(
+      {ValueType::kWord, ValueType::kWord});
+  expect(first_target_builder
+             .set_return(first_target_builder.add(
+                 first_target_builder.parameter(0),
+                 first_target_builder.parameter(1)))
+             .ok(),
+         "first fast-call generation must return a sum");
+  auto first_target =
+      Compiler::compile(std::move(first_target_builder).build());
+
+  FunctionBuilder second_target_builder(
+      {ValueType::kWord, ValueType::kWord});
+  const Value second_sum = second_target_builder.add(
+      second_target_builder.parameter(0), second_target_builder.parameter(1));
+  expect(second_target_builder
+             .set_return(second_target_builder.add(
+                 second_sum, second_target_builder.constant(1000)))
+             .ok(),
+         "second fast-call generation must expose a distinct result");
+  auto second_target =
+      Compiler::compile(std::move(second_target_builder).build());
+  auto caller_compilation = Compiler::compile(caller_function);
+
+  CodeCache cache;
+  auto first_publication =
+      first_target.ok()
+          ? cache.publish("fast-target", 1, std::move(first_target.function))
+          : unijit::jit::CodeCachePublication{
+                first_target.status, {}, false, false};
+  auto caller_publication =
+      caller_compilation.ok()
+          ? cache.publish("fast-caller", 1,
+                          std::move(caller_compilation.function))
+          : unijit::jit::CodeCachePublication{
+                caller_compilation.status, {}, false, false};
+  const auto unbound = caller_publication.ok()
+                           ? caller_publication.handle.invoke(
+                                 word_arguments.data(), word_arguments.size())
+                           : unijit::ir::EvaluationResult{};
+  const unijit::Status first_binding =
+      first_publication.ok() && caller_publication.ok()
+          ? caller_publication.handle.bind_fast_call(
+                0, first_publication.handle)
+          : unijit::Status{unijit::StatusCode::kInvalidArgument,
+                           "fast-call publication failed"};
+  const auto first_native = caller_publication.ok()
+                                ? caller_publication.handle.invoke(
+                                      word_arguments.data(),
+                                      word_arguments.size())
+                                : unijit::ir::EvaluationResult{};
+  expect(first_publication.ok() && caller_publication.ok() &&
+             !unbound.ok() && first_binding.ok() && first_native.ok() &&
+             first_native.value == 42 &&
+             caller_publication.handle.fast_call_bound(0) &&
+             caller_publication.handle.native_entry() == nullptr &&
+             caller_publication.handle.requires_context() &&
+             caller_publication.handle.compilation_stats() != nullptr &&
+             caller_publication.handle.compilation_stats()->fast_calls == 1,
+         "managed invocation must deny unbound calls and dispatch a bound generation");
+
+  auto second_publication =
+      second_target.ok()
+          ? cache.publish("fast-target", 2, std::move(second_target.function))
+          : unijit::jit::CodeCachePublication{
+                second_target.status, {}, false, false};
+  const unijit::Status second_binding =
+      second_publication.ok() && caller_publication.ok()
+          ? caller_publication.handle.bind_fast_call(
+                0, second_publication.handle)
+          : unijit::Status{unijit::StatusCode::kInvalidArgument,
+                           "second fast-call publication failed"};
+  const bool invalidated = cache.invalidate("fast-target", 2);
+  second_publication.handle = {};
+  const auto retained_generation = caller_publication.ok()
+                                       ? caller_publication.handle.invoke(
+                                             word_arguments.data(),
+                                             word_arguments.size())
+                                       : unijit::ir::EvaluationResult{};
+  const unijit::Status self_binding =
+      caller_publication.ok()
+          ? caller_publication.handle.bind_fast_call(
+                0, caller_publication.handle)
+          : unijit::Status{unijit::StatusCode::kInvalidArgument,
+                           "caller publication failed"};
+  const unijit::Status clearing =
+      caller_publication.ok()
+          ? caller_publication.handle.clear_fast_call(0)
+          : unijit::Status{unijit::StatusCode::kInvalidArgument,
+                           "caller publication failed"};
+  const auto cleared = caller_publication.ok()
+                           ? caller_publication.handle.invoke(
+                                 word_arguments.data(), word_arguments.size())
+                           : unijit::ir::EvaluationResult{};
+  expect(second_publication.status.ok() && second_binding.ok() && invalidated &&
+             retained_generation.ok() && retained_generation.value == 1042 &&
+             !self_binding.ok() && clearing.ok() && !cleared.ok() &&
+             !caller_publication.handle.fast_call_bound(0),
+         "retargeting must publish one generation atomically, retain it after cache invalidation, and clear safely");
+
+  ControlFlowBuilder cfg_caller_builder(
+      {ValueType::kFloat64, ValueType::kFloat64});
+  const auto float_target = cfg_caller_builder.create_fast_call(
+      {ValueType::kFloat64, ValueType::kFloat64}, ValueType::kFloat64);
+  expect(cfg_caller_builder
+             .set_return(cfg_caller_builder.fast_call(
+                 float_target,
+                 {cfg_caller_builder.parameter(0),
+                  cfg_caller_builder.parameter(1)}))
+             .ok(),
+         "CFG fast-call fixture must return a typed Float64 result");
+  const auto cfg_caller = std::move(cfg_caller_builder).build();
+  const std::array<RuntimeHelper, 1> float_oracles = {fast_float_sum_oracle};
+  const auto float_oracle_status = oracle_context.bind_fast_call_oracles(
+      float_oracles.data(), float_oracles.size());
+  const std::array<Word, 2> float_arguments = {
+      unijit::ir::pack_float64(1.25), unijit::ir::pack_float64(2.75)};
+  const auto cfg_interpreted = ControlFlowInterpreter::evaluate(
+      cfg_caller, float_arguments.data(), float_arguments.size(), 100,
+      &oracle_context);
+
+  FunctionBuilder float_target_builder(
+      {ValueType::kFloat64, ValueType::kFloat64});
+  expect(float_target_builder
+             .set_return(float_target_builder.float64_add(
+                 float_target_builder.parameter(0),
+                 float_target_builder.parameter(1)))
+             .ok(),
+         "Float64 target generation must return a sum");
+  auto float_target_compilation =
+      Compiler::compile(std::move(float_target_builder).build());
+  auto cfg_caller_compilation = Compiler::compile(cfg_caller);
+  auto float_target_publication =
+      float_target_compilation.ok()
+          ? cache.publish("fast-float-target", 1,
+                          std::move(float_target_compilation.function))
+          : unijit::jit::CodeCachePublication{
+                float_target_compilation.status, {}, false, false};
+  auto cfg_caller_publication =
+      cfg_caller_compilation.ok()
+          ? cache.publish("fast-float-caller", 1,
+                          std::move(cfg_caller_compilation.function))
+          : unijit::jit::CodeCachePublication{
+                cfg_caller_compilation.status, {}, false, false};
+  const unijit::Status float_binding =
+      float_target_publication.ok() && cfg_caller_publication.ok()
+          ? cfg_caller_publication.handle.bind_fast_call(
+                0, float_target_publication.handle)
+          : unijit::Status{unijit::StatusCode::kInvalidArgument,
+                           "Float64 fast-call publication failed"};
+  const auto cfg_native = cfg_caller_publication.ok()
+                              ? cfg_caller_publication.handle.invoke(
+                                    float_arguments.data(),
+                                    float_arguments.size())
+                              : unijit::ir::EvaluationResult{};
+  expect(float_oracle_status.ok() && cfg_interpreted.ok() &&
+             unijit::ir::unpack_float64(cfg_interpreted.value) == 4.0 &&
+             float_binding.ok() && cfg_native.ok() &&
+             unijit::ir::unpack_float64(cfg_native.value) == 4.0,
+         "CFG fast calls must preserve Float64 payloads in interpreter and native lowering");
+
+  FunctionBuilder limited_builder(1);
+  limited_builder.create_fast_call({ValueType::kWord});
+  limited_builder.create_fast_call({ValueType::kWord});
+  expect(limited_builder.set_return(limited_builder.parameter(0)).ok(),
+         "fast-call limit fixture must return its input");
+  unijit::jit::CompilationOptions limited_options;
+  limited_options.limits.maximum_fast_calls = 1;
+  const auto limited = Compiler::compile(
+      std::move(limited_builder).build(), limited_options);
+  expect(!limited.ok() &&
+             limited.status.code() ==
+                 unijit::StatusCode::kResourceExhausted,
+         "fast-call descriptors must obey an independent compilation limit");
 }
 
 void test_trusted_object_layouts() {
@@ -9135,6 +9368,7 @@ int main() {
   test_bounded_float_memory_control_flow();
   test_controlled_frame_slots();
   test_data_patch_cells();
+  test_generation_safe_fast_calls();
   test_trusted_object_layouts();
   test_code_cache_lifecycle();
   test_code_cache_concurrency();
