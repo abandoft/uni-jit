@@ -36,6 +36,12 @@ in both IR forms, explicitly bound interpreter oracles, immutable native target
 table snapshots, exact target-generation leases, fail-closed managed entry,
 three-backend indirect lowering, concurrent retargeting stress, installed-package
 coverage, and a retained complete-CFG-loop performance ceiling.
+The versioned C17 embedding ABI now exposes opaque builders, compilers,
+execution contexts, compiled generations, caches, fast-call bindings, patch
+cells, fixed-width target/limit/statistics records, structured status codes,
+and bounded diagnostics without exporting a C++ implementation symbol. Pure C
+installed-package and shared-library consumers are qualified on real Ubuntu
+and Windows x86-64 plus Apple AArch64 hosts.
 See [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) for the design and delivery
 gates, [doc/PORTABILITY.md](doc/PORTABILITY.md) for verified platforms, and
 [doc/RUNTIME.md](doc/RUNTIME.md) for execution contexts, exits, and safepoints.
@@ -85,6 +91,9 @@ three-backend lowering, concurrency qualification, and performance limits.
 [doc/FAST_CALLS.md](doc/FAST_CALLS.md) defines typed JIT-internal dispatch,
 generation-safe target publication, managed-entry enforcement, target lifetime,
 three-backend lowering, qualification, and deferred contextual/tail-call work.
+[doc/EMBEDDING_C_API.md](doc/EMBEDDING_C_API.md) defines the versioned C17 ABI,
+opaque ownership, error, concurrency, shared-library export, cache-generation,
+and deliberate fail-closed capability boundaries.
 [doc/FRAME_LOCALS.md](doc/FRAME_LOCALS.md) defines fixed typed invocation
 storage, zero initialization, sensitive-slot clearing, optimizer rules,
 resource limits, and the boundary for future vector and aggregate frames.

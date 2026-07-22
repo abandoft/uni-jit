@@ -27,7 +27,7 @@ qualifying the shared commercial contract on those three targets.
 | Self-modifying code | Published code remains immutable RX; function-owned atomic RW non-executable patch cells, managed binding, lease lifetime, and three-backend acquire loads are delivered | Retain data-only retargeting and never reopen published code pages | Delivered |
 | Direct physical-register access | Intentionally absent from public IR | Keep physical registers private to MIR; expose only verified role constraints | Architectural rule |
 | Function-local stack storage | Fixed zero-initialized Word/Float64 slots, optional slot zeroization, resource limits, and three-backend lowering are delivered | Add aligned vector/aggregate slots, lexical lifetime reuse, stack probing, and whole-value secret erasure | P1 partial |
-| All-in-one hidden compilation | Native encoders are already internal | Add an opaque versioned C17 embedding ABI over the C++ implementation | P1 |
+| All-in-one hidden compilation | A versioned opaque C17 scalar embedding floor now owns builders, functions, compilers, contexts, caches, compiled generations, and bounded diagnostics without exporting C++ implementation symbols | Retain exact three-platform shared-library ABI gates, then extend new versioned surfaces only after their runtime contracts are complete | Delivered scalar floor; broader runtime surface follow-on |
 | Serialization and AOT | No persistent compilation artifact | Add canonical portable IR packages first, then validated target code objects | P1 |
 
 P0 closes a prerequisite for several language and numerical workloads. P1 is
@@ -394,14 +394,19 @@ reclamation.
 
 ## Encapsulation, serialization, and AOT
 
-The public commercial embedding boundary will be an opaque versioned C17 API.
-It owns compiler, target-profile, artifact, compiled-function, error, and lease
-handles while keeping the C++ graph builders and native encoders hidden. API
-entry points never expose internal structure sizes and return structured status
-codes plus bounded diagnostics. Separate compiler instances can be used
-concurrently, while each mutable instance has explicit single-owner rules.
-The embedder can provide bounded allocation, executable-memory publication,
-logging, clock, and entropy callbacks without replacing verifier policy.
+The first public commercial embedding boundary is now delivered as the opaque
+versioned C17 scalar API specified in [`EMBEDDING_C_API.md`](EMBEDDING_C_API.md).
+It owns builders, functions, compilers, target profiles, compiled functions,
+execution contexts, code caches, generation-stable handles, and errors while
+keeping C++ graphs and native encoders hidden. Fixed-width extensible structures,
+structured status codes, 1,024-byte diagnostics, exception containment, explicit
+ownership, resource budgets, installed C consumption, an exact 67-symbol export
+manifest, and real Ubuntu x86-64, Windows x86-64, and Apple AArch64 shared-library
+gates define the delivered floor. The current v1 builder intentionally exposes
+only scalar straight-line construction, guards, safepoints, context-free fast
+calls, and data patch cells. CFG, memory/object bindings, atomics, SIMD, recovery,
+tiering, scheduling, allocation callbacks, and serialized artifacts remain
+fail-closed until separately versioned contracts are complete.
 
 Persistent compilation is split into two formats:
 
@@ -455,8 +460,9 @@ byte-identical packages for identical inputs and target profiles.
 5. Retain the delivered typed generation-stable scalar JIT-to-JIT call floor,
    then deliver contextual/register-prefix calls, unwind-aware tail transfers,
    and generation-stable direct-call targets.
-6. Deliver the opaque C17 embedding API and portable IR package, then the
-   validated native AOT object and deterministic rebuild gate.
+6. Retain the delivered opaque C17 scalar embedding ABI, then deliver the
+   portable IR package, validated native AOT object, and deterministic rebuild
+   gate.
 7. Consider additional architectures only after all preceding contracts pass
    semantic, security, resource, and performance release gates on the required
    three architectures.
