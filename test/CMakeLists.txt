@@ -16,6 +16,13 @@ add_executable(unijit_embedding_test embedding_test.c)
 target_link_libraries(unijit_embedding_test PRIVATE UniJIT::unijit)
 target_compile_features(unijit_embedding_test PRIVATE c_std_17)
 set_target_properties(unijit_embedding_test PROPERTIES LINKER_LANGUAGE CXX)
+if(WIN32 AND BUILD_SHARED_LIBS)
+  add_custom_command(
+    TARGET unijit_embedding_test POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "$<TARGET_FILE:unijit>"
+            "$<TARGET_FILE_DIR:unijit_embedding_test>")
+endif()
 if(MSVC)
   target_compile_options(unijit_embedding_test PRIVATE /W4)
 else()
@@ -23,6 +30,7 @@ else()
     unijit_embedding_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 add_test(NAME unijit.embedding_c_abi COMMAND unijit_embedding_test)
+set_tests_properties(unijit.embedding_c_abi PROPERTIES TIMEOUT 60)
 
 add_executable(unijit_atomic_litmus atomic_litmus.cpp)
 target_link_libraries(
