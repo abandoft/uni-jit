@@ -418,6 +418,14 @@ Persistent compilation is split into two formats:
    patch-cell descriptors, stack maps, deoptimization data, unwind data, and
    compiler build identity.
 
+The versioned portable representation and its untrusted-input boundary are
+specified in [`PORTABLE_IR.md`](PORTABLE_IR.md). Version 1 uses a canonical
+little-endian wire format, a fixed allocation-driving manifest, SHA-256 payload
+integrity, explicit decode budgets, complete post-decode IR verification, and
+byte-identical rebuild qualification. Runtime helper addresses are forbidden;
+typed fast-call slots remain unbound until the reconstructed function is
+compiled and explicitly connected.
+
 Neither format serializes host pointers, C++ object layouts, mutex state, cache
 leases, or writable executable memory. Portable IR decoding is
 length-delimited, overflow-checked, checksummed, resource-limited before
