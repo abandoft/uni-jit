@@ -27,7 +27,8 @@
 #include "unijit/jit/tiering.h"
 #include "jit/register_allocator.h"
 
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64) || \
+    (defined(__riscv) && __riscv_xlen == 64)
 #include "jit/atomic_fallback.h"
 #endif
 
@@ -1031,7 +1032,8 @@ void test_bounded_atomic_semantics() {
   expect(context.bind_memory_regions(&region, 1).ok(),
          "atomic fixture must bind naturally aligned storage");
 
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__aarch64__) || defined(_M_ARM64) || \
+    (defined(__riscv) && __riscv_xlen == 64)
   const auto fallback_call = [](std::uint64_t* storage,
                                 unijit::jit::detail::AtomicFallbackOperation op,
                                 std::size_t width, Word operand,
@@ -1064,7 +1066,7 @@ void test_bounded_atomic_semantics() {
              fallback_successful_compare == 0x0f && fallback_add == 0x33 &&
              fallback_and == 0x34 && fallback_or == 0x34 &&
              fallback_xor == 0xb4 && fallback_cell == 0x4b,
-         "AArch64 progress fallback must preserve atomic RMW observations");
+         "atomic progress fallback must preserve RMW observations");
 #endif
 
   FunctionBuilder builder(0, 1);
@@ -1161,11 +1163,15 @@ void test_bounded_atomic_semantics() {
                read_word(cell) == 0x1234,
            "baseline atomic lowering must match optimized execution");
   } else {
+    const std::size_t expected_unsupported =
+        baseline.architecture == unijit::jit::TargetArchitecture::kRiscV64
+            ? 8
+            : 9;
     expect(!capability.ok() && capability.requires_execution_context &&
                capability.overall_strategy ==
                    LoweringStrategy::kUnsupported &&
                capability.operation_count(LoweringStrategy::kUnsupported) >=
-                   9 &&
+                   expected_unsupported &&
                !compilation.ok() &&
                compilation.status.code() ==
                    unijit::StatusCode::kCodeGenerationFailed,
@@ -1177,7 +1183,12 @@ void test_bounded_atomic_semantics() {
       host.architecture == unijit::jit::TargetArchitecture::kAArch64 &&
       unijit::jit::has_target_feature(
           host, unijit::jit::TargetFeature::kAarch64Lse);
-  if (has_lse) {
+  const bool has_riscv_atomic =
+      host.architecture == unijit::jit::TargetArchitecture::kRiscV64 &&
+      unijit::jit::has_target_feature(
+          host, unijit::jit::TargetFeature::kRiscVAtomic);
+  const bool has_profile_atomics = has_lse || has_riscv_atomic;
+  if (has_profile_atomics) {
     unijit::jit::CompilationOptions lse_options;
     lse_options.target_profile = host;
     const auto lse_capability =
@@ -1188,17 +1199,24 @@ void test_bounded_atomic_semantics() {
         lse_compilation.ok()
             ? lse_compilation.function->invoke(nullptr, 0, &context)
             : unijit::ir::EvaluationResult{lse_compilation.status, 0};
-    expect(lse_capability.ok() &&
-               lse_capability.overall_strategy == LoweringStrategy::kNative &&
+    const bool expected_profile_strategy =
+        has_lse
+            ? lse_capability.overall_strategy == LoweringStrategy::kNative &&
+                  lse_capability.operation_count(LoweringStrategy::kHelper) ==
+                      0
+            : lse_capability.overall_strategy == LoweringStrategy::kHelper &&
+                  lse_capability.operation_count(LoweringStrategy::kHelper) ==
+                      1;
+    const auto expected_feature =
+        has_lse ? unijit::jit::TargetFeature::kAarch64Lse
+                : unijit::jit::TargetFeature::kRiscVAtomic;
+    expect(lse_capability.ok() && expected_profile_strategy &&
                lse_capability.required_features ==
-                   unijit::jit::target_feature_bit(
-                       unijit::jit::TargetFeature::kAarch64Lse) &&
-               lse_capability.operation_count(LoweringStrategy::kHelper) ==
-                   0 &&
+                   unijit::jit::target_feature_bit(expected_feature) &&
                lse_compilation.ok() && lse_result.ok() &&
                lse_result.value == 1 && read_word(cell) == 0x1234,
-           "AArch64 LSE profile must use native lowering for the complete "
-           "atomic surface");
+           "profile-selected atomics must lower the complete operation "
+           "surface");
     lse_options.optimization_level =
         unijit::jit::OptimizationLevel::kBaseline;
     const auto lse_baseline = Compiler::compile(function, lse_options);
@@ -1209,7 +1227,7 @@ void test_bounded_atomic_semantics() {
             : unijit::ir::EvaluationResult{lse_baseline.status, 0};
     expect(lse_baseline_result.ok() && lse_baseline_result.value == 1 &&
                read_word(cell) == 0x1234,
-           "AArch64 LSE baseline lowering must match optimized execution");
+           "profile-selected atomic baseline must match optimized execution");
   }
 
   const std::array<MemoryWidth, 4> widths = {
@@ -1254,7 +1272,7 @@ void test_bounded_atomic_semantics() {
              "native atomics must preserve exact narrow-cell "
              "semantics");
     }
-    if (has_lse) {
+    if (has_profile_atomics) {
       unijit::jit::CompilationOptions lse_options;
       lse_options.target_profile = host;
       cell = initial;
@@ -1269,7 +1287,7 @@ void test_bounded_atomic_semantics() {
                      (initial & mask) &&
                  (read_word(cell) & mask) == (replacement & mask) &&
                  (read_word(cell) & ~mask) == (initial & ~mask),
-             "AArch64 LSE atomics must preserve every narrow-cell width");
+             "profile-selected atomics must preserve every narrow-cell width");
     }
   }
 
@@ -1323,7 +1341,7 @@ void test_bounded_atomic_semantics() {
            "native narrow CAS failure must return the zero-extended observed "
            "cell without writing");
   }
-  if (has_lse) {
+  if (has_profile_atomics) {
     unijit::jit::CompilationOptions lse_options;
     lse_options.target_profile = host;
     cell = UINT64_C(0x11223344aabbccdd);
@@ -1338,7 +1356,8 @@ void test_bounded_atomic_semantics() {
                static_cast<std::uint64_t>(native_failed_compare.value) ==
                    UINT64_C(0xaabbccdd) &&
                read_word(cell) == UINT64_C(0x11223344aabbccdd),
-           "AArch64 LSE narrow CAS failure must return the observed cell");
+           "profile-selected narrow CAS failure must return the observed "
+           "cell");
   }
 
   FunctionBuilder failure_builder(1, 1);
@@ -1519,7 +1538,7 @@ void test_bounded_atomic_semantics() {
       expect(ordered_result.ok() && ordered_result.value == 1 && cell == 1,
              "native CAS must execute every declared success order");
     }
-    if (has_lse) {
+    if (has_profile_atomics) {
       unijit::jit::CompilationOptions lse_options;
       lse_options.target_profile = host;
       cell = 0;
@@ -1530,7 +1549,8 @@ void test_bounded_atomic_semantics() {
               ? ordered_compilation.function->invoke(nullptr, 0, &context)
               : unijit::ir::EvaluationResult{ordered_compilation.status, 0};
       expect(ordered_result.ok() && ordered_result.value == 1 && cell == 1,
-             "AArch64 LSE CAS must execute every declared success order");
+             "profile-selected CAS must execute every declared success "
+             "order");
     }
   }
   const std::array<AtomicMemoryOrder, 3> load_orders = {
@@ -1556,7 +1576,7 @@ void test_bounded_atomic_semantics() {
                  cell == 0x55,
              "native loads must execute every declared memory order");
     }
-    if (has_lse) {
+    if (has_profile_atomics) {
       unijit::jit::CompilationOptions lse_options;
       lse_options.target_profile = host;
       cell = 0x55;
@@ -1568,7 +1588,7 @@ void test_bounded_atomic_semantics() {
               : unijit::ir::EvaluationResult{ordered_compilation.status, 0};
       expect(ordered_result.ok() && ordered_result.value == 0x55 &&
                  cell == 0x55,
-             "AArch64 LSE profile loads must execute every memory order");
+             "profile-selected loads must execute every memory order");
     }
   }
   const std::array<AtomicMemoryOrder, 3> store_orders = {
@@ -1594,7 +1614,7 @@ void test_bounded_atomic_semantics() {
       expect(ordered_result.ok() && ordered_result.value == 1 && cell == 1,
              "native stores must execute every declared memory order");
     }
-    if (has_lse) {
+    if (has_profile_atomics) {
       unijit::jit::CompilationOptions lse_options;
       lse_options.target_profile = host;
       cell = 0;
@@ -1605,7 +1625,7 @@ void test_bounded_atomic_semantics() {
               ? ordered_compilation.function->invoke(nullptr, 0, &context)
               : unijit::ir::EvaluationResult{ordered_compilation.status, 0};
       expect(ordered_result.ok() && ordered_result.value == 1 && cell == 1,
-             "AArch64 LSE profile stores must execute every memory order");
+             "profile-selected stores must execute every memory order");
     }
   }
   const std::array<AtomicMemoryOrder, 4> fence_orders = {
@@ -1629,7 +1649,7 @@ void test_bounded_atomic_semantics() {
       expect(ordered_result.ok() && ordered_result.value == 0,
              "native fences must execute every declared memory order");
     }
-    if (has_lse) {
+    if (has_profile_atomics) {
       unijit::jit::CompilationOptions lse_options;
       lse_options.target_profile = host;
       const auto ordered_compilation =
@@ -1639,7 +1659,7 @@ void test_bounded_atomic_semantics() {
               ? ordered_compilation.function->invoke(nullptr, 0, nullptr)
               : unijit::ir::EvaluationResult{ordered_compilation.status, 0};
       expect(ordered_result.ok() && ordered_result.value == 0,
-             "AArch64 LSE profile fences must execute every memory order");
+             "profile-selected fences must execute every memory order");
     }
   }
 
@@ -1737,7 +1757,7 @@ void test_bounded_atomic_semantics() {
            "native fetch-add must not lose updates under concurrent "
            "execution");
   }
-  if (has_lse) {
+  if (has_profile_atomics) {
     unijit::jit::CompilationOptions lse_options;
     lse_options.target_profile = host;
     const auto increment_compilation =
@@ -1772,7 +1792,7 @@ void test_bounded_atomic_semantics() {
     expect(increment_compilation.ok() &&
                !concurrent_failed.load(std::memory_order_relaxed) &&
                read_word(cell) == kThreadCount * kIncrementsPerThread,
-           "AArch64 LSE fetch-add must not lose concurrent updates");
+           "profile-selected fetch-add must not lose concurrent updates");
   }
 }
 
@@ -1871,9 +1891,14 @@ void test_bounded_atomic_control_flow() {
            "CFG atomics must fail closed on targets without native lowering");
   }
   const auto host = unijit::jit::host_target_profile();
-  if (host.architecture == unijit::jit::TargetArchitecture::kAArch64 &&
-      unijit::jit::has_target_feature(
-          host, unijit::jit::TargetFeature::kAarch64Lse)) {
+  const bool has_profile_atomics =
+      (host.architecture == unijit::jit::TargetArchitecture::kAArch64 &&
+       unijit::jit::has_target_feature(
+           host, unijit::jit::TargetFeature::kAarch64Lse)) ||
+      (host.architecture == unijit::jit::TargetArchitecture::kRiscV64 &&
+       unijit::jit::has_target_feature(
+           host, unijit::jit::TargetFeature::kRiscVAtomic));
+  if (has_profile_atomics) {
     unijit::jit::CompilationOptions lse_options;
     lse_options.target_profile = host;
     cell = 3;
@@ -1888,7 +1913,8 @@ void test_bounded_atomic_control_flow() {
                native_result.value == 8 && cell == 7 &&
                compilation.function->capabilities().overall_strategy ==
                    unijit::jit::LoweringStrategy::kNative,
-           "AArch64 LSE CFG atomics must preserve effects across block edges");
+           "profile-selected CFG atomics must preserve effects across block "
+           "edges");
     lse_options.optimization_level =
         unijit::jit::OptimizationLevel::kBaseline;
     cell = 3;
@@ -1899,7 +1925,8 @@ void test_bounded_atomic_control_flow() {
                   arguments.data(), arguments.size(), &context)
             : unijit::ir::EvaluationResult{baseline_compilation.status, 0};
     expect(baseline_result.ok() && baseline_result.value == 8 && cell == 7,
-           "AArch64 LSE CFG baseline must match optimized execution");
+           "profile-selected CFG atomic baseline must match optimized "
+           "execution");
   }
 }
 
