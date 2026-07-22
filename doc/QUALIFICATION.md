@@ -96,6 +96,31 @@ ASan/UBSan, a separate real Ubuntu x86-64 host, and a real RISC-V 64 `A` host.
 The external installed-package consumer independently compiles and executes
 straight-line and CFG atomics through only exported CMake and C++ interfaces.
 
+## Immutable data patch-cell qualification
+
+`unijit_patch_cell_stress` compiles a generated acquire reader and requires a
+release-published generation to expose its preceding payload. A second fixture
+runs eight concurrent fetch-add writers and four generated-code readers against
+a function-owned counter, requires monotonic observations and the exact final
+sum, invalidates the cache lookup, and then proves that a retained handle keeps
+both native code and patch data safely invocable and mutable.
+
+The ordinary CTest gate uses 512 publications and 1,000 increments per writer.
+The extended workflow uses 10,000 of each, retains a
+`unijit.patch-cell-stress.v1` JSON record, and repeats the integration under
+ThreadSanitizer. Core tests separately cover both IR forms, baseline and
+optimized lowering, reference snapshots, verifier failures, resource limits,
+all mutation APIs, and managed-entry enforcement; the installed-package
+consumer repeats the exported public API.
+
+`unijit_patch_cell_benchmark` alternates complete managed invocations of an
+acquire-loaded cell and an equivalent compiled constant, measures runtime
+release/acquire mutation round trips, and retains a
+`unijit.patch-cell-benchmark.v1` record. The platform gate requires at least
+10,000 warmups, seven samples of 200,000 invocations, no more than 2.5 times
+the constant managed-call latency, and at most 128 patch-reader code bytes on
+real AArch64, Ubuntu/Windows x86-64, and RISC-V 64 hosts.
+
 ## Concurrent code-cache stress
 
 `unijit_code_cache_stress` runs configurable reader and writer populations over

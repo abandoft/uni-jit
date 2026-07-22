@@ -26,6 +26,11 @@ Bounded 8/16/32/64-bit generated-code atomics are also delivered in both IR
 forms on all three targets, with profile-selected native instructions, bounded
 progress fallback, explicit capability telemetry, cross-architecture
 memory-model litmus tests, and installed-package execution.
+Function-owned non-executable data patch cells provide acquire-loaded mutable
+values, targets, shapes, generations, and counters without rewriting immutable
+RX code, with release/CAS/fetch-add publication, generation-stable cache leases,
+three-backend lowering, concurrency stress, and a retained managed-call
+performance ceiling.
 See [doc/ARCHITECTURE.md](doc/ARCHITECTURE.md) for the design and delivery
 gates, [doc/PORTABILITY.md](doc/PORTABILITY.md) for verified platforms, and
 [doc/RUNTIME.md](doc/RUNTIME.md) for execution contexts, exits, and safepoints.
@@ -69,6 +74,9 @@ lowering, resource limits, and the remaining memory roadmap.
 [doc/ATOMICS.md](doc/ATOMICS.md) defines the independent generated-code atomic
 operation, memory-order, bounded provenance, progress, target-lowering, and
 concurrency qualification contract.
+[doc/PATCH_CELLS.md](doc/PATCH_CELLS.md) defines immutable-code data patching,
+publication order, managed-entry binding, cache-generation lifetime,
+three-backend lowering, concurrency qualification, and performance limits.
 [doc/FRAME_LOCALS.md](doc/FRAME_LOCALS.md) defines fixed typed invocation
 storage, zero initialization, sensitive-slot clearing, optimizer rules,
 resource limits, and the boundary for future vector and aggregate frames.

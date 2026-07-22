@@ -18,6 +18,8 @@ internal fast/tail calls, bounded frame locals, and validated AOT artifacts are
 specified in `doc/LOW_LEVEL_CAPABILITIES.md`. That roadmap is independently
 defined: arbitrary physical-register access remains private to MIR, and
 published code remains immutable RX rather than adopting self-modifying code.
+The delivered function-owned patch-cell contract is specified separately in
+`doc/PATCH_CELLS.md`.
 
 ## Compilation pipeline
 

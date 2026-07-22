@@ -24,7 +24,7 @@ qualifying the shared commercial contract on those three targets.
 | Generated-code atomics | Bounded typed atomic IR, verification, interpretation, optimization, runtime-exit metadata, capability telemetry, and independent x86-64, AArch64 LSE/bounded LL/SC, and RISC-V `A` AMO/bounded LR/SC lowering are delivered with exact-width helper fallback | Retain cross-target litmus, contention, sanitizer, real-host, and installed-package gates | Delivered |
 | Fast internal calls | Calls currently use the portable runtime-helper ABI | Add a private JIT-to-JIT convention without weakening external ABI safety | P1 |
 | Tail calls | Not represented | Add verified tail transfers after fast calls and unwind metadata exist | P2 |
-| Self-modifying code | Published code is immutable RX | Keep code immutable; use atomic RW non-executable patch cells and versioned replacement | P1 |
+| Self-modifying code | Published code remains immutable RX; function-owned atomic RW non-executable patch cells, managed binding, lease lifetime, and three-backend acquire loads are delivered | Retain data-only retargeting and never reopen published code pages | Delivered |
 | Direct physical-register access | Intentionally absent from public IR | Keep physical registers private to MIR; expose only verified role constraints | Architectural rule |
 | Function-local stack storage | Fixed zero-initialized Word/Float64 slots, optional slot zeroization, resource limits, and three-backend lowering are delivered | Add aligned vector/aggregate slots, lexical lifetime reuse, stack probing, and whole-value secret erasure | P1 partial |
 | All-in-one hidden compilation | Native encoders are already internal | Add an opaque versioned C17 embedding ABI over the C++ implementation | P1 |
@@ -297,8 +297,8 @@ The normative operation, memory-order, provenance, progress, and qualification
 contract is frozen in [`ATOMICS.md`](ATOMICS.md). The shared semantic layer,
 independent lowering on all three product architectures, cross-target litmus
 qualification, and installed-package consumption are delivered. Data-only
-patch cells remain an independent P1 capability rather than part of the atomic
-memory-operation claim.
+patch cells are independently specified in [`PATCH_CELLS.md`](PATCH_CELLS.md)
+and are not part of the bounded-memory atomic operation claim.
 
 Generated-code atomics operate on naturally aligned 8-, 16-, 32-, or 64-bit
 integer locations from a verified memory region. The IR supports atomic load,
@@ -364,18 +364,21 @@ physical register. Arbitrary register numbers are not exposed to frontends.
 
 ## Immutable code and patch cells
 
-UniJIT will not make an RX page writable to implement inline caches or direct
-call retargeting. Published instructions remain immutable. Mutable state lives
-in separately allocated, non-executable, naturally aligned patch cells that
-hold a target, shape, generation, or counter. Generated code reads a cell with
-the required acquire semantics, while runtime publication uses release or
-compare-exchange updates.
+UniJIT does not make an RX page writable to implement inline caches or direct
+call retargeting. The delivered contract in
+[`PATCH_CELLS.md`](PATCH_CELLS.md) keeps published instructions immutable and
+places mutable state in separately allocated, non-executable, naturally aligned
+function-owned cells that hold a value, target, shape, generation, or counter.
+Generated code and runtime reads use acquire semantics, while runtime mutation
+uses release publication, strong compare-exchange, or fetch-add updates.
 
-Patch-cell ownership follows the compiled-function lease. Replacement first
-publishes the new data target, then retires old lookup visibility; active code
-may continue using the old generation safely. Polymorphic growth is bounded,
-telemetry reports misses and transitions, and megamorphic state falls back to a
-runtime helper. This provides the useful part of code patching without
+Patch-cell ownership follows the compiled-function lease. Cache invalidation
+retires lookup visibility while outstanding handles keep both executable code
+and its private cell array alive. Managed invocation supplies the internal cell
+base, and `native_entry()` is unavailable for a function with cells so the
+binding cannot be bypassed. The current target kind is data only; verified
+indirect JIT calls, polymorphic policy, and GC target retention remain later
+runtime contracts. This provides the useful data part of code patching without
 weakening W^X, instruction-cache coherency, or concurrent reclamation.
 
 ## Encapsulation, serialization, and AOT
@@ -435,9 +438,9 @@ byte-identical packages for identical inputs and target profiles.
    vector/scalar/interpreter parity, target lowering identity, fixed workload
    checksum, code-size ceiling, and minimum speedup ratios; emulation remains
    supplemental only.
-4. Retain the delivered atomic memory-operation gates and deliver data-only
-   patch cells with concurrency, invalidation, sanitizer, and reclamation
-   stress.
+4. Retain the delivered atomic memory-operation and data-only patch-cell gates,
+   including concurrency, invalidation, sanitizer, reclamation, installed
+   package, real-host, code-size, and managed-invocation performance evidence.
 5. Deliver the JIT-to-JIT convention, unwind-aware tail transfers, and
    generation-stable direct-call targets.
 6. Deliver the opaque C17 embedding API and portable IR package, then the
