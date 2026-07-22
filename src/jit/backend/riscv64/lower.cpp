@@ -1537,7 +1537,8 @@ LoweringResult lower_impl(const ir::Function& function,
         node.opcode == ir::Opcode::kAtomicFetchOr ||
         node.opcode == ir::Opcode::kAtomicFetchXor ||
         node.opcode == ir::Opcode::kLoadObject ||
-        node.opcode == ir::Opcode::kStoreObject) {
+        node.opcode == ir::Opcode::kStoreObject ||
+        node.opcode == ir::Opcode::kLoadPatchCell) {
       has_context_operations = true;
     }
   }
@@ -2010,6 +2011,25 @@ LoweringResult lower_impl(const ir::Function& function,
           if (!destination.in_register()) {
             assembler.store(target, kStackPointer, spill_offset(destination));
           }
+        }
+        break;
+      }
+      case ir::Opcode::kLoadPatchCell: {
+        const int target = destination.in_register()
+                               ? physical_register(destination)
+                               : kScratch1;
+        assembler.load(kScratch0, kStackPointer,
+                       context_slot * sizeof(ir::Word));
+        assembler.load(kScratch0, kScratch0,
+                       runtime::ExecutionContext::patch_cells_offset());
+        assembler.load(
+            target, kScratch0,
+            static_cast<std::size_t>(node.immediate) *
+                    sizeof(runtime::PatchCellStorage) +
+                runtime::PatchCellStorage::value_offset());
+        assembler.atomic_fence();
+        if (!destination.in_register()) {
+          assembler.store(target, kStackPointer, spill_offset(destination));
         }
         break;
       }
@@ -2967,7 +2987,8 @@ LoweringResult lower_control_flow_impl(const ir::ControlFlowFunction& function,
                node.opcode == ir::ControlOpcode::kAtomicFetchOr ||
                node.opcode == ir::ControlOpcode::kAtomicFetchXor ||
                node.opcode == ir::ControlOpcode::kLoadObject ||
-               node.opcode == ir::ControlOpcode::kStoreObject;
+               node.opcode == ir::ControlOpcode::kStoreObject ||
+               node.opcode == ir::ControlOpcode::kLoadPatchCell;
       });
   std::size_t maximum_call_arguments = 0;
   bool has_calls = false;
@@ -3361,6 +3382,24 @@ LoweringResult lower_control_flow_impl(const ir::ControlFlowFunction& function,
               assembler.store(word_destination, kStackPointer,
                               destination_offset);
             }
+          }
+          break;
+        }
+        case ir::ControlOpcode::kLoadPatchCell: {
+          assembler.load(kScratch0, kStackPointer,
+                         context_slot * sizeof(ir::Word));
+          assembler.load(
+              kScratch0, kScratch0,
+              runtime::ExecutionContext::patch_cells_offset());
+          assembler.load(
+              word_destination, kScratch0,
+              static_cast<std::size_t>(node.immediate) *
+                      sizeof(runtime::PatchCellStorage) +
+                  runtime::PatchCellStorage::value_offset());
+          assembler.atomic_fence();
+          if (allocated_word < 0 || allocation.requires_stack[value.id()]) {
+            assembler.store(word_destination, kStackPointer,
+                            destination_offset);
           }
           break;
         }

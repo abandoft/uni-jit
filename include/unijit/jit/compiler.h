@@ -29,6 +29,7 @@ struct CompilationStats final {
   std::size_t spill_slots{0};
   std::size_t frame_slots{0};
   std::size_t trusted_objects{0};
+  std::size_t patch_cells{0};
   std::size_t input_ir_nodes{0};
   std::size_t optimized_ir_nodes{0};
   std::size_t stack_map_count{0};
@@ -53,9 +54,25 @@ struct CompilationLimits final {
   std::size_t maximum_vector_selects{64U * 1024U};
   std::size_t maximum_frame_slots{256};
   std::size_t maximum_trusted_objects{64};
+  std::size_t maximum_patch_cells{256};
   std::size_t maximum_stack_maps{4096};
   std::size_t maximum_metadata_values{256U * 1024U};
   std::size_t maximum_code_bytes{16U * 1024U * 1024U};
+};
+
+struct PatchCellReadResult final {
+  Status status;
+  ir::Word value{0};
+
+  bool ok() const noexcept { return status.ok(); }
+};
+
+struct PatchCellCompareExchangeResult final {
+  Status status;
+  ir::Word observed{0};
+  bool exchanged{false};
+
+  bool ok() const noexcept { return status.ok(); }
 };
 
 struct CompilationOptions final {
@@ -144,6 +161,15 @@ class CompiledFunction final {
   const CapabilityReport &capabilities() const noexcept {
     return capabilities_;
   }
+  const std::vector<ir::PatchCellDescriptor>& patch_cells() const noexcept {
+    return patch_cells_;
+  }
+  PatchCellReadResult read_patch_cell(std::size_t index) const noexcept;
+  Status publish_patch_cell(std::size_t index, ir::Word value) const noexcept;
+  PatchCellCompareExchangeResult compare_exchange_patch_cell(
+      std::size_t index, ir::Word expected, ir::Word desired) const noexcept;
+  PatchCellReadResult fetch_add_patch_cell(std::size_t index,
+                                           ir::Word increment) const noexcept;
 
  private:
   struct Impl;
@@ -156,6 +182,7 @@ class CompiledFunction final {
                    bool requires_context,
                    std::vector<ir::TrustedObjectDescriptor> trusted_objects,
                    std::vector<bool> trusted_object_writable,
+                   std::vector<ir::PatchCellDescriptor> patch_cells,
                    runtime::DeoptimizationTable deoptimization_table,
                    runtime::AssumptionSet assumptions,
                    StackMapTable stack_maps) noexcept;
@@ -171,6 +198,7 @@ class CompiledFunction final {
   bool requires_context_{false};
   std::vector<ir::TrustedObjectDescriptor> trusted_objects_;
   std::vector<bool> trusted_object_writable_;
+  std::vector<ir::PatchCellDescriptor> patch_cells_;
   runtime::DeoptimizationTable deoptimization_table_;
   runtime::AssumptionSet assumptions_;
   StackMapTable stack_maps_;

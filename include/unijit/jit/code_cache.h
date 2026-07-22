@@ -51,6 +51,13 @@ class CodeHandle final {
   bool assumptions_valid() const noexcept;
   const CompilationStats* compilation_stats() const noexcept;
   const CapabilityReport *capabilities() const noexcept;
+  const std::vector<ir::PatchCellDescriptor>* patch_cells() const noexcept;
+  PatchCellReadResult read_patch_cell(std::size_t index) const noexcept;
+  Status publish_patch_cell(std::size_t index, ir::Word value) const noexcept;
+  PatchCellCompareExchangeResult compare_exchange_patch_cell(
+      std::size_t index, ir::Word expected, ir::Word desired) const noexcept;
+  PatchCellReadResult fetch_add_patch_cell(std::size_t index,
+                                           ir::Word increment) const noexcept;
   const StackMapTable* stack_maps() const noexcept;
   const StackMapRecord* stack_map(std::size_t site) const noexcept;
   StackMapCaptureResult reconstruct_stack_map(

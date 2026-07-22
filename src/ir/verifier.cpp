@@ -183,6 +183,15 @@ Status verify(const Function& function) {
               "trusted object descriptor is malformed"};
     }
   }
+  if (function.patch_cells().size() > PatchCellSlot::kInvalidId) {
+    return {StatusCode::kInvalidIr,
+            "patch cell count exceeds the IR index range"};
+  }
+  for (const PatchCellDescriptor& cell : function.patch_cells()) {
+    if (!is_valid_patch_cell_kind(cell.kind)) {
+      return {StatusCode::kInvalidIr, "patch cell descriptor is malformed"};
+    }
+  }
 
   std::size_t expected_call_argument = 0;
   std::size_t expected_memory_access = 0;
@@ -585,6 +594,17 @@ Status verify(const Function& function) {
                  nodes[node.lhs.id()].type != node.type) {
         return invalid_node(index,
                             "trusted object store value is malformed");
+      }
+      continue;
+    }
+    if (node.opcode == Opcode::kLoadPatchCell) {
+      if (node.immediate < 0 ||
+          static_cast<std::size_t>(node.immediate) >=
+              function.patch_cells().size() ||
+          node.type != ValueType::kWord || node.lhs.valid() ||
+          node.rhs.valid() || node.argument_begin != 0 ||
+          node.argument_count != 0) {
+        return invalid_node(index, "patch cell load is malformed");
       }
       continue;
     }

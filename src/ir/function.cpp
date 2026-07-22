@@ -670,6 +670,28 @@ Value FunctionBuilder::store_object(TrustedObjectSlot object,
   return Value{id};
 }
 
+PatchCellSlot FunctionBuilder::create_patch_cell(Word initial_value,
+                                                 PatchCellKind kind) {
+  if (function_.patch_cells_.size() >= PatchCellSlot::kInvalidId) {
+    return {};
+  }
+  const auto id = static_cast<std::uint32_t>(function_.patch_cells_.size());
+  function_.patch_cells_.push_back(PatchCellDescriptor{initial_value, kind});
+  return PatchCellSlot{id};
+}
+
+Value FunctionBuilder::load_patch_cell(PatchCellSlot cell) {
+  if (function_.nodes_.size() >= Value::kInvalidId) {
+    return {};
+  }
+  const auto id = static_cast<std::uint32_t>(function_.nodes_.size());
+  Node node;
+  node.opcode = Opcode::kLoadPatchCell;
+  node.immediate = static_cast<Word>(cell.id());
+  function_.nodes_.push_back(node);
+  return Value{id};
+}
+
 Value FunctionBuilder::vector_constant(ValueType type, Vector128 bits) {
   if (function_.nodes_.size() >= Value::kInvalidId ||
       function_.vector_constants_.size() >= VectorShuffle::kInvalidIndex) {

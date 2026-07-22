@@ -9,6 +9,7 @@
 #include "unijit/ir/atomic.h"
 #include "unijit/ir/memory.h"
 #include "unijit/ir/object.h"
+#include "unijit/ir/patch_cell.h"
 #include "unijit/ir/vector.h"
 #include "unijit/status.h"
 
@@ -101,6 +102,7 @@ enum class Opcode : std::uint8_t {
   kStoreFrame,
   kLoadObject,
   kStoreObject,
+  kLoadPatchCell,
   kVectorConstant,
   kVectorSplat,
   kVectorExtractLane,
@@ -212,6 +214,9 @@ class Function final {
   const std::vector<TrustedObjectDescriptor>& trusted_objects() const noexcept {
     return trusted_objects_;
   }
+  const std::vector<PatchCellDescriptor>& patch_cells() const noexcept {
+    return patch_cells_;
+  }
   const std::vector<Vector128>& vector_constants() const noexcept {
     return vector_constants_;
   }
@@ -245,6 +250,7 @@ class Function final {
   std::vector<AtomicAccessDescriptor> atomic_accesses_;
   std::vector<FrameSlotDescriptor> frame_slots_;
   std::vector<TrustedObjectDescriptor> trusted_objects_;
+  std::vector<PatchCellDescriptor> patch_cells_;
   std::vector<Vector128> vector_constants_;
   std::vector<VectorShuffle> vector_shuffles_;
   std::vector<Value> vector_select_arguments_;
@@ -352,6 +358,13 @@ class FunctionBuilder final {
                     ValueType type);
   Value store_object(TrustedObjectSlot object, std::size_t byte_offset,
                      Value value);
+  // Patch cells are compiled-function-owned non-executable data. Generated
+  // code can only acquire-load them; runtime publication is exposed by the
+  // compiled-function and code-handle APIs.
+  PatchCellSlot create_patch_cell(
+      Word initial_value = 0,
+      PatchCellKind kind = PatchCellKind::kValue);
+  Value load_patch_cell(PatchCellSlot cell);
   // Vector lane zero is the lowest-addressed logical lane. Floating lane
   // insertion/extraction uses raw IEEE bits in Word so payloads survive.
   Value vector_constant(ValueType type, Vector128 bits);

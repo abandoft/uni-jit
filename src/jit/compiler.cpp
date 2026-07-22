@@ -916,6 +916,11 @@ Status validate_function_limits(
             "compilation exceeds the trusted object limit",
             function.trusted_objects().size()};
   }
+  if (function.patch_cells().size() > limits.maximum_patch_cells) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the patch-cell limit",
+            function.patch_cells().size()};
+  }
   return validate_requested_metadata(deoptimization_table, assumptions,
                                      function.parameter_count(), limits);
 }
@@ -987,6 +992,11 @@ Status validate_function_limits(
     return {StatusCode::kResourceExhausted,
             "compilation exceeds the CFG trusted object limit",
             function.trusted_objects().size()};
+  }
+  if (function.patch_cells().size() > limits.maximum_patch_cells) {
+    return {StatusCode::kResourceExhausted,
+            "compilation exceeds the CFG patch-cell limit",
+            function.patch_cells().size()};
   }
   std::size_t arguments = function.call_arguments().size();
   if (arguments > limits.maximum_ir_arguments) {
@@ -1068,6 +1078,8 @@ Status validate_lowering_limits(const LoweringResult& lowering,
 
 struct CompiledFunction::Impl final {
   detail::ExecutableMemory memory;
+  std::unique_ptr<runtime::PatchCellStorage[]> patch_cells;
+  std::size_t patch_cell_count{0};
 
   NativeEntry entry() const noexcept {
     static_assert(sizeof(NativeEntry) == sizeof(void*),
@@ -1086,6 +1098,7 @@ CompiledFunction::CompiledFunction(
     bool requires_context,
     std::vector<ir::TrustedObjectDescriptor> trusted_objects,
     std::vector<bool> trusted_object_writable,
+    std::vector<ir::PatchCellDescriptor> patch_cells,
     runtime::DeoptimizationTable deoptimization_table,
     runtime::AssumptionSet assumptions, StackMapTable stack_maps) noexcept
     : impl_(std::move(impl)), parameter_count_(parameter_types.size()),
@@ -1097,6 +1110,7 @@ CompiledFunction::CompiledFunction(
       requires_context_(requires_context),
       trusted_objects_(std::move(trusted_objects)),
       trusted_object_writable_(std::move(trusted_object_writable)),
+      patch_cells_(std::move(patch_cells)),
       deoptimization_table_(std::move(deoptimization_table)),
       assumptions_(std::move(assumptions)), stack_maps_(std::move(stack_maps)) {
 }
@@ -1107,9 +1121,54 @@ CompiledFunction& CompiledFunction::operator=(CompiledFunction&&) noexcept =
     default;
 
 NativeEntry CompiledFunction::native_entry() const noexcept {
-  return impl_ == nullptr || !host_compatible_ || !trusted_objects_.empty()
+  return impl_ == nullptr || !host_compatible_ || !trusted_objects_.empty() ||
+                 !patch_cells_.empty()
              ? nullptr
              : impl_->entry();
+}
+
+PatchCellReadResult CompiledFunction::read_patch_cell(
+    std::size_t index) const noexcept {
+  if (impl_ == nullptr || index >= impl_->patch_cell_count) {
+    return {{StatusCode::kInvalidArgument,
+             "patch cell index is outside the compiled function"},
+            0};
+  }
+  return {Status::ok_status(), impl_->patch_cells[index].load()};
+}
+
+Status CompiledFunction::publish_patch_cell(std::size_t index,
+                                            ir::Word value) const noexcept {
+  if (impl_ == nullptr || index >= impl_->patch_cell_count) {
+    return {StatusCode::kInvalidArgument,
+            "patch cell index is outside the compiled function"};
+  }
+  impl_->patch_cells[index].publish(value);
+  return Status::ok_status();
+}
+
+PatchCellCompareExchangeResult CompiledFunction::compare_exchange_patch_cell(
+    std::size_t index, ir::Word expected, ir::Word desired) const noexcept {
+  if (impl_ == nullptr || index >= impl_->patch_cell_count) {
+    return {{StatusCode::kInvalidArgument,
+             "patch cell index is outside the compiled function"},
+            0, false};
+  }
+  ir::Word observed = expected;
+  const bool exchanged =
+      impl_->patch_cells[index].compare_exchange(&observed, desired);
+  return {Status::ok_status(), observed, exchanged};
+}
+
+PatchCellReadResult CompiledFunction::fetch_add_patch_cell(
+    std::size_t index, ir::Word increment) const noexcept {
+  if (impl_ == nullptr || index >= impl_->patch_cell_count) {
+    return {{StatusCode::kInvalidArgument,
+             "patch cell index is outside the compiled function"},
+            0};
+  }
+  return {Status::ok_status(),
+          impl_->patch_cells[index].fetch_add(increment)};
 }
 
 StackMapCaptureResult CompiledFunction::reconstruct_stack_map(
@@ -1242,10 +1301,25 @@ ir::EvaluationResult CompiledFunction::invoke(
     active_context->clear_exit();
     active_context->clear_deoptimization_wakeup();
   }
+  const runtime::PatchCellStorage* previous_patch_cells = nullptr;
+  std::size_t previous_patch_cell_count = 0;
+  if (active_context != nullptr && impl_->patch_cell_count != 0) {
+    previous_patch_cells = active_context->patch_cells_;
+    previous_patch_cell_count = active_context->patch_cell_count_;
+    active_context->patch_cells_ = impl_->patch_cells.get();
+    active_context->patch_cell_count_ = impl_->patch_cell_count;
+  }
+  const auto restore_patch_cells = [&]() noexcept {
+    if (active_context != nullptr && impl_->patch_cell_count != 0) {
+      active_context->patch_cells_ = previous_patch_cells;
+      active_context->patch_cell_count_ = previous_patch_cell_count;
+    }
+  };
   if (!assumptions_.empty()) {
     runtime::AssumptionActivation activation =
         assumptions_.activate(active_context);
     if (!activation.status().ok()) {
+      restore_patch_cells();
       return {activation.status(), 0};
     }
     const runtime::AssumptionDependency* invalid =
@@ -1253,7 +1327,9 @@ ir::EvaluationResult CompiledFunction::invoke(
     if (invalid != nullptr) {
       active_context->record_exit(runtime::ExitReason::kRuntime,
                                   invalid->site);
-      return finish_invocation(0, active_context);
+      ir::EvaluationResult result = finish_invocation(0, active_context);
+      restore_patch_cells();
+      return result;
     }
 
     const ir::Word value = entry(args, active_context);
@@ -1262,11 +1338,18 @@ ir::EvaluationResult CompiledFunction::invoke(
       active_context->clear_deoptimization_wakeup();
       active_context->record_exit(runtime::ExitReason::kRuntime,
                                   invalid->site);
-      return finish_invocation(0, active_context);
+      ir::EvaluationResult result = finish_invocation(0, active_context);
+      restore_patch_cells();
+      return result;
     }
-    return finish_invocation(value, active_context);
+    ir::EvaluationResult result = finish_invocation(value, active_context);
+    restore_patch_cells();
+    return result;
   }
-  return finish_invocation(entry(args, active_context), active_context);
+  ir::EvaluationResult result =
+      finish_invocation(entry(args, active_context), active_context);
+  restore_patch_cells();
+  return result;
 }
 
 CompilationResult Compiler::compile(const ir::Function& function) {
@@ -1405,6 +1488,17 @@ CompilationResult Compiler::compile(
 
   try {
     auto implementation = std::make_unique<CompiledFunction::Impl>();
+    implementation->patch_cell_count = function.patch_cells().size();
+    if (implementation->patch_cell_count != 0) {
+      implementation->patch_cells =
+          std::make_unique<runtime::PatchCellStorage[]>(
+              implementation->patch_cell_count);
+      for (std::size_t index = 0; index < implementation->patch_cell_count;
+           ++index) {
+        implementation->patch_cells[index].publish(
+            function.patch_cells()[index].initial_value);
+      }
+    }
     const Status publication = detail::ExecutableMemory::publish(
         lowering.code.data(), lowering.code.size(), &implementation->memory);
     if (!publication.ok()) {
@@ -1415,18 +1509,20 @@ CompilationResult Compiler::compile(
                            implementation->memory.mapping_size(),
                            lowering.spill_slots, function.frame_slots().size(),
                            function.trusted_objects().size(),
+                           function.patch_cells().size(),
                            function.nodes().size(),
                            lowered->nodes().size(), lowering.stack_maps.size(),
                            stack_map_value_count(lowering.stack_maps)};
     capabilities.requires_execution_context =
         capabilities.requires_execution_context || !assumptions.empty() ||
-        !function.trusted_objects().empty();
+        !function.trusted_objects().empty() || !function.patch_cells().empty();
     const bool requires_context = capabilities.requires_execution_context;
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
         std::move(implementation), copy_parameter_types(function),
         function.return_type(), options.target_profile, stats,
         std::move(capabilities), requires_context, function.trusted_objects(),
-        trusted_object_writes(function), std::move(deoptimization.table),
+        trusted_object_writes(function), function.patch_cells(),
+        std::move(deoptimization.table),
         assumptions, StackMapTable(std::move(lowering.stack_maps))));
     return {Status::ok_status(), std::move(compiled)};
   } catch (const std::bad_alloc&) {
@@ -1608,6 +1704,17 @@ CompilationResult Compiler::compile(
 
   try {
     auto implementation = std::make_unique<CompiledFunction::Impl>();
+    implementation->patch_cell_count = function.patch_cells().size();
+    if (implementation->patch_cell_count != 0) {
+      implementation->patch_cells =
+          std::make_unique<runtime::PatchCellStorage[]>(
+              implementation->patch_cell_count);
+      for (std::size_t index = 0; index < implementation->patch_cell_count;
+           ++index) {
+        implementation->patch_cells[index].publish(
+            function.patch_cells()[index].initial_value);
+      }
+    }
     const Status publication = detail::ExecutableMemory::publish(
         lowering.code.data(), lowering.code.size(), &implementation->memory);
     if (!publication.ok()) {
@@ -1618,18 +1725,20 @@ CompilationResult Compiler::compile(
                            implementation->memory.mapping_size(),
                            lowering.spill_slots, function.frame_slots().size(),
                            function.trusted_objects().size(),
+                           function.patch_cells().size(),
                            function.nodes().size(),
                            lowered->nodes().size(), lowering.stack_maps.size(),
                            stack_map_value_count(lowering.stack_maps)};
     capabilities.requires_execution_context =
         capabilities.requires_execution_context || !assumptions.empty() ||
-        !function.trusted_objects().empty();
+        !function.trusted_objects().empty() || !function.patch_cells().empty();
     const bool requires_context = capabilities.requires_execution_context;
     auto compiled = std::unique_ptr<CompiledFunction>(new CompiledFunction(
         std::move(implementation), copy_parameter_types(function),
         function.return_type(), options.target_profile, stats,
         std::move(capabilities), requires_context, function.trusted_objects(),
-        trusted_object_writes(function), std::move(deoptimization.table),
+        trusted_object_writes(function), function.patch_cells(),
+        std::move(deoptimization.table),
         assumptions, StackMapTable(std::move(lowering.stack_maps))));
     return {Status::ok_status(), std::move(compiled)};
   } catch (const std::bad_alloc&) {

@@ -146,6 +146,7 @@ void visit_control_operands(const ir::ControlFlowFunction& function,
     case ir::ControlOpcode::kAtomicFence:
     case ir::ControlOpcode::kLoadFrame:
     case ir::ControlOpcode::kLoadObject:
+    case ir::ControlOpcode::kLoadPatchCell:
     case ir::ControlOpcode::kVectorConstant:
       break;
   }
@@ -534,6 +535,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kAtomicFence:
         case ir::ControlOpcode::kLoadFrame:
         case ir::ControlOpcode::kLoadObject:
+        case ir::ControlOpcode::kLoadPatchCell:
         case ir::ControlOpcode::kVectorConstant:
           break;
       }
@@ -784,6 +786,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
         case ir::ControlOpcode::kConstant:
         case ir::ControlOpcode::kLoadFrame:
         case ir::ControlOpcode::kLoadObject:
+        case ir::ControlOpcode::kLoadPatchCell:
         case ir::ControlOpcode::kVectorConstant:
         case ir::ControlOpcode::kSafepoint:
         case ir::ControlOpcode::kAtomicFence:

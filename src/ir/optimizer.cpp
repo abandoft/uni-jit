@@ -201,6 +201,10 @@ bool is_object(Opcode opcode) noexcept {
   return opcode == Opcode::kLoadObject || opcode == Opcode::kStoreObject;
 }
 
+bool is_patch_cell(Opcode opcode) noexcept {
+  return opcode == Opcode::kLoadPatchCell;
+}
+
 bool is_vector(Opcode opcode) noexcept {
   return opcode == Opcode::kVectorConstant ||
          opcode == Opcode::kVectorSplat ||
@@ -252,6 +256,10 @@ bool is_frame(ControlOpcode opcode) noexcept {
 bool is_object(ControlOpcode opcode) noexcept {
   return opcode == ControlOpcode::kLoadObject ||
          opcode == ControlOpcode::kStoreObject;
+}
+
+bool is_patch_cell(ControlOpcode opcode) noexcept {
+  return opcode == ControlOpcode::kLoadPatchCell;
 }
 
 bool is_vector(ControlOpcode opcode) noexcept {
@@ -951,6 +959,7 @@ PassResult transform_once(
         is_atomic(input.nodes()[index].opcode) ||
         is_frame(input.nodes()[index].opcode) ||
         is_object(input.nodes()[index].opcode) ||
+        is_patch_cell(input.nodes()[index].opcode) ||
         is_nonzero_guard(input.nodes()[index].opcode) ||
         input.nodes()[index].opcode == Opcode::kSafepoint) {
       live[index] = true;
@@ -1017,6 +1026,9 @@ PassResult transform_once(
   }
   for (const TrustedObjectDescriptor& object : input.trusted_objects()) {
     builder.create_trusted_object(object.layout_identity, object.byte_size);
+  }
+  for (const PatchCellDescriptor& cell : input.patch_cells()) {
+    builder.create_patch_cell(cell.initial_value, cell.kind);
   }
   std::vector<Value> mapped(node_count);
   std::vector<bool> known_constant(node_count, false);
@@ -1143,6 +1155,12 @@ PassResult transform_once(
                           ? builder.load_object(object, offset, node.type)
                           : builder.store_object(object, offset,
                                                  mapped[node.lhs.id()]);
+      continue;
+    }
+
+    if (is_patch_cell(node.opcode)) {
+      mapped[index] = builder.load_patch_cell(
+          PatchCellSlot{static_cast<std::uint32_t>(node.immediate)});
       continue;
     }
 
@@ -1503,6 +1521,9 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
   for (const TrustedObjectDescriptor& object : input.trusted_objects()) {
     builder.create_trusted_object(object.layout_identity, object.byte_size);
   }
+  for (const PatchCellDescriptor& cell : input.patch_cells()) {
+    builder.create_patch_cell(cell.initial_value, cell.kind);
+  }
   std::vector<Block> blocks(block_count);
   blocks[input.entry_block().id()] = builder.entry_block();
   std::vector<Value> mapped(node_count);
@@ -1546,6 +1567,7 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
          opcode == ControlOpcode::kBlockParameter ||
          opcode == ControlOpcode::kCall || is_memory(opcode) ||
          is_atomic(opcode) || is_frame(opcode) || is_object(opcode) ||
+         is_patch_cell(opcode) ||
          is_nonzero_guard(opcode) || opcode == ControlOpcode::kSafepoint);
   }
   const auto mark_edge = [&live](const ControlEdge& edge) {
@@ -1732,6 +1754,9 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
           node.opcode == ControlOpcode::kLoadObject
               ? builder.load_object(object, offset, node.type)
               : builder.store_object(object, offset, mapped[node.lhs.id()]);
+    } else if (is_patch_cell(node.opcode)) {
+      mapped[index] = builder.load_patch_cell(
+          PatchCellSlot{static_cast<std::uint32_t>(node.immediate)});
     } else if (is_nonzero_guard(node.opcode)) {
       mapped[index] =
           node.opcode == ControlOpcode::kGuardWordNonzero
@@ -1755,7 +1780,8 @@ ControlFlowCanonicalizationResult canonicalize_control_flow(
     }
     if (node.opcode == ControlOpcode::kCall || is_memory(node.opcode) ||
         is_atomic(node.opcode) || is_frame(node.opcode) ||
-        is_object(node.opcode) || is_nonzero_guard(node.opcode) ||
+        is_object(node.opcode) || is_patch_cell(node.opcode) ||
+        is_nonzero_guard(node.opcode) ||
         node.opcode == ControlOpcode::kSafepoint) {
       available[owner].clear();
     }
@@ -1914,6 +1940,9 @@ ControlFlowOptimizationResult Optimizer::run(
     }
     for (const TrustedObjectDescriptor& object : function.trusted_objects()) {
       builder.create_trusted_object(object.layout_identity, object.byte_size);
+    }
+    for (const PatchCellDescriptor& cell : function.patch_cells()) {
+      builder.create_patch_cell(cell.initial_value, cell.kind);
     }
     std::vector<Block> blocks(block_count);
     blocks[function.entry_block().id()] = builder.entry_block();
@@ -2109,7 +2138,8 @@ ControlFlowOptimizationResult Optimizer::run(
                     opcode == ControlOpcode::kBlockParameter ||
                     opcode == ControlOpcode::kCall || is_memory(opcode) ||
                     is_atomic(opcode) || is_frame(opcode) ||
-                    is_object(opcode) || is_nonzero_guard(opcode) ||
+                    is_object(opcode) || is_patch_cell(opcode) ||
+                    is_nonzero_guard(opcode) ||
                     opcode == ControlOpcode::kSafepoint;
     }
     const auto mark_edge = [&live](const ControlEdge& edge) {
@@ -2277,6 +2307,9 @@ ControlFlowOptimizationResult Optimizer::run(
             node.opcode == ControlOpcode::kLoadObject
                 ? builder.load_object(object, offset, node.type)
                 : builder.store_object(object, offset, mapped[node.lhs.id()]);
+      } else if (is_patch_cell(node.opcode)) {
+        mapped[index] = builder.load_patch_cell(
+            PatchCellSlot{static_cast<std::uint32_t>(node.immediate)});
       } else if (is_nonzero_guard(node.opcode)) {
         mapped[index] =
             node.opcode == ControlOpcode::kGuardWordNonzero

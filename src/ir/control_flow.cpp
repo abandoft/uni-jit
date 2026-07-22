@@ -80,6 +80,7 @@ bool is_binary(ControlOpcode opcode) {
   case ControlOpcode::kStoreFrame:
   case ControlOpcode::kLoadObject:
   case ControlOpcode::kStoreObject:
+  case ControlOpcode::kLoadPatchCell:
   case ControlOpcode::kVectorConstant:
   case ControlOpcode::kVectorSplat:
   case ControlOpcode::kVectorExtractLane:
@@ -283,6 +284,16 @@ Status verify_impl(const ControlFlowFunction &function) {
         (object.byte_size % alignof(Word)) != 0) {
       return invalid_control_flow(
           0, "CFG trusted object descriptor is malformed");
+    }
+  }
+  if (function.patch_cells().size() > PatchCellSlot::kInvalidId) {
+    return {StatusCode::kInvalidIr,
+            "CFG patch cell count exceeds the IR index range"};
+  }
+  for (const PatchCellDescriptor &cell : function.patch_cells()) {
+    if (!is_valid_patch_cell_kind(cell.kind)) {
+      return {StatusCode::kInvalidIr,
+              "CFG patch cell descriptor is malformed"};
     }
   }
 
@@ -896,6 +907,18 @@ Status verify_impl(const ControlFlowFunction &function) {
                    function.value_type(node.lhs) != node.type) {
           return invalid_control_flow(
               value.id(), "CFG trusted object store value is malformed");
+        }
+        continue;
+      }
+      if (node.opcode == ControlOpcode::kLoadPatchCell) {
+        if (node.immediate < 0 ||
+            static_cast<std::size_t>(node.immediate) >=
+                function.patch_cells().size() ||
+            node.type != ValueType::kWord || node.lhs.valid() ||
+            node.rhs.valid() || node.argument_begin != 0 ||
+            node.argument_count != 0) {
+          return invalid_control_flow(value.id(),
+                                      "CFG patch cell load is malformed");
         }
         continue;
       }
@@ -1775,6 +1798,23 @@ Value ControlFlowBuilder::store_object(TrustedObjectSlot object,
   return append_node(node);
 }
 
+PatchCellSlot ControlFlowBuilder::create_patch_cell(Word initial_value,
+                                                    PatchCellKind kind) {
+  if (function_.patch_cells_.size() >= PatchCellSlot::kInvalidId) {
+    return {};
+  }
+  const auto id = static_cast<std::uint32_t>(function_.patch_cells_.size());
+  function_.patch_cells_.push_back(PatchCellDescriptor{initial_value, kind});
+  return PatchCellSlot{id};
+}
+
+Value ControlFlowBuilder::load_patch_cell(PatchCellSlot cell) {
+  ControlNode node;
+  node.opcode = ControlOpcode::kLoadPatchCell;
+  node.immediate = static_cast<Word>(cell.id());
+  return append_node(node);
+}
+
 Value ControlFlowBuilder::vector_constant(ValueType type, Vector128 bits) {
   if (function_.vector_constants_.size() >= VectorShuffle::kInvalidIndex) {
     return {};
@@ -2213,6 +2253,9 @@ ControlFlowInterpreter::evaluate(const ControlFlowFunction &function,
             return {result.status, 0};
           }
           values[value.id()] = result.value;
+        } else if (node.opcode == ControlOpcode::kLoadPatchCell) {
+          values[value.id()] = function.patch_cells()[
+              static_cast<std::size_t>(node.immediate)].initial_value;
         } else if (node.opcode == ControlOpcode::kVectorConstant) {
           vector_values[value.id()] = function.vector_constants()[
               static_cast<std::size_t>(node.immediate)];

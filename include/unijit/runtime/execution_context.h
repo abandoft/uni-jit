@@ -9,6 +9,7 @@
 
 #include "unijit/ir/function.h"
 #include "unijit/runtime/memory_region.h"
+#include "unijit/runtime/patch_cell.h"
 #include "unijit/runtime/trusted_object.h"
 
 namespace unijit::jit {
@@ -129,6 +130,8 @@ class ExecutionContext final {
   static constexpr std::size_t memory_region_count_offset() noexcept;
   static constexpr std::size_t trusted_objects_offset() noexcept;
   static constexpr std::size_t trusted_object_count_offset() noexcept;
+  static constexpr std::size_t patch_cells_offset() noexcept;
+  static constexpr std::size_t patch_cell_count_offset() noexcept;
 
  private:
   friend class Assumption;
@@ -159,6 +162,8 @@ class ExecutionContext final {
   std::size_t memory_region_count_{0};
   const TrustedObject* trusted_objects_{nullptr};
   std::size_t trusted_object_count_{0};
+  const PatchCellStorage* patch_cells_{nullptr};
+  std::size_t patch_cell_count_{0};
 };
 
 constexpr std::size_t ExecutionContext::interrupt_requested_offset() noexcept {
@@ -206,6 +211,14 @@ constexpr std::size_t ExecutionContext::trusted_objects_offset() noexcept {
 constexpr std::size_t
 ExecutionContext::trusted_object_count_offset() noexcept {
   return offsetof(ExecutionContext, trusted_object_count_);
+}
+
+constexpr std::size_t ExecutionContext::patch_cells_offset() noexcept {
+  return offsetof(ExecutionContext, patch_cells_);
+}
+
+constexpr std::size_t ExecutionContext::patch_cell_count_offset() noexcept {
+  return offsetof(ExecutionContext, patch_cell_count_);
 }
 
 static_assert(std::atomic<std::uint64_t>::is_always_lock_free,

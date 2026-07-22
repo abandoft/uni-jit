@@ -87,6 +87,7 @@ enum class ControlOpcode : std::uint8_t {
   kStoreFrame,
   kLoadObject,
   kStoreObject,
+  kLoadPatchCell,
   kVectorConstant,
   kVectorSplat,
   kVectorExtractLane,
@@ -202,6 +203,9 @@ public:
   const std::vector<TrustedObjectDescriptor> &trusted_objects() const noexcept {
     return trusted_objects_;
   }
+  const std::vector<PatchCellDescriptor> &patch_cells() const noexcept {
+    return patch_cells_;
+  }
   const std::vector<Vector128> &vector_constants() const noexcept {
     return vector_constants_;
   }
@@ -226,6 +230,7 @@ private:
   std::vector<AtomicAccessDescriptor> atomic_accesses_;
   std::vector<FrameSlotDescriptor> frame_slots_;
   std::vector<TrustedObjectDescriptor> trusted_objects_;
+  std::vector<PatchCellDescriptor> patch_cells_;
   std::vector<Vector128> vector_constants_;
   std::vector<VectorShuffle> vector_shuffles_;
   std::vector<Value> vector_select_arguments_;
@@ -326,6 +331,10 @@ public:
                     ValueType type);
   Value store_object(TrustedObjectSlot object, std::size_t byte_offset,
                      Value value);
+  PatchCellSlot create_patch_cell(
+      Word initial_value = 0,
+      PatchCellKind kind = PatchCellKind::kValue);
+  Value load_patch_cell(PatchCellSlot cell);
   Value vector_constant(ValueType type, Vector128 bits);
   Value vector_zero(ValueType type);
   Value vector_splat(ValueType type, Value lane_bits);

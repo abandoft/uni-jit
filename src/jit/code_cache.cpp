@@ -59,6 +59,47 @@ const CapabilityReport *CodeHandle::capabilities() const noexcept {
   return function_ == nullptr ? nullptr : &function_->capabilities();
 }
 
+const std::vector<ir::PatchCellDescriptor>* CodeHandle::patch_cells()
+    const noexcept {
+  return function_ == nullptr ? nullptr : &function_->patch_cells();
+}
+
+PatchCellReadResult CodeHandle::read_patch_cell(
+    std::size_t index) const noexcept {
+  return function_ == nullptr
+             ? PatchCellReadResult{{StatusCode::kInvalidArgument,
+                                    "code handle is not valid"},
+                                   0}
+             : function_->read_patch_cell(index);
+}
+
+Status CodeHandle::publish_patch_cell(std::size_t index,
+                                      ir::Word value) const noexcept {
+  return function_ == nullptr
+             ? Status{StatusCode::kInvalidArgument,
+                      "code handle is not valid"}
+             : function_->publish_patch_cell(index, value);
+}
+
+PatchCellCompareExchangeResult CodeHandle::compare_exchange_patch_cell(
+    std::size_t index, ir::Word expected, ir::Word desired) const noexcept {
+  return function_ == nullptr
+             ? PatchCellCompareExchangeResult{
+                   {StatusCode::kInvalidArgument, "code handle is not valid"},
+                   0, false}
+             : function_->compare_exchange_patch_cell(index, expected,
+                                                       desired);
+}
+
+PatchCellReadResult CodeHandle::fetch_add_patch_cell(
+    std::size_t index, ir::Word increment) const noexcept {
+  return function_ == nullptr
+             ? PatchCellReadResult{{StatusCode::kInvalidArgument,
+                                    "code handle is not valid"},
+                                   0}
+             : function_->fetch_add_patch_cell(index, increment);
+}
+
 const StackMapTable* CodeHandle::stack_maps() const noexcept {
   return function_ == nullptr ? nullptr : &function_->stack_maps();
 }

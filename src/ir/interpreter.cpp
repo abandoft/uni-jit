@@ -116,6 +116,7 @@ Word evaluate_binary(Opcode opcode, Word lhs, Word rhs) noexcept {
     case Opcode::kStoreFrame:
     case Opcode::kLoadObject:
     case Opcode::kStoreObject:
+    case Opcode::kLoadPatchCell:
     case Opcode::kVectorConstant:
     case Opcode::kVectorSplat:
     case Opcode::kVectorExtractLane:
@@ -373,6 +374,10 @@ EvaluationResult Interpreter::evaluate(const Function& function,
           values[index] = result.value;
           break;
         }
+        case Opcode::kLoadPatchCell:
+          values[index] = function.patch_cells()[
+              static_cast<std::size_t>(node.immediate)].initial_value;
+          break;
         case Opcode::kVectorConstant:
           vector_values[index] = function.vector_constants()[
               static_cast<std::size_t>(node.immediate)];

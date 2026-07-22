@@ -243,7 +243,8 @@ bool requires_context(ir::Opcode opcode) noexcept {
          opcode == ir::Opcode::kLoadVector ||
          opcode == ir::Opcode::kStoreVector || is_atomic_access(opcode) ||
          opcode == ir::Opcode::kLoadObject ||
-         opcode == ir::Opcode::kStoreObject;
+         opcode == ir::Opcode::kStoreObject ||
+         opcode == ir::Opcode::kLoadPatchCell;
 }
 
 bool requires_context(ir::ControlOpcode opcode) noexcept {
@@ -257,7 +258,8 @@ bool requires_context(ir::ControlOpcode opcode) noexcept {
          opcode == ir::ControlOpcode::kLoadVector ||
          opcode == ir::ControlOpcode::kStoreVector ||
          is_atomic_access(opcode) || opcode == ir::ControlOpcode::kLoadObject ||
-         opcode == ir::ControlOpcode::kStoreObject;
+         opcode == ir::ControlOpcode::kStoreObject ||
+         opcode == ir::ControlOpcode::kLoadPatchCell;
 }
 
 bool is_word_multiply(ir::Opcode opcode, ir::ValueType type) noexcept {
