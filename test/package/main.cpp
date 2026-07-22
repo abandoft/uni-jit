@@ -7,6 +7,7 @@
 
 #include "unijit/ir/control_flow.h"
 #include "unijit/ir/function.h"
+#include "unijit/ir/interpreter.h"
 #include "unijit/jit/code_cache.h"
 #include "unijit/jit/compilation_scheduler.h"
 #include "unijit/jit/compiler.h"
@@ -114,6 +115,11 @@ unijit::ir::Word package_cfg_helper(const unijit::ir::Word* arguments,
   return unijit::ir::pack_float64(
       unijit::ir::unpack_float64(arguments[0]) +
       unijit::ir::unpack_float64(arguments[1]));
+}
+
+unijit::ir::Word package_fast_oracle(const unijit::ir::Word* arguments,
+                                     std::size_t count) {
+  return count == 2 ? arguments[0] + arguments[1] : 0;
 }
 
 }  // namespace
@@ -934,6 +940,83 @@ int main() {
       patch_compilation.function->patch_cells()[0].kind !=
           unijit::ir::PatchCellKind::kCounter) {
     return 82;
+  }
+
+  unijit::ir::FunctionBuilder fast_target_builder(2);
+  if (!fast_target_builder
+           .set_return(fast_target_builder.add(
+               fast_target_builder.parameter(0),
+               fast_target_builder.parameter(1)))
+           .ok()) {
+    return 83;
+  }
+  unijit::ir::FunctionBuilder fast_caller_builder(2);
+  const auto fast_slot = fast_caller_builder.create_fast_call(
+      {unijit::ir::ValueType::kWord, unijit::ir::ValueType::kWord});
+  if (!fast_caller_builder
+           .set_return(fast_caller_builder.fast_call(
+               fast_slot, {fast_caller_builder.parameter(0),
+                           fast_caller_builder.parameter(1)}))
+           .ok()) {
+    return 84;
+  }
+  const auto fast_caller_function = std::move(fast_caller_builder).build();
+  unijit::runtime::ExecutionContext fast_oracle_context;
+  const std::array<unijit::ir::RuntimeHelper, 1> fast_oracles = {
+      package_fast_oracle};
+  const auto fast_oracle_status = fast_oracle_context.bind_fast_call_oracles(
+      fast_oracles.data(), fast_oracles.size());
+  const auto fast_interpreted = unijit::ir::Interpreter::evaluate(
+      fast_caller_function, arguments.data(), arguments.size(),
+      &fast_oracle_context);
+  auto fast_target_compilation = unijit::jit::Compiler::compile(
+      std::move(fast_target_builder).build());
+  auto fast_caller_compilation =
+      unijit::jit::Compiler::compile(fast_caller_function);
+  unijit::jit::CodeCache fast_cache;
+  auto fast_target_publication =
+      fast_target_compilation.ok()
+          ? fast_cache.publish("package-fast-target", 1,
+                               std::move(fast_target_compilation.function))
+          : unijit::jit::CodeCachePublication{
+                fast_target_compilation.status, {}, false, false};
+  auto fast_caller_publication =
+      fast_caller_compilation.ok()
+          ? fast_cache.publish("package-fast-caller", 1,
+                               std::move(fast_caller_compilation.function))
+          : unijit::jit::CodeCachePublication{
+                fast_caller_compilation.status, {}, false, false};
+  const auto fast_binding =
+      fast_target_publication.ok() && fast_caller_publication.ok()
+          ? fast_caller_publication.handle.bind_fast_call(
+                0, fast_target_publication.handle)
+          : unijit::Status{unijit::StatusCode::kInvalidArgument,
+                           "package fast-call publication failed"};
+  const auto fast_native = fast_caller_publication.ok()
+                               ? fast_caller_publication.handle.invoke(
+                                     arguments.data(), arguments.size())
+                               : unijit::ir::EvaluationResult{};
+  const bool fast_invalidated =
+      fast_cache.invalidate("package-fast-target", 1);
+  fast_target_publication.handle = {};
+  const auto fast_retained = fast_caller_publication.ok()
+                                 ? fast_caller_publication.handle.invoke(
+                                       arguments.data(), arguments.size())
+                                 : unijit::ir::EvaluationResult{};
+  const auto fast_cleared =
+      fast_caller_publication.ok()
+          ? fast_caller_publication.handle.clear_fast_call(0)
+          : unijit::Status{unijit::StatusCode::kInvalidArgument,
+                           "package fast-call caller is unavailable"};
+  if (!fast_oracle_status.ok() || !fast_interpreted.ok() ||
+      fast_interpreted.value != 42 || !fast_binding.ok() ||
+      !fast_native.ok() || fast_native.value != 42 || !fast_invalidated ||
+      !fast_retained.ok() || fast_retained.value != 42 ||
+      !fast_cleared.ok() || fast_caller_publication.handle.fast_call_bound(0) ||
+      fast_caller_publication.handle.native_entry() != nullptr ||
+      fast_caller_publication.handle.fast_calls() == nullptr ||
+      fast_caller_publication.handle.fast_calls()->size() != 1) {
+    return 85;
   }
 
   const auto atomic_access = [](unijit::ir::AtomicMemoryOrder order) {
