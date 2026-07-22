@@ -13,6 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 VERSION_PATTERN = re.compile(r"^(\d+)\.([0-9])\.([0-9])$")
 HEADING_PATTERN = re.compile(r"^## (\d+\.[0-9]\.[0-9])[ \t]*$", re.MULTILINE)
+MAXIMUM_UPDATE_CHARACTERS = 200
 
 
 class ReleaseError(RuntimeError):
@@ -94,6 +95,12 @@ def validate_changelog(path: Path) -> list[ChangelogSection]:
                     f"{path.name} section {section.version} release-note line "
                     f"{line_number} must contain one complete '- ' update on one "
                     "physical line"
+                )
+            if len(line) > MAXIMUM_UPDATE_CHARACTERS:
+                raise ReleaseError(
+                    f"{path.name} section {section.version} release-note line "
+                    f"{line_number} has {len(line)} characters; keep each update "
+                    f"within {MAXIMUM_UPDATE_CHARACTERS} characters"
                 )
     for newer, older in zip(sections, sections[1:]):
         expected = older.version.next()

@@ -54,6 +54,10 @@ class ChangelogTest(unittest.TestCase):
         with self.assertRaisesRegex(ReleaseError, "one complete '- ' update"):
             self.validate("## 0.1.2\n\n- Complete update.\n- \n")
 
+    def test_overlong_update_is_rejected(self) -> None:
+        with self.assertRaisesRegex(ReleaseError, "within 200 characters"):
+            self.validate("## 0.1.2\n\n- " + "x" * 199 + "\n")
+
     def test_bilingual_update_count_mismatch_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

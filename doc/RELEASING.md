@@ -13,7 +13,8 @@ For a new release, update the CMake project version and prepend matching
 `## MAJOR.MINOR.PATCH` sections to both changelog files. Changelog sections are
 strictly newest-first and consecutive; new notes never go below an older
 version. Every distinct update is one `- ` bullet on exactly one physical line;
-never manually wrap one update across multiple source lines.
+never manually wrap one update across multiple source lines. Split unrelated
+changes into short parallel bullets, each no longer than 200 characters.
 
 Before tagging, run:
 
