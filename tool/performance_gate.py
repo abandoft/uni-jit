@@ -343,6 +343,106 @@ def evaluate_patch_cell(
     }
 
 
+def evaluate_fast_call(
+    document: dict[str, Any],
+    maximum_overhead_ratio: float,
+    maximum_caller_code_bytes: float,
+    maximum_target_code_bytes: float,
+) -> dict[str, Any]:
+    expected_schema = "unijit.fast-call-benchmark.v1"
+    if document.get("schema") != expected_schema:
+        raise GateError(
+            f"expected {expected_schema}, found {document.get('schema')!r}"
+        )
+    if document.get("benchmark") != "generation_safe_cfg_dispatch":
+        raise GateError("fast-call gate requires generation-safe CFG dispatch")
+    if document.get("measurement_boundary") != "complete_managed_cfg_invocation":
+        raise GateError(
+            "fast-call gate requires the complete managed CFG invocation boundary"
+        )
+    if document.get("architecture") not in {"aarch64", "x86-64", "riscv64"}:
+        raise GateError("fast-call record has an unsupported architecture")
+
+    samples = number_at(document, "samples")
+    loop_iterations = number_at(document, "loop_iterations")
+    warmup_invocations = number_at(document, "warmup_invocations")
+    measurement_invocations = number_at(document, "measurement_invocations")
+    reported_overhead = number_at(document, "fast_call_overhead_ratio")
+    fast_latency = number_at(document, "fast_call_median_ns_per_dispatch")
+    helper_latency = number_at(document, "runtime_helper_median_ns_per_dispatch")
+    caller_code_bytes = number_at(document, "fast_caller_native_code_bytes")
+    number_at(document, "runtime_caller_native_code_bytes")
+    target_code_bytes = number_at(document, "target_native_code_bytes")
+    checksum = document.get("checksum")
+    if not isinstance(checksum, str) or not checksum.startswith("0x"):
+        raise GateError("fast-call gate requires a hexadecimal checksum")
+    try:
+        checksum_value = int(checksum, 16)
+    except ValueError as error:
+        raise GateError("fast-call checksum is malformed") from error
+    if checksum_value == 0:
+        raise GateError("fast-call checksum must be nonzero")
+
+    overhead = fast_latency / helper_latency
+    if not math.isclose(reported_overhead, overhead, rel_tol=0.01, abs_tol=0.01):
+        raise GateError("fast-call overhead ratio is inconsistent with latencies")
+    if samples < 7:
+        raise GateError("fast-call gate requires at least seven samples")
+    if loop_iterations < 1000 or warmup_invocations < 100 or measurement_invocations < 500:
+        raise GateError(
+            "fast-call gate requires 1,000 dispatches per invocation, 100 warmups, "
+            "and 500 measured invocations"
+        )
+    for name, threshold in {
+        "maximum fast-call overhead": maximum_overhead_ratio,
+        "maximum caller code size": maximum_caller_code_bytes,
+        "maximum target code size": maximum_target_code_bytes,
+    }.items():
+        if not math.isfinite(threshold) or threshold <= 0:
+            raise GateError(f"{name} must be finite and positive")
+
+    failures: list[str] = []
+    if overhead > maximum_overhead_ratio:
+        failures.append(
+            f"fast-call overhead {overhead:.6f} exceeds "
+            f"{maximum_overhead_ratio:.6f}"
+        )
+    if caller_code_bytes > maximum_caller_code_bytes:
+        failures.append(
+            f"fast-call caller code size {caller_code_bytes:.0f} exceeds "
+            f"{maximum_caller_code_bytes:.0f} bytes"
+        )
+    if target_code_bytes > maximum_target_code_bytes:
+        failures.append(
+            f"fast-call target code size {target_code_bytes:.0f} exceeds "
+            f"{maximum_target_code_bytes:.0f} bytes"
+        )
+    if failures:
+        raise GateError("; ".join(failures))
+
+    return {
+        "schema": "unijit.performance-gate.v1",
+        "target": "fast-call",
+        "passed": True,
+        "source_schema": expected_schema,
+        "measurement_boundary": "complete_managed_cfg_invocation",
+        "requirements": {
+            "fast_call_overhead_ratio": {
+                "maximum": maximum_overhead_ratio,
+                "observed": overhead,
+            },
+            "caller_native_code_bytes": {
+                "maximum": maximum_caller_code_bytes,
+                "observed": caller_code_bytes,
+            },
+            "target_native_code_bytes": {
+                "maximum": maximum_target_code_bytes,
+                "observed": target_code_bytes,
+            },
+        },
+    }
+
+
 def load_record(path: Path) -> dict[str, Any]:
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -403,6 +503,16 @@ def main() -> int:
         "--maximum-native-code-bytes", type=float, default=128.0
     )
 
+    fast_call = subparsers.add_parser("fast-call")
+    fast_call.add_argument("record", type=Path)
+    fast_call.add_argument("--maximum-overhead", type=float, default=1.5)
+    fast_call.add_argument(
+        "--maximum-caller-code-bytes", type=float, default=256.0
+    )
+    fast_call.add_argument(
+        "--maximum-target-code-bytes", type=float, default=64.0
+    )
+
     arguments = parser.parse_args()
     try:
         document = load_record(arguments.record)
@@ -425,6 +535,13 @@ def main() -> int:
                 arguments.maximum_managed_overhead,
                 arguments.maximum_native_code_bytes,
             )
+        elif arguments.target == "fast-call":
+            result = evaluate_fast_call(
+                document,
+                arguments.maximum_overhead,
+                arguments.maximum_caller_code_bytes,
+                arguments.maximum_target_code_bytes,
+            )
         elif arguments.target == "lua":
             thresholds = {
                 "stock_lua": arguments.minimum_stock_speedup,
@@ -445,6 +562,7 @@ def main() -> int:
             "cfg-float64",
             "cfg-simd",
             "patch-cell",
+            "fast-call",
         }:
             result = evaluate(arguments.target, document, thresholds)
     except GateError as error:

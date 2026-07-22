@@ -14,11 +14,55 @@ from performance_gate import (  # noqa: E402
     evaluate,
     evaluate_cfg_float64,
     evaluate_cfg_simd,
+    evaluate_fast_call,
     evaluate_patch_cell,
 )
 
 
 class PerformanceGateTest(unittest.TestCase):
+    def fast_call_record(self) -> dict[str, object]:
+        return {
+            "schema": "unijit.fast-call-benchmark.v1",
+            "benchmark": "generation_safe_cfg_dispatch",
+            "measurement_boundary": "complete_managed_cfg_invocation",
+            "architecture": "x86-64",
+            "loop_iterations": 1000,
+            "warmup_invocations": 100,
+            "measurement_invocations": 500,
+            "samples": 7,
+            "target_native_code_bytes": 24,
+            "fast_caller_native_code_bytes": 136,
+            "runtime_caller_native_code_bytes": 136,
+            "fast_call_median_ns_per_dispatch": 2.0,
+            "runtime_helper_median_ns_per_dispatch": 1.8,
+            "fast_call_overhead_ratio": 1.111111,
+            "checksum": "0xee48d45892e5499a",
+        }
+
+    def test_fast_call_target_passes(self) -> None:
+        result = evaluate_fast_call(self.fast_call_record(), 1.5, 256.0, 64.0)
+        self.assertEqual(result["target"], "fast-call")
+        self.assertTrue(result["passed"])
+
+    def test_fast_call_target_rejects_dispatch_overhead(self) -> None:
+        record = self.fast_call_record()
+        record["fast_call_median_ns_per_dispatch"] = 2.71
+        record["fast_call_overhead_ratio"] = 1.505556
+        with self.assertRaisesRegex(GateError, "fast-call overhead"):
+            evaluate_fast_call(record, 1.5, 256.0, 64.0)
+
+    def test_fast_call_target_rejects_code_growth(self) -> None:
+        record = self.fast_call_record()
+        record["fast_caller_native_code_bytes"] = 257
+        with self.assertRaisesRegex(GateError, "caller code size"):
+            evaluate_fast_call(record, 1.5, 256.0, 64.0)
+
+    def test_fast_call_target_rejects_short_sampling(self) -> None:
+        record = self.fast_call_record()
+        record["measurement_invocations"] = 499
+        with self.assertRaisesRegex(GateError, "500 measured"):
+            evaluate_fast_call(record, 1.5, 256.0, 64.0)
+
     def patch_cell_record(self) -> dict[str, object]:
         return {
             "schema": "unijit.patch-cell-benchmark.v1",
