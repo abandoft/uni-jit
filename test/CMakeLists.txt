@@ -12,6 +12,23 @@ endif()
 
 add_test(NAME unijit.unit COMMAND unijit_tests)
 
+add_executable(unijit_atomic_litmus atomic_litmus.cpp)
+target_link_libraries(
+  unijit_atomic_litmus PRIVATE UniJIT::unijit Threads::Threads)
+target_compile_features(unijit_atomic_litmus PRIVATE cxx_std_17)
+if(MSVC)
+  target_compile_options(unijit_atomic_litmus PRIVATE /W4 /permissive-)
+else()
+  target_compile_options(
+    unijit_atomic_litmus PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+add_test(
+  NAME unijit.qualification.atomic_litmus
+  COMMAND unijit_atomic_litmus --iterations 512 --cas-successes 500)
+set_tests_properties(
+  unijit.qualification.atomic_litmus
+  PROPERTIES LABELS qualification TIMEOUT 180 SKIP_RETURN_CODE 77)
+
 if(UNIJIT_BUILD_QUALIFICATION_TESTS)
   add_executable(unijit_code_cache_stress code_cache_stress.cpp)
   target_link_libraries(
@@ -28,6 +45,7 @@ if(UNIJIT_BUILD_QUALIFICATION_TESTS)
   add_executable(unijit_differential_fuzz differential_fuzz.cpp)
   target_link_libraries(unijit_differential_fuzz PRIVATE UniJIT::unijit)
   target_compile_features(unijit_differential_fuzz PRIVATE cxx_std_17)
+
   if(MSVC)
     target_compile_options(
       unijit_code_cache_stress PRIVATE /W4 /permissive-)

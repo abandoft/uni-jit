@@ -28,7 +28,7 @@ jobs:
         run: >-
           cmake --build build/qualification --parallel
           --target unijit_differential_fuzz unijit_code_cache_stress
-          unijit_compilation_scheduler_stress
+          unijit_compilation_scheduler_stress unijit_atomic_litmus
 
       - name: Run committed qualification corpus
         run: >-
@@ -60,6 +60,12 @@ jobs:
           build/qualification/test/unijit_compilation_scheduler_stress
           --producers 16 --submissions 20000 --identities 512 --workers 8
           > build/qualification/records/compilation-scheduler-stress.json
+
+      - name: Run extended generated-code atomic litmus corpus
+        run: >-
+          build/qualification/test/unijit_atomic_litmus
+          --iterations 5000 --cas-successes 5000
+          > build/qualification/records/atomic-litmus.json
 
       - name: Retain qualification records
         uses: actions/upload-artifact@v7
