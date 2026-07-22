@@ -175,6 +175,36 @@ bool may_call_atomic_fallback(ir::ControlOpcode opcode) noexcept {
          opcode == ir::ControlOpcode::kAtomicFetchXor;
 }
 
+bool may_call_atomic_fallback(const ir::Function& function,
+                              std::size_t index) noexcept {
+  const ir::Node& node = function.nodes()[index];
+  if (may_call_atomic_fallback(node.opcode)) {
+    return true;
+  }
+  if (node.opcode != ir::Opcode::kAtomicLoad &&
+      node.opcode != ir::Opcode::kAtomicStore) {
+    return false;
+  }
+  const ir::AtomicAccessDescriptor& access =
+      function.atomic_accesses()[node.atomic_access];
+  return ir::memory_width_bytes(access.memory.width) < 4;
+}
+
+bool may_call_atomic_fallback(const ir::ControlFlowFunction& function,
+                              ir::Value value) noexcept {
+  const ir::ControlNode& node = function.nodes()[value.id()];
+  if (may_call_atomic_fallback(node.opcode)) {
+    return true;
+  }
+  if (node.opcode != ir::ControlOpcode::kAtomicLoad &&
+      node.opcode != ir::ControlOpcode::kAtomicStore) {
+    return false;
+  }
+  const ir::AtomicAccessDescriptor& access =
+      function.atomic_accesses()[node.atomic_access];
+  return ir::memory_width_bytes(access.memory.width) < 4;
+}
+
 RegisterAllocation allocate_impl(const ir::Function& function,
                                  std::size_t word_register_count,
                                  std::size_t simd_register_count,
@@ -347,7 +377,7 @@ RegisterAllocation allocate_impl(const ir::Function& function,
 
   for (std::size_t call_index = 0; call_index < value_count; ++call_index) {
     if (function.nodes()[call_index].opcode != ir::Opcode::kCall &&
-        !may_call_atomic_fallback(function.nodes()[call_index].opcode)) {
+        !may_call_atomic_fallback(function, call_index)) {
       continue;
     }
     for (std::size_t value_index = 0; value_index < call_index;
@@ -559,7 +589,7 @@ ControlFlowRegisterAllocation allocate_control_flow_impl(
       const ir::Value value = block.instructions[index];
       const ir::ControlOpcode opcode = function.nodes()[value.id()].opcode;
       if (opcode == ir::ControlOpcode::kCall ||
-          may_call_atomic_fallback(opcode)) {
+          may_call_atomic_fallback(function, value)) {
         std::vector<ir::Value>& live = live_across_calls[value.id()];
         live.reserve(active_word.size() + active_simd.size());
         const auto note_live = [&](const std::vector<std::size_t>& active) {

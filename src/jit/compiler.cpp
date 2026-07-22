@@ -1382,7 +1382,8 @@ CompilationResult Compiler::compile(
 #elif defined(UNIJIT_TARGET_RISCV64)
   detail::riscv64::LoweringResult lowering = detail::riscv64::lower(
       *lowered, stack_map_requirements.requirements,
-      options.measure_safepoint_polls);
+      options.measure_safepoint_polls,
+      has_target_feature(options.target_profile, TargetFeature::kRiscVAtomic));
 #endif
 
 #if defined(UNIJIT_TARGET_AARCH64) || defined(UNIJIT_TARGET_X86_64) || \
@@ -1584,7 +1585,8 @@ CompilationResult Compiler::compile(
 #elif defined(UNIJIT_TARGET_RISCV64)
   detail::riscv64::LoweringResult lowering = detail::riscv64::lower(
       *lowered, stack_map_requirements.requirements,
-      options.measure_safepoint_polls);
+      options.measure_safepoint_polls,
+      has_target_feature(options.target_profile, TargetFeature::kRiscVAtomic));
 #endif
 
 #if defined(UNIJIT_TARGET_AARCH64) || defined(UNIJIT_TARGET_X86_64) || \

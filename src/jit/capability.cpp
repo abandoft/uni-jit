@@ -152,8 +152,9 @@ bool is_atomic_read_modify_write(ir::ControlOpcode opcode) noexcept {
          opcode == ir::ControlOpcode::kAtomicFetchXor;
 }
 
-LoweringStrategy atomic_strategy(const TargetProfile& target,
-                                 ir::Opcode opcode) noexcept {
+LoweringStrategy atomic_strategy(
+    const TargetProfile& target, ir::Opcode opcode,
+    const ir::AtomicAccessDescriptor* access) noexcept {
   if (target.architecture == TargetArchitecture::kAArch64) {
     return is_atomic_read_modify_write(opcode) &&
                    !has_target_feature(target, TargetFeature::kAarch64Lse)
@@ -167,11 +168,26 @@ LoweringStrategy atomic_strategy(const TargetProfile& target,
                ? LoweringStrategy::kLegalized
                : LoweringStrategy::kNative;
   }
+  if (target.architecture == TargetArchitecture::kRiscV64) {
+    if (opcode == ir::Opcode::kAtomicFence) {
+      return LoweringStrategy::kNative;
+    }
+    if (!has_target_feature(target, TargetFeature::kRiscVAtomic)) {
+      return LoweringStrategy::kUnsupported;
+    }
+    const bool subword =
+        access != nullptr &&
+        ir::memory_width_bytes(access->memory.width) < sizeof(ir::Word) / 2U;
+    return subword || opcode == ir::Opcode::kAtomicCompareExchange
+               ? LoweringStrategy::kHelper
+               : LoweringStrategy::kNative;
+  }
   return LoweringStrategy::kUnsupported;
 }
 
-LoweringStrategy atomic_strategy(const TargetProfile& target,
-                                 ir::ControlOpcode opcode) noexcept {
+LoweringStrategy atomic_strategy(
+    const TargetProfile& target, ir::ControlOpcode opcode,
+    const ir::AtomicAccessDescriptor* access) noexcept {
   if (target.architecture == TargetArchitecture::kAArch64) {
     return is_atomic_read_modify_write(opcode) &&
                    !has_target_feature(target, TargetFeature::kAarch64Lse)
@@ -185,17 +201,37 @@ LoweringStrategy atomic_strategy(const TargetProfile& target,
                ? LoweringStrategy::kLegalized
                : LoweringStrategy::kNative;
   }
+  if (target.architecture == TargetArchitecture::kRiscV64) {
+    if (opcode == ir::ControlOpcode::kAtomicFence) {
+      return LoweringStrategy::kNative;
+    }
+    if (!has_target_feature(target, TargetFeature::kRiscVAtomic)) {
+      return LoweringStrategy::kUnsupported;
+    }
+    const bool subword =
+        access != nullptr &&
+        ir::memory_width_bytes(access->memory.width) < sizeof(ir::Word) / 2U;
+    return subword || opcode == ir::ControlOpcode::kAtomicCompareExchange
+               ? LoweringStrategy::kHelper
+               : LoweringStrategy::kNative;
+  }
   return LoweringStrategy::kUnsupported;
 }
 
 template <typename OpcodeType>
 std::uint64_t atomic_required_features(const TargetProfile& target,
-                                       OpcodeType opcode) noexcept {
-  return target.architecture == TargetArchitecture::kAArch64 &&
-                 is_atomic_read_modify_write(opcode) &&
-                 has_target_feature(target, TargetFeature::kAarch64Lse)
-             ? target_feature_bit(TargetFeature::kAarch64Lse)
-             : 0;
+                                       OpcodeType opcode,
+                                       const ir::AtomicAccessDescriptor*) noexcept {
+  if (target.architecture == TargetArchitecture::kAArch64 &&
+      is_atomic_read_modify_write(opcode) &&
+      has_target_feature(target, TargetFeature::kAarch64Lse)) {
+    return target_feature_bit(TargetFeature::kAarch64Lse);
+  }
+  if (target.architecture == TargetArchitecture::kRiscV64 &&
+      is_atomic_access(opcode)) {
+    return target_feature_bit(TargetFeature::kRiscVAtomic);
+  }
+  return 0;
 }
 
 bool requires_context(ir::Opcode opcode) noexcept {
@@ -458,9 +494,14 @@ CapabilityReport analyze_verified(const FunctionType &function,
     report.requires_execution_context =
         report.requires_execution_context || requires_context(node.opcode);
     if (is_atomic(node.opcode)) {
-      const LoweringStrategy strategy = atomic_strategy(target, node.opcode);
+      const ir::AtomicAccessDescriptor* access =
+          is_atomic_access(node.opcode)
+              ? &function.atomic_accesses()[node.atomic_access]
+              : nullptr;
+      const LoweringStrategy strategy =
+          atomic_strategy(target, node.opcode, access);
       const std::uint64_t required =
-          atomic_required_features(target, node.opcode);
+          atomic_required_features(target, node.opcode, access);
       if (strategy == LoweringStrategy::kUnsupported && !found_unsupported) {
         found_unsupported = true;
         first_unsupported = index;
