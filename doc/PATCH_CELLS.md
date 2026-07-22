@@ -107,3 +107,11 @@ retains seven samples of 200,000 invocations. The commercial gate rejects a
 patch path above 2.5 times the constant managed-call latency or more than 128
 native code bytes; emulation is supplemental to real AArch64, Ubuntu/Windows
 x86-64, and RISC-V 64 evidence.
+
+The delivered matrix passes on real Apple and hosted AArch64, a separate real
+Ubuntu GCC 13.3 x86-64 host, hosted Ubuntu GCC/Clang and Windows MSVC x86-64,
+and real RISC-V 64 GCC 14.2 hardware. It includes the complete hosted 13-job
+workflow, Linux ASan/UBSan, patch-specific ThreadSanitizer stress, real RISC-V
+UBSan, installed-package consumers on every required target, and retained
+performance decisions. RISC-V ASan is not claimed because an independent
+minimal program fails at `main` on that host/toolchain before UniJIT executes.

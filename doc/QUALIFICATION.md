@@ -121,6 +121,15 @@ release/acquire mutation round trips, and retains a
 the constant managed-call latency, and at most 128 patch-reader code bytes on
 real AArch64, Ubuntu/Windows x86-64, and RISC-V 64 hosts.
 
+At commit `8f727d9`, the complete patch-cell matrix passed the hosted 13-job
+workflow, including Ubuntu GCC/Clang and Windows MSVC x86-64 core, package, and
+performance paths, Linux ASan/UBSan, and patch-specific ThreadSanitizer stress.
+The same extended stress, performance gate, and installed-package consumer
+passed on a separate real Ubuntu GCC 13.3 x86-64 host and real RISC-V 64 GCC
+14.2 hardware; the latter also passed UBSan. RISC-V ASan remains unclaimed
+because an independent minimal program fails on that host before entering
+UniJIT code.
+
 ## Concurrent code-cache stress
 
 `unijit_code_cache_stress` runs configurable reader and writer populations over
