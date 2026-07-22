@@ -264,6 +264,85 @@ def evaluate_cfg_simd(
     }
 
 
+def evaluate_patch_cell(
+    document: dict[str, Any],
+    maximum_overhead_ratio: float,
+    maximum_code_bytes: float,
+) -> dict[str, Any]:
+    expected_schema = "unijit.patch-cell-benchmark.v1"
+    if document.get("schema") != expected_schema:
+        raise GateError(
+            f"expected {expected_schema}, found {document.get('schema')!r}"
+        )
+    if document.get("benchmark") != "managed_acquire_load":
+        raise GateError("patch-cell gate requires the managed acquire-load workload")
+    if document.get("measurement_boundary") != "managed_compiled_invocation":
+        raise GateError(
+            "patch-cell gate requires the complete managed invocation boundary"
+        )
+    if document.get("architecture") not in {"aarch64", "x86_64", "riscv64"}:
+        raise GateError("patch-cell record has an unsupported architecture")
+
+    samples = number_at(document, "samples")
+    warmup_iterations = number_at(document, "warmup_iterations")
+    measurement_iterations = number_at(document, "measurement_iterations")
+    reported_overhead_ratio = number_at(document, "managed_overhead_ratio")
+    code_bytes = number_at(document, "patch_native_code_bytes")
+    number_at(document, "constant_native_code_bytes")
+    constant_latency = number_at(document, "constant_managed_median_ns")
+    patch_latency = number_at(document, "patch_managed_median_ns")
+    number_at(document, "mutation_round_trip_median_ns")
+    overhead_ratio = patch_latency / constant_latency
+    if not math.isclose(
+        reported_overhead_ratio, overhead_ratio, rel_tol=0.01, abs_tol=0.01
+    ):
+        raise GateError("patch-cell overhead ratio is inconsistent with latencies")
+    if samples < 7:
+        raise GateError("patch-cell gate requires at least seven samples")
+    if warmup_iterations < 10000 or measurement_iterations < 200000:
+        raise GateError(
+            "patch-cell gate requires 10,000 warmups and 200,000 measured invocations"
+        )
+    for name, threshold in {
+        "maximum managed overhead": maximum_overhead_ratio,
+        "maximum code size": maximum_code_bytes,
+    }.items():
+        if not math.isfinite(threshold) or threshold <= 0:
+            raise GateError(f"{name} must be finite and positive")
+
+    failures: list[str] = []
+    if overhead_ratio > maximum_overhead_ratio:
+        failures.append(
+            f"patch-cell managed overhead {overhead_ratio:.6f} exceeds "
+            f"{maximum_overhead_ratio:.6f}"
+        )
+    if code_bytes > maximum_code_bytes:
+        failures.append(
+            f"patch-cell native code size {code_bytes:.0f} exceeds "
+            f"{maximum_code_bytes:.0f} bytes"
+        )
+    if failures:
+        raise GateError("; ".join(failures))
+
+    return {
+        "schema": "unijit.performance-gate.v1",
+        "target": "patch-cell",
+        "passed": True,
+        "source_schema": expected_schema,
+        "measurement_boundary": "managed_compiled_invocation",
+        "requirements": {
+            "managed_overhead_ratio": {
+                "maximum": maximum_overhead_ratio,
+                "observed": overhead_ratio,
+            },
+            "native_code_bytes": {
+                "maximum": maximum_code_bytes,
+                "observed": code_bytes,
+            },
+        },
+    }
+
+
 def load_record(path: Path) -> dict[str, Any]:
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
@@ -315,6 +394,15 @@ def main() -> int:
         "--maximum-native-code-bytes", type=float, default=1024.0
     )
 
+    patch_cell = subparsers.add_parser("patch-cell")
+    patch_cell.add_argument("record", type=Path)
+    patch_cell.add_argument(
+        "--maximum-managed-overhead", type=float, default=2.5
+    )
+    patch_cell.add_argument(
+        "--maximum-native-code-bytes", type=float, default=128.0
+    )
+
     arguments = parser.parse_args()
     try:
         document = load_record(arguments.record)
@@ -329,6 +417,12 @@ def main() -> int:
                 document,
                 arguments.minimum_scalar_speedup,
                 arguments.minimum_interpreter_speedup,
+                arguments.maximum_native_code_bytes,
+            )
+        elif arguments.target == "patch-cell":
+            result = evaluate_patch_cell(
+                document,
+                arguments.maximum_managed_overhead,
                 arguments.maximum_native_code_bytes,
             )
         elif arguments.target == "lua":
@@ -347,7 +441,11 @@ def main() -> int:
                 "cpython": arguments.minimum_cpython_speedup,
                 "cpython_jit": arguments.minimum_cpython_jit_speedup,
             }
-        if arguments.target not in {"cfg-float64", "cfg-simd"}:
+        if arguments.target not in {
+            "cfg-float64",
+            "cfg-simd",
+            "patch-cell",
+        }:
             result = evaluate(arguments.target, document, thresholds)
     except GateError as error:
         print(

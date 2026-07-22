@@ -20,6 +20,23 @@ compilation latency, optimized IR size, native code size, median execution
 latencies, and checksums. Generated results stay under `build/`; curated
 release reports will be committed separately with their environment manifest.
 
+The immutable data patch-cell benchmark compares a complete managed invocation
+that acquire-loads function-owned mutable data with an equivalent compiled
+constant return, then measures release-store/acquire-load mutation round trips:
+
+```sh
+build/benchmark/benchmark/unijit_patch_cell_benchmark \
+  --warmup 10000 --iterations 200000 --samples 7 \
+  > build/benchmark/patch-cell.json
+python3 tool/performance_gate.py patch-cell build/benchmark/patch-cell.json \
+  --maximum-managed-overhead 2.5 --maximum-native-code-bytes 128
+```
+
+Hosted validation retains the versioned raw record and gate decision for every
+product platform. The gate rejects fewer than seven samples, a shortened
+measurement boundary, more than 2.5 times the constant managed-call latency,
+or more than 128 patch-reader code bytes.
+
 The CFG Float64 benchmark keeps four loop-carried values live while native
 addition, subtraction, multiplication, and division update them. It reports
 latency per completed loop iteration and native code size, making register-bank

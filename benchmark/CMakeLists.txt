@@ -14,6 +14,10 @@ add_executable(unijit_bounded_memory_benchmark bounded_memory.cpp)
 target_link_libraries(unijit_bounded_memory_benchmark PRIVATE UniJIT::unijit)
 target_compile_features(unijit_bounded_memory_benchmark PRIVATE cxx_std_17)
 
+add_executable(unijit_patch_cell_benchmark patch_cell.cpp)
+target_link_libraries(unijit_patch_cell_benchmark PRIVATE UniJIT::unijit)
+target_compile_features(unijit_patch_cell_benchmark PRIVATE cxx_std_17)
+
 if(MSVC)
   target_compile_options(unijit_core_benchmark PRIVATE /W4 /permissive-)
   target_compile_options(
@@ -22,6 +26,8 @@ if(MSVC)
     unijit_cfg_simd_benchmark PRIVATE /W4 /permissive-)
   target_compile_options(
     unijit_bounded_memory_benchmark PRIVATE /W4 /permissive-)
+  target_compile_options(
+    unijit_patch_cell_benchmark PRIVATE /W4 /permissive-)
 else()
   target_compile_options(unijit_core_benchmark PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(
@@ -30,4 +36,6 @@ else()
     unijit_cfg_simd_benchmark PRIVATE -Wall -Wextra -Wpedantic)
   target_compile_options(
     unijit_bounded_memory_benchmark PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_options(
+    unijit_patch_cell_benchmark PRIVATE -Wall -Wextra -Wpedantic)
 endif()

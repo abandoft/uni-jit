@@ -98,6 +98,20 @@ jobs:
           --loop-iterations 1000 --warmup 100 --invocations 500 --samples 7
           | Out-File -Encoding utf8 build/platform/cfg-simd.json
 
+      - name: Measure managed data patch-cell access on Unix
+        if: runner.os != 'Windows'
+        run: >-
+          ./build/platform/benchmark/unijit_patch_cell_benchmark
+          --warmup 10000 --iterations 200000 --samples 7
+          > build/platform/patch-cell.json
+
+      - name: Measure managed data patch-cell access on Windows
+        if: runner.os == 'Windows'
+        run: >-
+          .\build\platform\benchmark\RelWithDebInfo\unijit_patch_cell_benchmark.exe
+          --warmup 10000 --iterations 200000 --samples 7
+          | Out-File -Encoding utf8 build/platform/patch-cell.json
+
       - name: Enforce CFG Float64 register-residency floor on Unix
         if: runner.os != 'Windows'
         run: >-
@@ -136,6 +150,25 @@ jobs:
           | Out-File -Encoding utf8
           build/platform/cfg-simd-performance-gate.json
 
+      - name: Enforce managed data patch-cell floor on Unix
+        if: runner.os != 'Windows'
+        run: >-
+          python3 tool/performance_gate.py patch-cell
+          build/platform/patch-cell.json
+          --maximum-managed-overhead 2.5
+          --maximum-native-code-bytes 128
+          > build/platform/patch-cell-performance-gate.json
+
+      - name: Enforce managed data patch-cell floor on Windows
+        if: runner.os == 'Windows'
+        run: >-
+          python tool/performance_gate.py patch-cell
+          build/platform/patch-cell.json
+          --maximum-managed-overhead 2.5
+          --maximum-native-code-bytes 128
+          | Out-File -Encoding utf8
+          build/platform/patch-cell-performance-gate.json
+
       - name: Retain CFG Float64 platform evidence
         if: always()
         uses: actions/upload-artifact@v7
@@ -154,6 +187,16 @@ jobs:
           path: |
             build/platform/cfg-simd.json
             build/platform/cfg-simd-performance-gate.json
+          if-no-files-found: error
+
+      - name: Retain managed data patch-cell platform evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: patch-cell-${{ matrix.name }}
+          path: |
+            build/platform/patch-cell.json
+            build/platform/patch-cell-performance-gate.json
           if-no-files-found: error
 
       - name: Install

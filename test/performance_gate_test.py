@@ -14,10 +14,52 @@ from performance_gate import (  # noqa: E402
     evaluate,
     evaluate_cfg_float64,
     evaluate_cfg_simd,
+    evaluate_patch_cell,
 )
 
 
 class PerformanceGateTest(unittest.TestCase):
+    def patch_cell_record(self) -> dict[str, object]:
+        return {
+            "schema": "unijit.patch-cell-benchmark.v1",
+            "benchmark": "managed_acquire_load",
+            "measurement_boundary": "managed_compiled_invocation",
+            "architecture": "x86_64",
+            "warmup_iterations": 10000,
+            "measurement_iterations": 200000,
+            "samples": 7,
+            "constant_native_code_bytes": 16,
+            "patch_native_code_bytes": 42,
+            "constant_managed_median_ns": 8.0,
+            "patch_managed_median_ns": 10.0,
+            "managed_overhead_ratio": 1.25,
+            "mutation_round_trip_median_ns": 7.0,
+        }
+
+    def test_patch_cell_target_passes(self) -> None:
+        result = evaluate_patch_cell(self.patch_cell_record(), 2.5, 128.0)
+        self.assertEqual(result["target"], "patch-cell")
+        self.assertTrue(result["passed"])
+
+    def test_patch_cell_target_rejects_managed_overhead(self) -> None:
+        record = self.patch_cell_record()
+        record["patch_managed_median_ns"] = 20.08
+        record["managed_overhead_ratio"] = 2.51
+        with self.assertRaisesRegex(GateError, "managed overhead"):
+            evaluate_patch_cell(record, 2.5, 128.0)
+
+    def test_patch_cell_target_rejects_code_growth(self) -> None:
+        record = self.patch_cell_record()
+        record["patch_native_code_bytes"] = 129
+        with self.assertRaisesRegex(GateError, "code size"):
+            evaluate_patch_cell(record, 2.5, 128.0)
+
+    def test_patch_cell_target_rejects_short_sampling(self) -> None:
+        record = self.patch_cell_record()
+        record["samples"] = 3
+        with self.assertRaisesRegex(GateError, "seven samples"):
+            evaluate_patch_cell(record, 2.5, 128.0)
+
     def cfg_record(self) -> dict[str, object]:
         return {
             "schema": "unijit.cfg-float64-benchmark.v1",
