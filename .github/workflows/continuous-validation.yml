@@ -24,6 +24,10 @@ jobs:
     name: Core platform validation
     uses: ./.github/workflows/core-platform-validation.yml
 
+  c-embedding:
+    name: C embedding shared-library validation
+    uses: ./.github/workflows/c-embedding-validation.yml
+
   language-baselines:
     name: Language frontend baselines
     uses: ./.github/workflows/language-baselines.yml

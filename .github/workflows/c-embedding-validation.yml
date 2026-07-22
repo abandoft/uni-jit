@@ -1,0 +1,109 @@
+name: C embedding shared-library validation
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  shared-library:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Ubuntu GCC x86-64
+            os: ubuntu-24.04
+            cc: gcc
+            cxx: g++
+          - name: macOS Clang AArch64
+            os: macos-15
+            cc: clang
+            cxx: clang++
+          - name: Windows MSVC x86-64
+            os: windows-2025
+            cc: cl
+            cxx: cl
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Configure shared library on Unix
+        if: runner.os != 'Windows'
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: >-
+          cmake -S . -B build/c-embedding -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DBUILD_SHARED_LIBS=ON
+          -DUNIJIT_WARNINGS_AS_ERRORS=ON
+
+      - name: Configure shared library on Windows
+        if: runner.os == 'Windows'
+        run: >-
+          cmake -S . -B build/c-embedding -A x64
+          -DBUILD_SHARED_LIBS=ON
+          -DUNIJIT_WARNINGS_AS_ERRORS=ON
+
+      - name: Build pure C qualification target
+        run: >-
+          cmake --build build/c-embedding --config RelWithDebInfo
+          --target unijit_embedding_test --parallel
+
+      - name: Run pure C qualification
+        run: >-
+          ctest --test-dir build/c-embedding -C RelWithDebInfo
+          -R unijit.embedding_c_abi --output-on-failure
+
+      - name: Validate exact exports on Linux
+        if: runner.os == 'Linux'
+        run: >-
+          python3 tool/c_api_exports.py
+          build/c-embedding/src/libunijit.so
+
+      - name: Validate exact exports on macOS
+        if: runner.os == 'macOS'
+        run: >-
+          python3 tool/c_api_exports.py
+          build/c-embedding/src/libunijit.dylib
+
+      - name: Validate exact exports on Windows
+        if: runner.os == 'Windows'
+        run: >-
+          python tool/c_api_exports.py
+          build/c-embedding/src/RelWithDebInfo/unijit.dll
+
+      - name: Install shared library
+        run: >-
+          cmake --install build/c-embedding --config RelWithDebInfo
+          --prefix build/c-embedding-install
+
+      - name: Configure installed C consumer on Unix
+        if: runner.os != 'Windows'
+        run: >-
+          cmake -S test/package -B build/c-embedding-consumer -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/build/c-embedding-install
+
+      - name: Configure installed C consumer on Windows
+        if: runner.os == 'Windows'
+        run: >-
+          cmake -S test/package -B build/c-embedding-consumer -A x64
+          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/build/c-embedding-install
+
+      - name: Build installed pure C consumer
+        run: >-
+          cmake --build build/c-embedding-consumer --config Release
+          --target unijit_c_package_consumer --parallel
+
+      - name: Run installed pure C consumer on Unix
+        if: runner.os != 'Windows'
+        run: ./build/c-embedding-consumer/unijit_c_package_consumer
+
+      - name: Run installed pure C consumer on Windows
+        if: runner.os == 'Windows'
+        run: |
+          $env:PATH = "${{ github.workspace }}\build\c-embedding-install\bin;$env:PATH"
+          .\build\c-embedding-consumer\Release\unijit_c_package_consumer.exe
